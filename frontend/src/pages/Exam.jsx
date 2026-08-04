@@ -22,6 +22,29 @@ const SIGNAL_LABELS = {
   monitor: "External monitor",
 };
 const RETRY_DELAYS_MS = [2000, 4000, 8000, 12000, 20000];
+
+/**
+ * A downscaled JPEG data URL of the current video frame.
+ *
+ * Mirrors lib/proctoring.js's captureFrame. Kept as a small local helper rather
+ * than imported from there because that one closes over the proctoring session's
+ * own reusable canvas -- this path fires a handful of times during the pre-exam
+ * check, not every few seconds for an hour, so a plain function is the right
+ * shape for it.
+ */
+function captureVideoFrame(video, maxEdge = 640, quality = 0.8) {
+  const sourceW = video.videoWidth || 320;
+  const sourceH = video.videoHeight || 240;
+  const scale = Math.min(1, maxEdge / Math.max(sourceW, sourceH));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(sourceW * scale));
+  canvas.height = Math.max(1, Math.round(sourceH * scale));
+  const ctx = canvas.getContext("2d", { alpha: false });
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", quality);
+}
 const RESYNC_INTERVAL_MS = 90000;
 const CODE_SAVE_DEBOUNCE_MS = 1200;
 
@@ -115,6 +138,33 @@ export default function Exam() {
   const [batteryStatus, setBatteryStatus] = useState(null); // { level: 0-1, charging: bool } | null
   const [networkQuality, setNetworkQuality] = useState(null); // { label: "Good"|"Fair"|"Poor" } | null
   const pendingSavesRef = useRef(new Map()); // questionId -> { timeoutId, attempt }
+
+  // ---------- autosave ordering ----------
+  //
+  // Monotonic per-question counter, bumped once per user change and sent with
+  // every save. The server refuses any write older than what it already holds
+  // (see backend attempt_repository._should_apply), which closes a real
+  // answer-loss race: this component autosaves on every change AND retries with
+  // backoff, so a request stalled on a slow connection could land after a newer
+  // one and silently revert an answer the candidate had already changed.
+  //
+  // Note the retry path below deliberately reuses the version captured when the
+  // change was made rather than taking a fresh one -- a retry is the SAME
+  // change being re-sent, so bumping it would let a late retry beat a genuinely
+  // newer answer, which is the exact bug this exists to prevent.
+  const answerVersionsRef = useRef(new Map()); // key -> integer
+
+  const nextAnswerVersion = useCallback((key) => {
+    const next = (answerVersionsRef.current.get(key) || 0) + 1;
+    answerVersionsRef.current.set(key, next);
+    return next;
+  }, []);
+
+  // A fresh id per REQUEST (not per change), so a retry of a request that
+  // actually landed -- but whose response was lost -- is recognised server-side
+  // as a duplicate instead of being applied twice.
+  const newIdempotencyKey = () =>
+    (crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`);
 
   const [toasts, setToasts] = useState([]);
   const [signalStates, setSignalStates] = useState({});
@@ -237,10 +287,17 @@ export default function Exam() {
 
   // ---------- autosave (MCQ) with retry/backoff ----------
   const persistMcqAnswer = useCallback(
-    (questionId, selectedOptionId, attempt = 0) => {
+    (questionId, selectedOptionId, attempt = 0, version = null) => {
       const entry = pendingSavesRef.current.get(questionId) || {};
       if (entry.timeoutId) clearTimeout(entry.timeoutId);
-      Api.put(`/attempts/${attemptIdRef.current}/answer`, { question_id: questionId, selected_option_id: selectedOptionId })
+      // First send for this change mints a version; retries carry it forward.
+      const answerVersion = version ?? nextAnswerVersion(`mcq_${questionId}`);
+      Api.put(`/attempts/${attemptIdRef.current}/answer`, {
+        question_id: questionId,
+        selected_option_id: selectedOptionId,
+        answer_version: answerVersion,
+        idempotency_key: newIdempotencyKey(),
+      })
         .then(() => {
           pendingSavesRef.current.delete(questionId);
           setConnectionBanner((prev) => (pendingSavesRef.current.size === 0 ? null : prev));
@@ -258,20 +315,27 @@ export default function Exam() {
           }
           const delay = RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)];
           setConnectionBanner("Connection lost. Your answers will sync automatically once you're back online.");
-          const timeoutId = setTimeout(() => persistMcqAnswer(questionId, selectedOptionId, attempt + 1), delay);
+          const timeoutId = setTimeout(
+            () => persistMcqAnswer(questionId, selectedOptionId, attempt + 1, answerVersion), delay);
           pendingSavesRef.current.set(questionId, { timeoutId, attempt: attempt + 1 });
         });
     },
-    []
+    [nextAnswerVersion]
   );
 
   // ---------- autosave (multi-select) with the same retry/backoff as MCQ ----------
   const persistMultiSelectAnswer = useCallback(
-    (questionId, selectedOptionIds, attempt = 0) => {
+    (questionId, selectedOptionIds, attempt = 0, version = null) => {
       const key = `multi_${questionId}`;
       const entry = pendingSavesRef.current.get(key) || {};
       if (entry.timeoutId) clearTimeout(entry.timeoutId);
-      Api.put(`/attempts/${attemptIdRef.current}/multi-answer`, { question_id: questionId, selected_option_ids: selectedOptionIds })
+      const answerVersion = version ?? nextAnswerVersion(key);
+      Api.put(`/attempts/${attemptIdRef.current}/multi-answer`, {
+        question_id: questionId,
+        selected_option_ids: selectedOptionIds,
+        answer_version: answerVersion,
+        idempotency_key: newIdempotencyKey(),
+      })
         .then(() => {
           pendingSavesRef.current.delete(key);
           setConnectionBanner((prev) => (pendingSavesRef.current.size === 0 ? null : prev));
@@ -289,19 +353,28 @@ export default function Exam() {
           }
           const delay = RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)];
           setConnectionBanner("Connection lost. Your answers will sync automatically once you're back online.");
-          const timeoutId = setTimeout(() => persistMultiSelectAnswer(questionId, selectedOptionIds, attempt + 1), delay);
+          const timeoutId = setTimeout(
+            () => persistMultiSelectAnswer(questionId, selectedOptionIds, attempt + 1, answerVersion), delay);
           pendingSavesRef.current.set(key, { timeoutId, attempt: attempt + 1 });
         });
     },
-    []
+    [nextAnswerVersion]
   );
 
   const persistCodeAnswer = useCallback(
-    (questionId, sourceCode, attempt = 0) => {
+    (questionId, sourceCode, attempt = 0, version = null) => {
       const key = `code_${questionId}`;
       const entry = pendingSavesRef.current.get(key) || {};
       if (entry.timeoutId) clearTimeout(entry.timeoutId);
-      Api.put(`/attempts/${attemptIdRef.current}/code-answer`, { question_id: questionId, source_code: sourceCode })
+      // Versioning matters most here: a late retry landing after newer keystrokes
+      // would restore a stale snapshot of the candidate's source file.
+      const answerVersion = version ?? nextAnswerVersion(key);
+      Api.put(`/attempts/${attemptIdRef.current}/code-answer`, {
+        question_id: questionId,
+        source_code: sourceCode,
+        answer_version: answerVersion,
+        idempotency_key: newIdempotencyKey(),
+      })
         .then(() => {
           pendingSavesRef.current.delete(key);
           setConnectionBanner((prev) => (pendingSavesRef.current.size === 0 ? null : prev));
@@ -320,11 +393,12 @@ export default function Exam() {
           }
           const delay = RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)];
           setConnectionBanner("Connection lost. Your answers will sync automatically once you're back online.");
-          const timeoutId = setTimeout(() => persistCodeAnswer(questionId, sourceCode, attempt + 1), delay);
+          const timeoutId = setTimeout(
+            () => persistCodeAnswer(questionId, sourceCode, attempt + 1, answerVersion), delay);
           pendingSavesRef.current.set(key, { timeoutId, attempt: attempt + 1 });
         });
     },
-    []
+    [nextAnswerVersion]
   );
 
   // ---------- flush any pending debounced code save (used before navigating away from a question) ----------
@@ -990,13 +1064,22 @@ export default function Exam() {
     setFaceMatchStatus("checking");
     setFaceMatchError("");
     try {
-      const canvas = document.createElement("canvas");
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
-      const frame = canvas.toDataURL("image/jpeg", 0.85);
+      // Downscaled for the same reason lib/proctoring.js does it: the identity
+      // model prepares at 640x640, so anything larger is encoded and uploaded
+      // only to be thrown away server-side. On the pre-exam gate this is the
+      // difference between a check that feels instant and one the candidate
+      // watches spin.
+      const frame = captureVideoFrame(video, 640, 0.8);
       const result = await Api.post("/proctoring/face/verify", { image_base64: frame });
       if (faceMatchTokenRef.current !== myToken) return; // superseded by a newer attempt
+      // Signal switched off or unavailable -- see FACE_MATCHING_ENABLED. The
+      // pre-exam gate must pass rather than trap the candidate behind a check
+      // the server has been told not to perform.
+      if (result.available === false) {
+        setFaceMatchStatus("ok");
+        setFaceMatchError("");
+        return;
+      }
       if (result.spoof_suspected) {
         setFaceMatchStatus("mismatch");
         setFaceMatchError("This looks like a photo or screen rather than a live camera feed. Use your own live camera.");
@@ -1851,6 +1934,7 @@ export default function Exam() {
         <SubmitConfirmModal
           answeredCount={Object.values(answeredMap).filter((v) => v !== null && v !== undefined).length}
           totalCount={questionIds.length}
+          flaggedCount={markedSet.size}
           submitting={submitting}
           error={submitError}
           onCancel={() => setShowSubmitConfirm(false)}
@@ -2069,27 +2153,115 @@ function CodingPanel({ question, editorKey, initialValue, onChange, onRun, onRes
   );
 }
 
-function SubmitConfirmModal({ answeredCount, totalCount, submitting, error, onCancel, onConfirm }) {
-  const unanswered = totalCount - answeredCount;
+/**
+ * Final submit confirmation.
+ *
+ * Redesigned from a small centred alert into a proper decision surface. The old
+ * one was an amber warning triangle over one line of text, which read as an
+ * error rather than the most consequential and irreversible action in the whole
+ * product -- and it did not actually show the candidate what they were about to
+ * submit. This does: answered, unanswered and flagged counts, so the decision is
+ * made against the state of the paper rather than a sentence about it.
+ *
+ * Unanswered is the only thing coloured. When everything is answered the panel
+ * is calm and green; leaving questions blank is the one fact worth pulling the
+ * eye, and colouring every number would flatten that back out.
+ */
+function SubmitConfirmModal({ answeredCount, totalCount, flaggedCount = 0, submitting, error, onCancel, onConfirm }) {
+  const unanswered = Math.max(totalCount - answeredCount, 0);
+  const allDone = unanswered === 0;
+
+  useEffect(() => {
+    // Escape cancels, and focus is trapped to the dialog's own buttons by
+    // autoFocus below. Deliberately NOT closable by clicking the backdrop: a
+    // stray click next to the most irreversible action in the app should not
+    // dismiss the one screen asking the candidate to think about it.
+    function onKey(e) {
+      if (e.key === "Escape" && !submitting) onCancel();
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onCancel, submitting]);
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
-      <div className="w-full max-w-sm rounded-2xl border border-border bg-card p-6 text-center animate-fade-in">
-        <span className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-amber-500/10 text-amber-500 mb-4">
-          <Icon name="alert" width={20} height={20} />
-        </span>
-        <h2 className="text-lg font-extrabold tracking-tight mb-2">Submit exam?</h2>
-        <p className="text-sm text-muted leading-relaxed mb-5">
-          {unanswered > 0
-            ? `You have ${unanswered} unanswered question${unanswered === 1 ? "" : "s"}. Once submitted, you can't change your answers.`
-            : "All questions answered. Once submitted, you can't change your answers."}
-        </p>
-        {error && <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 text-red-500 text-xs font-medium px-3 py-2 text-left">{error}</div>}
-        <div className="flex items-center gap-3">
-          <button onClick={onCancel} disabled={submitting} className={`${btnGhost} flex-1 justify-center disabled:opacity-60`}>
-            Keep Working
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/60 backdrop-blur-sm px-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="submit-title"
+    >
+      <div className="w-full max-w-md rounded-2xl border border-border bg-surface shadow-2xl overflow-hidden animate-fade-in">
+
+        <div className="px-7 pt-7 pb-5">
+          <span
+            className={`inline-flex items-center justify-center w-12 h-12 rounded-2xl mb-4 ${
+              allDone ? "bg-success/10 text-success" : "bg-amber-500/10 text-amber-500"
+            }`}
+          >
+            <Icon name={allDone ? "check" : "alert"} width={22} height={22} />
+          </span>
+
+          <h2 id="submit-title" className="text-xl font-extrabold tracking-tight text-ink mb-1.5">
+            Submit your exam?
+          </h2>
+          <p className="text-sm text-muted leading-relaxed">
+            {allDone
+              ? "You've answered every question. Once you submit, your answers are final."
+              : "Once you submit, your answers are final and can't be changed."}
+          </p>
+        </div>
+
+        <div className="mx-7 mb-6 grid grid-cols-3 rounded-xl border border-border bg-page overflow-hidden">
+          <div className="px-3 py-3.5 text-center">
+            <div className="text-xl font-extrabold text-ink tabular-nums">{answeredCount}</div>
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mt-0.5">Answered</div>
+          </div>
+          <div className="px-3 py-3.5 text-center border-x border-border">
+            <div className={`text-xl font-extrabold tabular-nums ${unanswered > 0 ? "text-amber-500" : "text-ink"}`}>
+              {unanswered}
+            </div>
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mt-0.5">Unanswered</div>
+          </div>
+          <div className="px-3 py-3.5 text-center">
+            <div className="text-xl font-extrabold text-ink tabular-nums">{flaggedCount}</div>
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mt-0.5">Flagged</div>
+          </div>
+        </div>
+
+        {unanswered > 0 && (
+          <div className="mx-7 mb-5 flex items-start gap-2.5 rounded-xl border border-amber-500/25 bg-amber-500/5 px-4 py-3">
+            <span className="text-amber-500 mt-0.5 shrink-0"><Icon name="alert" width={15} height={15} /></span>
+            <p className="text-sm text-ink leading-relaxed">
+              {unanswered} question{unanswered === 1 ? "" : "s"} will be submitted unanswered and scored as zero.
+            </p>
+          </div>
+        )}
+
+        {error && (
+          <div className="mx-7 mb-5 flex items-start gap-2.5 rounded-xl border border-danger/25 bg-danger/5 px-4 py-3">
+            <span className="text-danger mt-0.5 shrink-0"><Icon name="alert" width={15} height={15} /></span>
+            <p className="text-sm text-danger leading-relaxed">{error}</p>
+          </div>
+        )}
+
+        <div className="flex items-center gap-3 border-t border-border bg-page/60 px-7 py-5">
+          <button
+            type="button"
+            autoFocus
+            onClick={onCancel}
+            disabled={submitting}
+            className={`${btnGhost} flex-1 justify-center disabled:opacity-60`}
+          >
+            Keep working
           </button>
-          <button onClick={onConfirm} disabled={submitting} className={`${btnPrimary} flex-1 justify-center disabled:opacity-60`}>
-            {submitting ? "Submitting…" : "Submit"}
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={submitting}
+            className={`${btnPrimary} flex-1 justify-center disabled:opacity-60`}
+          >
+            {submitting && <Icon name="spinner" width={15} height={15} className="animate-spin" />}
+            {submitting ? "Submitting…" : "Submit exam"}
           </button>
         </div>
       </div>

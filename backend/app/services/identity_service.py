@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.models.student import Student
 from app.repositories import proctor_repository
+from app.services import biometric_service
 
 
 def _now() -> datetime:
@@ -67,6 +68,7 @@ def record_id_verification(db: Session, student: Student, name_matched: bool, ex
     changed = False
     if image_path and student.id_card_image_path != image_path:
         student.id_card_image_path = image_path
+        biometric_service.record_id_consent(student)
         changed = True
     if name_matched and not student.id_verified:
         student.id_verified = True
@@ -79,11 +81,23 @@ def record_id_verification(db: Session, student: Student, name_matched: bool, ex
     maybe_lock_identity(db, student)
 
 
-def verification_state(db: Session, student: Student | None) -> dict:
-    """Shape consumed by GET /users/me and the exam-entry gate."""
+def verification_state(db: Session, student: Student | None, *,
+                        face_registered_ids: set[int] | None = None) -> dict:
+    """Shape consumed by GET /users/me and the exam-entry gate.
+
+    `face_registered_ids` lets a caller rendering a LIST pre-compute the face
+    lookup once for the whole page (see
+    proctor_repository.students_with_face_profiles) instead of paying a query
+    per row. Optional so the single-student callers -- which are the majority --
+    stay unchanged and can't accidentally pass a stale set.
+    """
     if student is None:
         return {"face_registered": False, "id_verified": False, "identity_locked": False, "exam_ready": False}
-    face_registered = has_face_profile(db, student)
+    face_registered = (
+        student.id in face_registered_ids
+        if face_registered_ids is not None
+        else has_face_profile(db, student)
+    )
     return {
         "face_registered": face_registered,
         "id_verified": bool(student.id_verified),

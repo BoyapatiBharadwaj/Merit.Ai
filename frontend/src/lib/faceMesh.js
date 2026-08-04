@@ -56,14 +56,50 @@
  * was flagged as looking away on every single check.
  */
 
-// Pinned rather than floating on @latest: this is a security-relevant path
-// and a silent major-version bump on a CDN should not be able to change how
-// proctoring behaves mid-term.
-const TASKS_VISION_VERSION = "0.10.14";
-const TASKS_VISION_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${TASKS_VISION_VERSION}`;
-const WASM_URL = `${TASKS_VISION_URL}/wasm`;
-const MODEL_URL =
+// Self-hosted, not fetched from jsdelivr.
+//
+// This used to `import()` the Tasks Vision bundle straight off a CDN and load
+// its wasm from there too. Pinning the version limited the blast radius of a
+// silent upgrade but did nothing about the real exposure: this code runs on the
+// exam page, which holds camera, microphone and screen-share permissions, so
+// anything able to answer for that hostname could run arbitrary code in the
+// most privileged context in the product. The library now ships in the build
+// (see package.json) and the wasm is served from this origin, both covered by
+// the CSP in frontend/nginx.conf.
+//
+// The wasm files live in public/mediapipe/wasm/ and are copied verbatim from
+// node_modules/@mediapipe/tasks-vision/wasm by `npm run vendor:mediapipe`, so
+// the JS and its wasm can never drift to different versions.
+const WASM_URL = "/mediapipe/wasm";
+
+// The face-landmarker weights (~3.7MB) are NOT distributed on npm -- Google
+// publishes them only as a hosted asset -- so they cannot be vendored by an
+// install step the way the wasm can. `npm run fetch:model` downloads the file
+// into public/mediapipe/. When it is present this loads from our own origin;
+// when it is not, it falls back to Google's copy so a fresh clone still works
+// rather than failing with an unexplained proctoring outage.
+//
+// For a production exam deployment, run the fetch script and keep the local
+// copy: it is the last remaining third-party request on this path, and the
+// `connect-src` entry that allows the fallback can then be dropped from the CSP.
+const LOCAL_MODEL_URL = "/mediapipe/face_landmarker.task";
+const REMOTE_MODEL_URL =
   "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
+
+/** Prefer the self-hosted weights; fall back to Google's only if absent. */
+async function resolveModelUrl() {
+  try {
+    const res = await fetch(LOCAL_MODEL_URL, { method: "HEAD" });
+    if (res.ok) return LOCAL_MODEL_URL;
+  } catch {
+    // Network/HEAD unsupported -- fall through to the remote copy.
+  }
+  console.warn(
+    "[faceMesh] Using Google's hosted face_landmarker.task. Run `npm run fetch:model` " +
+    "to self-host it before a production deployment."
+  );
+  return REMOTE_MODEL_URL;
+}
 
 // ~12fps. Fast enough that a glance away is caught within ~80ms, slow enough
 // to leave the student's CPU to the exam itself. The landmarker runs on GPU
@@ -92,13 +128,20 @@ const RIGHT_EYE_CORNERS = [362, 263];
 
 let visionModulePromise = null;
 
-/** Loads the Tasks Vision ESM bundle once per page. `@vite-ignore` keeps the
- * bundler from trying to resolve a CDN URL at build time. */
+/** Loads the Tasks Vision ESM bundle once per page.
+ *
+ * A real bare-specifier import now, so Vite resolves and bundles it at build
+ * time -- it was previously a `@vite-ignore`d import of a CDN URL, which is
+ * exactly what the vite-ignore comment existed to permit. Kept dynamic so the
+ * ~1MB library is code-split into its own chunk and only downloaded when
+ * proctoring actually starts, rather than by every visitor to the marketing
+ * page.
+ */
 function loadVisionModule() {
   if (!visionModulePromise) {
-    visionModulePromise = import(/* @vite-ignore */ TASKS_VISION_URL).catch((err) => {
+    visionModulePromise = import("@mediapipe/tasks-vision").catch((err) => {
       // Reset so a later attempt can retry rather than being stuck with a
-      // permanently rejected promise (e.g. a transient CDN blip at exam start).
+      // permanently rejected promise.
       visionModulePromise = null;
       throw err;
     });
@@ -169,8 +212,10 @@ export function createFaceTracker() {
       if (stopped) return;
       const fileset = await vision.FilesetResolver.forVisionTasks(WASM_URL);
       if (stopped) return;
+      const modelUrl = await resolveModelUrl();
+      if (stopped) return;
       landmarker = await vision.FaceLandmarker.createFromOptions(fileset, {
-        baseOptions: { modelAssetPath: MODEL_URL, delegate: "GPU" },
+        baseOptions: { modelAssetPath: modelUrl, delegate: "GPU" },
         runningMode: "VIDEO",
         // 2, not 1: detecting a second person in frame is a proctoring
         // signal in its own right, and a landmarker capped at one face can

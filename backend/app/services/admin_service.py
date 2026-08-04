@@ -173,6 +173,10 @@ def exams_overview(db: Session, status_filter: str | None = None, search: str | 
     now = datetime.now(timezone.utc)
     all_attempt_ids = [a.id for exam in exams for a in exam.attempts]
     violation_counts = admin_repository.violation_counts_for_attempts(db, all_attempt_ids)
+    # Batched for the same reason violation_counts is, immediately above: the
+    # per-attempt lookup this replaces ran once per candidate per exam, so one
+    # dashboard render cost hundreds of queries on a real cohort.
+    results_by_attempt = attempt_repository.results_for_attempts(db, all_attempt_ids)
 
     rows = []
     for exam in exams:
@@ -184,7 +188,7 @@ def exams_overview(db: Session, status_filter: str | None = None, search: str | 
             if s not in exam.title.lower() and s not in exam.examiner.user.full_name.lower():
                 continue
         attempts = exam.attempts
-        results = [r for a in attempts if (r := attempt_repository.get_result(db, a.id))]
+        results = [r for a in attempts if (r := results_by_attempt.get(a.id))]
         percentages = [r.percentage for r in results]
         rows.append({
             "id": exam.id, "title": exam.title, "type": admin_repository.exam_type_label(exam),
@@ -264,6 +268,10 @@ def examiner_exams(db: Session, examiner_id: int, status_filter: str | None = No
     now = datetime.now(timezone.utc)
     all_attempt_ids = [a.id for exam in exams for a in exam.attempts]
     violation_counts = admin_repository.violation_counts_for_attempts(db, all_attempt_ids)
+    # Batched for the same reason violation_counts is, immediately above: the
+    # per-attempt lookup this replaces ran once per candidate per exam, so one
+    # dashboard render cost hundreds of queries on a real cohort.
+    results_by_attempt = attempt_repository.results_for_attempts(db, all_attempt_ids)
 
     rows = []
     for exam in exams:
@@ -271,7 +279,7 @@ def examiner_exams(db: Session, examiner_id: int, status_filter: str | None = No
         if status_filter and status_filter != "all" and bucket != status_filter:
             continue
         attempts = exam.attempts
-        results = [r for a in attempts if (r := attempt_repository.get_result(db, a.id))]
+        results = [r for a in attempts if (r := results_by_attempt.get(a.id))]
         percentages = [r.percentage for r in results]
         rows.append({
             "id": exam.id, "title": exam.title, "type": admin_repository.exam_type_label(exam),
@@ -346,7 +354,8 @@ def exam_admin_detail(db: Session, exam_id: int) -> dict:
     expected = admin_repository.expected_students_for_exam(db, exam)
     attempts = exam.attempts
     attempt_ids = [a.id for a in attempts]
-    results = [r for a in attempts if (r := attempt_repository.get_result(db, a.id))]
+    results_by_attempt = attempt_repository.results_for_attempts(db, attempt_ids)
+    results = [r for a in attempts if (r := results_by_attempt.get(a.id))]
     percentages = [r.percentage for r in results]
     violation_counts = admin_repository.violation_counts_for_attempts(db, attempt_ids)
     total_marks = sum(q.marks for s in exam.sections for q in s.questions)
@@ -376,11 +385,19 @@ def exam_enrolled_students(db: Session, exam_id: int, *, exam_status: str | None
     exam_closed = exam_bucket(exam, now) == "completed"
     expected = admin_repository.expected_students_for_exam(db, exam)
     attempts_by_student = {a.student_id: a for a in exam.attempts}
+    # Both maps built once, outside the loop. Previously each candidate row cost
+    # one result query AND one proctor-events query -- and proctor_events is the
+    # fastest-growing table here, so a 500-candidate exam made this the most
+    # expensive page in the admin app by a wide margin.
+    _attempt_ids = [a.id for a in exam.attempts]
+    results_by_attempt = attempt_repository.results_for_attempts(db, _attempt_ids)
+    events_by_attempt = proctor_repository.events_for_attempts(db, _attempt_ids)
+    face_ids = proctor_repository.students_with_face_profiles(db, [s.id for s in expected])
 
     rows = []
     for student in expected:
         attempt = attempts_by_student.get(student.id)
-        identity = identity_service.verification_state(db, student)
+        identity = identity_service.verification_state(db, student, face_registered_ids=face_ids)
         verification_label = "Verified" if identity["identity_locked"] else "Pending"
 
         if attempt is None:
@@ -391,10 +408,10 @@ def exam_enrolled_students(db: Session, exam_id: int, *, exam_status: str | None
             risk_tier = None
             attempt_id = None
         else:
-            events = proctor_repository.list_events_for_attempt(db, attempt.id)
+            events = events_by_attempt.get(attempt.id, [])
             violation_count = len(events)
             _, risk_tier = risk_score_and_tier(events, attempt.status.value)
-            result_row = attempt_repository.get_result(db, attempt.id)
+            result_row = results_by_attempt.get(attempt.id)
             if attempt.status == AttemptStatus.TERMINATED:
                 candidate_status = "Terminated"
             elif attempt.status == AttemptStatus.IN_PROGRESS:
@@ -440,11 +457,12 @@ def candidates_overview(db: Session, search: str | None = None, organization_id:
 
     all_attempt_ids = [a.id for s in students for a in s.attempts]
     violation_counts = admin_repository.violation_counts_for_attempts(db, all_attempt_ids)
+    results_by_attempt = attempt_repository.results_for_attempts(db, all_attempt_ids)
 
     rows = []
     for student in students:
         attempts = student.attempts
-        completed = sum(1 for a in attempts if attempt_repository.get_result(db, a.id))
+        completed = sum(1 for a in attempts if a.id in results_by_attempt)
         in_progress = sum(1 for a in attempts if a.status == AttemptStatus.IN_PROGRESS)
         rows.append({
             "id": student.id, "full_name": student.user.full_name, "email": student.user.email,
@@ -462,11 +480,15 @@ def candidate_detail(db: Session, student_id: int) -> dict:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Candidate not found.")
 
     identity = identity_service.verification_state(db, student)
+    _attempt_ids = [a.id for a in student.attempts]
+    results_by_attempt = attempt_repository.results_for_attempts(db, _attempt_ids)
+    events_by_attempt = proctor_repository.events_for_attempts(db, _attempt_ids)
+
     history = []
     for attempt in student.attempts:
         exam = attempt.exam
-        result_row = attempt_repository.get_result(db, attempt.id)
-        events = proctor_repository.list_events_for_attempt(db, attempt.id)
+        result_row = results_by_attempt.get(attempt.id)
+        events = events_by_attempt.get(attempt.id, [])
         _, risk_tier = risk_score_and_tier(events, attempt.status.value)
         result_label = None
         if result_row is not None:

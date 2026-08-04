@@ -128,7 +128,46 @@ services:
       LOCKDOWN_STRIKE_LIMIT: ${LOCKDOWN_STRIKE_LIMIT:-3}
       CODE_EXECUTION_ENABLED: ${CODE_EXECUTION_ENABLED:-true}
       CODE_EXECUTION_MAX_CONCURRENT: ${CODE_EXECUTION_MAX_CONCURRENT:-4}
+      # Defaults to true so an existing deployment keeps booting correctly.
+      # Set false once migrations run as an explicit, backed-up deploy step --
+      # see backend/entrypoint.sh for why that matters for rollback.
+      RUN_MIGRATIONS_ON_START: ${RUN_MIGRATIONS_ON_START:-true}
+      FACE_MATCHING_ENABLED: ${FACE_MATCHING_ENABLED:-true}
+      OBJECT_DETECTION_ENABLED: ${OBJECT_DETECTION_ENABLED:-true}
+      POSE_DETECTION_ENABLED: ${POSE_DETECTION_ENABLED:-true}
       AUTO_SEED_ADMIN: ${AUTO_SEED_ADMIN:-true}
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@merit.ai}
+      # Intentionally has NO default. Unset in production means "create no
+      # admin", which is the safe outcome -- see backend/app/utils/seed.py.
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-}
+      # Outbound email. Every value is optional -- with EMAIL_ENABLED unset the
+      # app runs exactly as it did before email existed, so this whole block is
+      # safe to leave at its defaults. See .env.example for the Gmail App
+      # Password walkthrough.
+      EMAIL_ENABLED: ${EMAIL_ENABLED:-false}
+      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+      EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-Merit.Ai}
+      ADMIN_NOTIFICATION_EMAIL: ${ADMIN_NOTIFICATION_EMAIL:-}
+      # Defaults to the first configured CORS origin: in the bundled
+      # single-origin setup the address a browser loads the app from is exactly
+      # the address an email link should point at.
+      APP_BASE_URL: ${APP_BASE_URL:-${CORS_ORIGINS:-http://localhost}}
+      BIOMETRIC_CONSENT_VERSION: ${BIOMETRIC_CONSENT_VERSION:-2026-08-04.v1}
+      # 0 = never auto-delete. Deliberate default -- see .env.example.
+      BIOMETRIC_RETENTION_DAYS: ${BIOMETRIC_RETENTION_DAYS:-0}
+      BIOMETRIC_PURGE_INTERVAL_HOURS: ${BIOMETRIC_PURGE_INTERVAL_HOURS:-24}
+      OTP_LENGTH: ${OTP_LENGTH:-6}
+      OTP_TTL_MINUTES: ${OTP_TTL_MINUTES:-10}
+      OTP_MAX_ATTEMPTS: ${OTP_MAX_ATTEMPTS:-5}
+      OTP_RESEND_COOLDOWN_SECONDS: ${OTP_RESEND_COOLDOWN_SECONDS:-60}
+      EXAM_REMINDER_ENABLED: ${EXAM_REMINDER_ENABLED:-true}
+      EXAM_REMINDER_MINUTES_BEFORE: ${EXAM_REMINDER_MINUTES_BEFORE:-5}
+      EXAM_REMINDER_POLL_SECONDS: ${EXAM_REMINDER_POLL_SECONDS:-60}
     volumes:
       - uploads:/app/uploads
       - core_models:/app/models
@@ -160,13 +199,25 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
-    # Published directly (in addition to being reachable via the proxy at
-    # /api/*) purely for local development convenience -- hitting
-    # http://localhost:8000/docs for the interactive Swagger UI without
-    # going through the proxy. Comment this out for a stricter production
-    # posture; the proxy path works identically either way.
-    ports:
-      - "8000:8000"
+    # NOT published to the host. The reverse proxy is the one and only door in,
+    # which is the whole point of having it -- and what deploy/nginx/nginx.conf's
+    # own header comment already claimed was true.
+    #
+    # This used to map 8000:8000 "for local development convenience". Two
+    # problems with that on a stack whose shipped .env sets
+    # ENVIRONMENT=production: it exposed every endpoint directly, bypassing the
+    # proxy, and with it the proxy's `client_max_body_size 12m` -- currently the
+    # only real ceiling on the multi-megabyte image payloads the proctoring
+    # endpoints accept.
+    #
+    # To get the direct port back for local work, override it without editing
+    # this file:
+    #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+    # or temporarily uncomment:
+    #   ports:
+    #     - "127.0.0.1:8000:8000"   # loopback only, never 0.0.0.0
+    expose:
+      - "8000"
 
   # ----------------------------------------------------------------------------
   frontend:

@@ -54,6 +54,15 @@ backend/.mpl-cache/
 *.dump
 *.sql
 
+# Vendored third-party runtime assets -- generated, not authored.
+#
+# frontend/public/mediapipe/wasm/ is copied out of node_modules by
+# `npm run vendor:mediapipe` (wired into npm run build/dev, so it cannot be
+# forgotten), and face_landmarker.task is downloaded by `npm run fetch:model`.
+# Both are large reproducible binaries: same reasoning as the backend's
+# models/ weights cache above.
+frontend/public/mediapipe/
+
 # Node/frontend dependencies and build output
 node_modules/
 dist/

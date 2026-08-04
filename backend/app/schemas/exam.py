@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, EmailStr, Field, model_validator
 
 # A start/end time within this window of "now" is treated as "now" rather
 # than rejected -- a form submitted the instant a user clicks "now" would
@@ -49,6 +49,10 @@ class ExamCreate(BaseModel):
     proctoring_enabled: bool = True
     start_time: datetime | None = None
     end_time: datetime | None = None
+    # Optional address told when this exam is published and again shortly
+    # before it starts. Validated as an email so a typo is a 422 at creation
+    # rather than a silent non-delivery hours later.
+    notify_email: EmailStr | None = None
 
     @model_validator(mode="after")
     def validate_window(self):
@@ -79,6 +83,7 @@ class ExamDetailsUpdate(BaseModel):
     randomize_questions: bool = True
     randomize_options: bool = True
     proctoring_enabled: bool = True
+    notify_email: EmailStr | None = None
 
 
 class ExamScheduleUpdate(BaseModel):
@@ -111,6 +116,7 @@ class ExamOut(BaseModel):
     proctoring_enabled: bool
     start_time: datetime | None
     end_time: datetime | None
+    notify_email: str | None = None
 
     class Config:
         from_attributes = True

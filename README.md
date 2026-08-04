@@ -75,8 +75,8 @@ proctored exam-taking interface at `/exam/:examId` — timer, question
 navigator, MCQ + CodeMirror coding questions with sandboxed "Run Sample",
 autosave with retry/backoff, mark-for-review, submit, and live AI proctoring
 (face/object/pose/gaze checks, tab-switch and fullscreen-exit detection, mic
-noise detection) — and a standalone `/results/:attemptId` page with
-report/certificate PDF downloads. See `frontend/README.md` for the full
+noise detection) — and a standalone `/results/:attemptId` page with a
+result-report PDF download. See `frontend/README.md` for the full
 structure breakdown.
 
 ---
@@ -114,7 +114,7 @@ one monolith:
 |---|---|---|
 | `proxy` | nginx reverse proxy | The host — this is the **only** published port |
 | `frontend` | The React app, built and served as static files | `proxy` only |
-| `core-api` | Auth, exams, attempts, organizations, admin, analytics, proctoring orchestration, sandboxed code execution | `proxy`, and published on `:8000` for local API/Swagger access |
+| `core-api` | Auth, exams, attempts, organizations, admin, analytics, proctoring orchestration, sandboxed code execution | `proxy` only — no longer published to the host, so the proxy is the single entry point |
 | `ai-worker` | Dedicated face-identity + object-detection inference | `core-api` only — never published |
 | `postgres` | The one shared database | `core-api` only |
 
@@ -241,7 +241,9 @@ Two notes worth knowing:
   a random fork is a bad trade for something that decides whether a student is
   cheating — so `fetch_models` tells you where to put one instead of guessing.
   Until then the built-in classical detector runs (texture, colour, glare, and
-  an FFT screen-moiré cue). Use `python tools/liveness_probe.py real*.jpg
+  an FFT screen-moiré cue). Tune it by adjusting the thresholds in `app/ai/anti_spoof.py` directly against
+your own captures. (An earlier `tools/liveness_probe.py` helper is referenced in
+older notes but is not present in this repository.) Use `python -` with real*.jpg
   --spoof fake*.jpg` to check and tune it against your own cameras.
 
 **Note on AI dependencies:** Face *identity* matching needs a real face-recognition
@@ -369,7 +371,7 @@ mean one database leak exposes every account.
 |---|---|
 | Face detection / count | MediaPipe face detector on each submitted frame (presence/count only, not identity) |
 | Face matching | ArcFace (`insightface`), via the AI worker when `AI_SERVICE_URL` is set, else the same model in-process. One 512-d embedding format and one cosine-distance threshold on both paths - MediaPipe Face Mesh is never used for identity |
-| Liveness / anti-spoofing | Trained ONNX classifier when one is installed; otherwise a built-in detector combining face-region texture, colour spread, glare, and an FFT screen-moiré cue (`app/ai/anti_spoof.py` — the AI worker imports this same module directly rather than a copy, same as face/object detection). Runs before a face is matched. Tune with `tools/liveness_probe.py` |
+| Liveness / anti-spoofing | Trained ONNX classifier when one is installed; otherwise a built-in detector combining face-region texture, colour spread, glare, and an FFT screen-moiré cue (`app/ai/anti_spoof.py` — the AI worker imports this same module directly rather than a copy, same as face/object detection). Runs before a face is matched. Thresholds are tuned in `app/ai/anti_spoof.py` |
 | Multiple faces | Same MediaPipe detection pass, flagged when `> 1` |
 | Phone / book / multiple people | YOLO11s (`POST /proctoring/objects/detect`) - runs **in-process** via `onnxruntime` (`app/ai/object_service.py`), or through the AI worker when `AI_SERVICE_URL` is set. Per-class confidence floors: phone 0.35, person 0.45, book 0.55. Reports itself unavailable and stops polling if the weights were never fetched |
 | Head pose ("looking away") | Local, no AI worker needed: MediaPipe Face Mesh landmarks + OpenCV `solvePnP` against a generic 3D face model (`app/ai/pose_service.py`), flagged on sustained yaw/pitch beyond threshold (`POST /proctoring/pose/check`) |
@@ -440,14 +442,17 @@ submitted:
 - `GET /api/v1/attempts/{attempt_id}/result/pdf` — a one-page result report
   (score, percentage, correct/incorrect/unattempted breakdown, proctoring
   violation count).
-- `GET /api/v1/attempts/{attempt_id}/certificate/pdf` — a landscape
-  completion certificate (404s if the attempt hasn't been submitted yet).
+> **Not implemented yet:** a completion certificate
+> (`/attempts/{id}/certificate/pdf`). This README previously documented that
+> endpoint as if it existed — it does not, in the API or the frontend. Verifiable
+> certificates (unique number, QR code, public verification endpoint, revocation
+> status) are a planned feature, not a shipped one.
 
-Both are generated on-the-fly with `reportlab` (`app/services/pdf_service.py`)
+The report is generated on-the-fly with `reportlab` (`app/services/pdf_service.py`)
 — pure Python, no compiled toolchain — and streamed back as
 `application/pdf` with no temp files written to
 disk. The frontend's Results page (`frontend/src/pages/Results.jsx`) adds
-"Report" and "Certificate" download buttons, fetched with the auth token via
+a "Report" download button, fetched with the auth token via
 `Api.downloadFile()` (a plain `<a href>` won't work here since the endpoint
 requires a Bearer token) and saved through a temporary object URL.
 

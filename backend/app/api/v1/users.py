@@ -2,21 +2,26 @@
 User management endpoints.
 
 Access model:
-  * student  -- own profile only (view, edit while unlocked, change password)
-  * examiner -- read-only student directory, plus own profile (password is
-                admin-managed only; examiners cannot change their own)
-  * admin    -- full management of both students and examiners
+  * student  -- own profile only (view, edit while unlocked). Password is
+                administrator-managed: a candidate account is an institutional
+                identity, so they cannot change it here -- but a forgotten one
+                is still self-recoverable by emailed code (/forgot-password).
+  * examiner -- read-only student directory, plus own profile and own password
+  * admin    -- full management of both students and examiners, including
+                disable, delete, password reset and the activity trail
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.database.session import get_db
-from app.api.deps import get_current_user, require_admin, require_admin_or_examiner
-from app.repositories import user_repository
+from app.api.deps import get_current_user, require_admin, require_admin_or_examiner, require_student
+from app.repositories import proctor_repository, user_repository
 from app.schemas.auth import AdminResetPasswordRequest, ChangePasswordRequest, UpdateProfileRequest
 from app.schemas.user import UserOut, StudentOut, StudentProfileOut, ExaminerOut
 from app.models.enums import RoleName
-from app.services import auth_service, identity_service, organization_service
+from app.models.activity_log import ActivityType
+from app.services import (activity_service, auth_service, biometric_service,
+                          identity_service, organization_service)
 from app.models.user import User
 
 router = APIRouter(prefix="/users", tags=["Users"])
@@ -52,6 +57,58 @@ def get_me(db: Session = Depends(get_db), user: User = Depends(get_current_user)
     return _me_payload(db, user)
 
 
+@router.get("/me/biometrics")
+def my_biometric_status(db: Session = Depends(get_db), user: User = Depends(require_student)):
+    """What biometric data is held about the caller, and under which consent.
+
+    Deliberately available to the student rather than admins only: a person is
+    entitled to know what is stored about them, and a UI cannot offer a
+    meaningful "delete my data" button without first being able to say what
+    there is to delete.
+    """
+    student = user.student_profile
+    if not student:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No student profile.")
+    return biometric_service.consent_status(db, student)
+
+
+@router.delete("/me/biometrics")
+def erase_my_biometrics(db: Session = Depends(get_db), user: User = Depends(require_student)):
+    """Erase the caller's own face embedding, face photo and ID-card image.
+
+    Scores, attempts and proctoring history are untouched -- those are
+    assessment records, not biometric data, and a deletion request over one
+    must not quietly destroy the other. What this does mean is that the student
+    must register their face again before sitting another proctored exam, which
+    the response says plainly.
+    """
+    student = user.student_profile
+    if not student:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No student profile.")
+    removed = biometric_service.erase_student_biometrics(db, student, reason="student_request")
+    activity_service.record(db, activity_type=ActivityType.BIOMETRICS_ERASED, subject=user,
+                            description="Erased their own face and ID data")
+    return {
+        "erased": removed,
+        "message": ("Your face and ID-card data have been deleted. Your exam results and history are "
+                    "unaffected. You'll need to register your face again before your next proctored exam."),
+    }
+
+
+@router.delete("/{user_id}/biometrics")
+def erase_student_biometrics(user_id: int, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    """Admin-initiated erasure, for acting on a deletion request out-of-band."""
+    target = user_repository.get_user_by_id(db, user_id)
+    if not target or not target.student_profile:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No student found for that user id.")
+    removed = biometric_service.erase_student_biometrics(
+        db, target.student_profile, reason=f"admin:{admin.id}",
+    )
+    activity_service.record(db, activity_type=ActivityType.BIOMETRICS_ERASED,
+                            subject=target, actor=admin)
+    return {"erased": removed, "student_id": target.student_profile.id}
+
+
 @router.patch("/me", response_model=StudentProfileOut | UserOut)
 def update_me(payload: UpdateProfileRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Name/email edit. Returns 403 for a student whose identity is locked --
@@ -61,20 +118,31 @@ def update_me(payload: UpdateProfileRequest, db: Session = Depends(get_db), user
 
 
 @router.post("/me/password", status_code=200)
-def change_my_password(payload: ChangePasswordRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """Available to students and admins -- a password is a credential, not an
-    identity claim, so it stays available even to identity-locked students.
+def change_my_password(payload: ChangePasswordRequest, request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Admins and examiners. NOT students.
 
-    Examiners are the one exception: their credentials are issued and rotated
-    by an admin only (see auth_service.admin_reset_password), so this route
-    is deliberately blocked for that role rather than merely hidden in the
-    UI -- the UI omission alone would not stop a direct API call.
+    Students are the one role whose credentials stay administrator-managed: on
+    an examination platform a candidate account is an institutional identity
+    issued for a sitting, and the administrator holds it. Examiners are staff
+    running the platform, so they manage their own.
+
+    Blocked here rather than merely hidden in the UI -- removing the form would
+    stop the button but not a direct API call, and this is the endpoint that
+    actually changes the credential.
+
+    NOT a lockout for students: a forgotten password is still self-recoverable
+    through the emailed one-time code at POST /auth/password-reset/request,
+    which proves control of the mailbox on file rather than knowledge of the old
+    password. The goal is central administration, not making a locked-out
+    candidate find an administrator before an exam.
     """
-    if user.role.name == RoleName.EXAMINER.value:
+    if user.role.name == RoleName.STUDENT.value:
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
-            "Examiners cannot change their own password. Contact an administrator to reset it.")
+            "Passwords are managed by your administrator. If you've forgotten yours, "
+            "use the 'Forgot password' link to get a reset code by email.")
     auth_service.change_password(db, user, payload.current_password, payload.new_password)
+    activity_service.record(db, activity_type=ActivityType.PASSWORD_CHANGED, subject=user, request=request)
     return {"changed": True, "message": "Password updated successfully."}
 
 
@@ -94,9 +162,12 @@ def list_students(db: Session = Depends(get_db), user: User = Depends(require_ad
     else:
         students = user_repository.list_students(db)
 
+    # One face-profile query for the whole directory rather than one per
+    # student -- see proctor_repository.students_with_face_profiles.
+    face_ids = proctor_repository.students_with_face_profiles(db, [s.id for s in students])
     out = []
     for s in students:
-        state = identity_service.verification_state(db, s)
+        state = identity_service.verification_state(db, s, face_registered_ids=face_ids)
         out.append(StudentOut(
             id=s.id, user_id=s.user_id, full_name=s.user.full_name,
             first_name=s.user.first_name or "", last_name=s.user.last_name or "",
@@ -133,29 +204,76 @@ def _load_managed_user(db: Session, user_id: int, admin: User) -> User:
 
 
 @router.post("/{user_id}/deactivate", response_model=UserOut)
-def deactivate_user(user_id: int, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+def deactivate_user(user_id: int, request: Request, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
     target = _load_managed_user(db, user_id, admin)
     auth_service.set_active(db, target, False)
+    activity_service.record(db, activity_type=ActivityType.ACCOUNT_DISABLED,
+                            subject=target, actor=admin, request=request)
     return UserOut(**_base_user_fields(target))
 
 
 @router.post("/{user_id}/activate", response_model=UserOut)
-def activate_user(user_id: int, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+def activate_user(user_id: int, request: Request, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
     target = _load_managed_user(db, user_id, admin)
     auth_service.set_active(db, target, True)
+    activity_service.record(db, activity_type=ActivityType.ACCOUNT_ENABLED,
+                            subject=target, actor=admin, request=request)
     return UserOut(**_base_user_fields(target))
 
 
+@router.delete("/{user_id}", status_code=200)
+def delete_user(user_id: int, request: Request, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    """Permanently delete a student or examiner account.
+
+    Destructive and irreversible: the schema cascades from users into the
+    student/examiner profile, face profile, attempts, answers, results and
+    proctoring events. That is the point of a delete rather than a disable --
+    but it also means an exam's history disappears with the candidate, so the
+    UI is expected to steer toward `deactivate` for anything short of a genuine
+    erasure request.
+
+    The activity entry is written BEFORE the delete, and activity_logs' user FKs
+    are ON DELETE SET NULL rather than CASCADE -- so the record that this
+    account existed and was deleted survives the account itself, along with the
+    email and the administrator responsible.
+    """
+    target = _load_managed_user(db, user_id, admin)
+    activity_service.record(
+        db, activity_type=ActivityType.ACCOUNT_DELETED, subject=target, actor=admin, request=request,
+        description=f"Account deleted by {admin.email}",
+        context={"role": target.role.name, "email": target.email},
+    )
+    summary = {"deleted": True, "user_id": target.id, "email": target.email, "role": target.role.name}
+    db.delete(target)
+    db.commit()
+    return summary
+
+
 @router.post("/{user_id}/reset-password", status_code=200)
-def reset_user_password(user_id: int, payload: AdminResetPasswordRequest,
+def reset_user_password(user_id: int, payload: AdminResetPasswordRequest, request: Request,
                         db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    """Set a new password for a managed account.
+
+    The plaintext is echoed back ONCE, in this response only, so the admin can
+    pass it to the person -- the same one-time-reveal pattern the examiner
+    credential handoff already uses. It is never stored recoverably (the column
+    holds a bcrypt hash) and never written to the activity log.
+    """
     target = _load_managed_user(db, user_id, admin)
     auth_service.admin_reset_password(db, target, payload.new_password)
-    return {"changed": True, "message": f"Password reset for {target.email}."}
+    activity_service.record(db, activity_type=ActivityType.PASSWORD_RESET_BY_ADMIN,
+                            subject=target, actor=admin, request=request)
+    return {
+        "changed": True,
+        "message": f"Password reset for {target.email}.",
+        "email": target.email,
+        # Shown once, then gone. See the docstring.
+        "password": payload.new_password,
+    }
 
 
 @router.post("/students/{student_id}/unlock-identity", status_code=200)
-def unlock_student_identity(student_id: int, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+def unlock_student_identity(student_id: int, request: Request, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
     """Admin escape hatch: clears the identity lock and the ID-verification
     flag so a student can redo verification after a legitimate name change or
     a bad initial capture. The stored face profile is left intact -- deleting
@@ -173,4 +291,6 @@ def unlock_student_identity(student_id: int, db: Session = Depends(get_db), _: U
     except Exception:
         db.rollback()
         raise
+    activity_service.record(db, activity_type=ActivityType.IDENTITY_UNLOCKED,
+                            subject=student.user, actor=admin, request=request)
     return {"unlocked": True, "message": "Identity unlocked. The student must verify their ID card again."}

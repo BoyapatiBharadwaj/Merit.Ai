@@ -12,11 +12,13 @@ from app.models.question import Question, Option
 from app.models.attempt import StudentExamAttempt, StudentAnswer, ExamResult, AttemptReset
 from app.models.proctor_event import ProctorEvent
 from app.models.access_request import AccessRequest
+from app.models.otp import OtpCode, OtpPurpose
+from app.models.activity_log import ActivityLog, ActivityType
 
 __all__ = [
     "User", "Role", "Student", "Examiner", "FaceProfile",
     "Organization", "OrganizationMember", "ExamParticipant",
     "Exam", "Section", "Question", "Option",
     "StudentExamAttempt", "StudentAnswer", "ExamResult", "AttemptReset", "ProctorEvent",
-    "AccessRequest",
+    "AccessRequest", "OtpCode", "OtpPurpose", "ActivityLog", "ActivityType",
 ]

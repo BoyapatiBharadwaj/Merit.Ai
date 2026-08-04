@@ -21,4 +21,23 @@ class FaceProfile(Base):
     encoding = Column(Text, nullable=False)
     registered_at = Column(DateTime(timezone=True), server_default=func.now())
 
+    # Consent recorded at capture time.
+    #
+    # Stored per profile rather than as a single flag on the student, because
+    # consent is only meaningful against the wording that was actually shown:
+    # if BIOMETRIC_CONSENT_VERSION changes, previously-captured profiles are
+    # correctly identifiable as consented-to-something-else rather than
+    # silently inheriting agreement to new terms.
+    consent_version = Column(String(50), nullable=True)
+    consented_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Set when the embedding and image are erased (see biometric_service).
+    # The row itself is KEPT: an attempt's proctoring report references this
+    # profile, and deleting it outright would cascade away assessment history
+    # that has to survive a data-deletion request. What is erased is the
+    # biometric payload -- the embedding and the image on disk -- leaving an
+    # auditable record that the deletion happened and when.
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+    deletion_reason = Column(String(100), nullable=True)
+
     student = relationship("Student", back_populates="face_profile")

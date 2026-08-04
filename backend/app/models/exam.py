@@ -48,6 +48,21 @@ class Exam(Base):
     proctoring_enabled = Column(Boolean, default=True, nullable=False)
     start_time = Column(DateTime(timezone=True), nullable=True)
     end_time = Column(DateTime(timezone=True), nullable=True)
+
+    # Address the examiner nominates to be told about this exam: once when it
+    # is published, and again shortly before it starts. Free-form and optional
+    # rather than a foreign key to users, because the useful recipient is
+    # usually not a Merit.Ai account -- a department mailing list, an invigilator
+    # rota, the examiner's own work address.
+    notify_email = Column(String(150), nullable=True)
+    # Stamped by reminder_service the moment the pre-exam reminder is sent.
+    #
+    # This is what makes the reminder exactly-once rather than every-poll. The
+    # scheduler looks for exams inside a time window and runs on a short
+    # interval, so without a durable marker the same exam matches on every pass
+    # and the recipient gets a reminder a minute until the exam starts. Stored
+    # on the row rather than in memory so a restart mid-window doesn't resend.
+    reminder_sent_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     examiner = relationship("Examiner", back_populates="exams")

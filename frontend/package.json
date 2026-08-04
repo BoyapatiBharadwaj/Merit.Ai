@@ -4,11 +4,17 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
+    "dev": "npm run vendor:mediapipe && vite",
+    "build": "npm run vendor:mediapipe && vite build",
+    "preview": "vite preview",
+    "vendor:mediapipe": "node scripts/vendor-mediapipe.mjs",
+    "fetch:model": "node scripts/fetch-face-model.mjs"
   },
   "dependencies": {
+    "@fontsource/inter": "5.0.20",
+    "@mediapipe/tasks-vision": "0.10.14",
+    "chart.js": "4.4.4",
+    "codemirror": "5.65.16",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "react-router-dom": "6.26.2"

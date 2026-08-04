@@ -34,6 +34,32 @@ def list_events_for_attempt(db: Session, attempt_id: int) -> list[ProctorEvent]:
     return db.query(ProctorEvent).filter(ProctorEvent.attempt_id == attempt_id).order_by(ProctorEvent.created_at).all()
 
 
+def events_for_attempts(db: Session, attempt_ids: list[int]) -> dict[int, list[ProctorEvent]]:
+    """Every event for these attempts, grouped by attempt id, in ONE query.
+
+    The admin candidate lists call `list_events_for_attempt` per row to compute
+    a risk tier, which is one query per candidate -- and proctor_events is the
+    fastest-growing table in the schema, so it is the most expensive query to
+    repeat. Batching matters more here than for results.
+
+    Returns a dict keyed by attempt id, with events in the same created_at order
+    the per-attempt function returns, so `risk_score_and_tier` behaves
+    identically whichever loader the caller used.
+    """
+    if not attempt_ids:
+        return {}
+    rows = (
+        db.query(ProctorEvent)
+        .filter(ProctorEvent.attempt_id.in_(attempt_ids))
+        .order_by(ProctorEvent.created_at)
+        .all()
+    )
+    grouped: dict[int, list[ProctorEvent]] = {}
+    for row in rows:
+        grouped.setdefault(row.attempt_id, []).append(row)
+    return grouped
+
+
 def list_events_for_exam(db: Session, exam_id: int) -> list[ProctorEvent]:
     from app.models.attempt import StudentExamAttempt
     return (
@@ -59,6 +85,28 @@ def list_events_by_types(db: Session, attempt_id: int, event_types: list[str]) -
 
 def get_face_profile(db: Session, student_id: int) -> FaceProfile | None:
     return db.query(FaceProfile).filter(FaceProfile.student_id == student_id).first()
+
+
+def students_with_face_profiles(db: Session, student_ids: list[int]) -> set[int]:
+    """Which of these students have a face profile, in ONE query.
+
+    `identity_service.verification_state` is called per row by every admin and
+    examiner candidate list, and its only database access is this lookup -- so
+    without batching, listing a cohort costs one query per candidate purely to
+    render a "Verified / Pending" label.
+
+    Returns ids rather than rows: every caller only asks whether a profile
+    exists, so fetching the 512-d embedding text for each one would be wasted
+    bytes on top of wasted queries.
+    """
+    if not student_ids:
+        return set()
+    rows = (
+        db.query(FaceProfile.student_id)
+        .filter(FaceProfile.student_id.in_(student_ids))
+        .all()
+    )
+    return {student_id for (student_id,) in rows}
 
 
 def save_face_profile(db: Session, student_id: int, image_path: str, encoding_json: str) -> FaceProfile:

@@ -14,25 +14,20 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Merit.Ai — Conduct, monitor, and evaluate AI-proctored online exams with real-time monitoring, sandboxed coding assessments, and role-based dashboards for institutions, examiners, and candidates." />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
     <title>Merit.Ai — Conduct. Monitor. Evaluate.</title>
   </head>
   <body>
     <div id="root"></div>
-    <!-- Chart.js for the admin dashboard's charts, loaded globally (window.Chart)
-         instead of an npm dependency -- consistent with how the legacy frontend
-         used it, and avoids pulling a charting lib into every route's bundle. -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
-    <!-- CodeMirror 5 for the exam interface's coding questions -- same CDN
-         build the legacy frontend/exam.html used, loaded globally
-         (window.CodeMirror) rather than an npm dependency. -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css" />
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/dracula.min.css" />
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/javascript/javascript.min.js"></script>
+    <!-- No third-party <script> or <link> tags here, deliberately.
+         Chart.js, CodeMirror (+ its dracula theme and python/javascript modes),
+         the Inter font and MediaPipe Tasks Vision were all loaded from cdnjs,
+         Google Fonts and jsdelivr with no Subresource Integrity behind them.
+         This page grants camera, microphone and screen-share permissions and
+         holds the user's token, so a compromise of any of those origins meant
+         arbitrary code in the most privileged context the product has.
+         Everything is now bundled from node_modules -- see src/lib/vendor.js
+         and src/lib/faceMesh.js -- fingerprinted by Vite, served same-origin,
+         and covered by the Content-Security-Policy in frontend/nginx.conf. -->
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

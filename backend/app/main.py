@@ -3,6 +3,7 @@ import logging
 import os
 import time
 import uuid
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -34,7 +35,58 @@ if not settings.cors_origins:
         "Set CORS_ORIGINS in the environment to a comma-separated list of trusted frontend origins."
     )
 
-app = FastAPI(title="AI Exam Proctor API", description="Online examination system with basic AI proctoring.", version="1.0.0")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Start and stop background workers around the app's serving lifetime.
+
+    A lifespan context rather than the older on_event pair: on_event is
+    deprecated in this FastAPI version, and more usefully, startup and shutdown
+    for one subsystem live next to each other here instead of in two handlers
+    that can drift apart.
+
+    Both halves are guarded. A scheduler that cannot start must not stop the API
+    from serving -- exams still run and candidates still sit them, only the
+    courtesy reminder is lost -- and an error while stopping must not turn a
+    clean shutdown into a hung container.
+    """
+    from app.services import reminder_service
+
+    try:
+        reminder_service.start()
+    except Exception:
+        logger.exception("Could not start the exam reminder scheduler; the API will run without it")
+
+    yield
+
+    try:
+        await reminder_service.stop()
+    except Exception:
+        logger.exception("Error while stopping the exam reminder scheduler")
+
+
+# Interactive docs are development-only.
+#
+# FastAPI serves /docs, /redoc and /openapi.json unauthenticated by default, and
+# the OpenAPI schema is a complete map of all 90-odd endpoints: every path,
+# parameter, request shape and role requirement. That is a genuinely useful
+# artefact while building and a free reconnaissance document in production --
+# particularly next to an unauthenticated public form (access requests) and the
+# student self-registration endpoint.
+#
+# Serving None for all three is what actually removes the routes; setting only
+# docs_url would leave the schema itself readable at /openapi.json, which is the
+# part worth having anyway.
+_docs_urls = (
+    {"docs_url": None, "redoc_url": None, "openapi_url": None}
+    if settings.is_production
+    else {"docs_url": "/docs", "redoc_url": "/redoc", "openapi_url": "/openapi.json"}
+)
+
+app = FastAPI(title="AI Exam Proctor API", description="Online examination system with basic AI proctoring.",
+              version="1.0.0", lifespan=lifespan, **_docs_urls)
+
+if settings.is_production:
+    logger.info("Interactive API docs are disabled (ENVIRONMENT=production).")
 
 # Restricted to the explicit, trusted frontend origins configured via CORS_ORIGINS.
 # Wildcards are stripped out in Settings.cors_origins, so this can never silently

@@ -57,23 +57,38 @@ def rate_limit(bucket: str, max_requests: int | None = None, window_seconds: int
     window = window_seconds if window_seconds is not None else settings.AUTH_RATE_LIMIT_WINDOW_SECONDS
 
     def _checker(request: Request) -> None:
-        key = (bucket, _client_ip(request))
-        now = time.monotonic()
-        with _lock:
-            timestamps = _buckets[key]
-            cutoff = now - window
-            while timestamps and timestamps[0] < cutoff:
-                timestamps.popleft()
-            if len(timestamps) >= limit:
-                retry_after = max(1, int(window - (now - timestamps[0])))
-                raise HTTPException(
-                    status.HTTP_429_TOO_MANY_REQUESTS,
-                    "Too many attempts. Please wait a moment before trying again.",
-                    headers={"Retry-After": str(retry_after)},
-                )
-            timestamps.append(now)
+        consume(bucket, _client_ip(request), limit=limit, window=window)
 
     return _checker
+
+
+def consume(bucket: str, identity: str, *, limit: int, window: int,
+            message: str = "Too many attempts. Please wait a moment before trying again.") -> None:
+    """Count one request against (bucket, identity) and raise 429 if over budget.
+
+    Split out of `rate_limit` so the same fixed-window counter can be keyed on
+    something other than a source IP. The authenticated proctoring endpoints key
+    on user id instead (see app/api/deps.py::rate_limit_user): an IP is the only
+    identity available before login, but once a request carries a token the user
+    is both the more precise key and the harder one to rotate -- and keying those
+    endpoints by IP would throttle an entire exam hall behind one NAT as though
+    it were a single abuser.
+    """
+    key = (bucket, identity)
+    now = time.monotonic()
+    with _lock:
+        timestamps = _buckets[key]
+        cutoff = now - window
+        while timestamps and timestamps[0] < cutoff:
+            timestamps.popleft()
+        if len(timestamps) >= limit:
+            retry_after = max(1, int(window - (now - timestamps[0])))
+            raise HTTPException(
+                status.HTTP_429_TOO_MANY_REQUESTS,
+                message,
+                headers={"Retry-After": str(retry_after)},
+            )
+        timestamps.append(now)
 
 
 def _reset_all() -> None:

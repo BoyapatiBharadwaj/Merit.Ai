@@ -12,12 +12,29 @@ class StartAttemptResponse(BaseModel):
     question_ids_in_order: list[int]
 
 
-class SaveAnswerRequest(BaseModel):
+class _AutosaveEnvelope(BaseModel):
+    """Optimistic-concurrency fields shared by every autosave request.
+
+    Both are OPTIONAL. A client that omits them gets the old last-write-wins
+    behaviour, which is what keeps a candidate already mid-exam on a cached
+    bundle working through a server upgrade -- see
+    attempt_repository._should_apply.
+
+    `answer_version` is a per-question counter the CLIENT increments on every
+    local change; the server refuses anything older than what it holds.
+    `idempotency_key` makes a retry of a request that already landed a no-op
+    rather than a second write.
+    """
+    answer_version: int | None = Field(default=None, ge=0)
+    idempotency_key: str | None = Field(default=None, max_length=64)
+
+
+class SaveAnswerRequest(_AutosaveEnvelope):
     question_id: int
     selected_option_id: int | None = None
 
 
-class SaveMultiAnswerRequest(BaseModel):
+class SaveMultiAnswerRequest(_AutosaveEnvelope):
     question_id: int
     selected_option_ids: list[int] = []
 
@@ -36,7 +53,7 @@ class ResetAttemptRequest(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
 
 
-class CodeAnswerRequest(BaseModel):
+class CodeAnswerRequest(_AutosaveEnvelope):
     question_id: int
     source_code: str = ""
 
@@ -66,16 +83,6 @@ class ExamResultOut(BaseModel):
     class Config:
         from_attributes = True
 
-
-class AttemptSummaryOut(BaseModel):
-    attempt_id: int
-    student_name: str
-    exam_title: str
-    status: str
-    started_at: datetime
-    submitted_at: datetime | None
-    scored_marks: int | None = None
-    total_marks: int | None = None
 
 
 class QuestionReportOut(BaseModel):

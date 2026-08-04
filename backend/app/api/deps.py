@@ -6,6 +6,8 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
+from app.core import rate_limit
+from app.core.config import settings
 from app.database.session import get_db
 from app.core.security import decode_access_token
 from app.repositories import user_repository
@@ -44,6 +46,32 @@ def require_role(*allowed_roles: str):
         if user.role.name not in allowed_roles:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to this resource.")
         return user
+    return _checker
+
+
+def rate_limit_user(bucket: str, max_requests: int | None = None, window_seconds: int | None = None):
+    """Per-user rate limit for authenticated endpoints.
+
+    Lives here rather than in app/core/rate_limit.py because it needs
+    `get_current_user`, and core must not import from the api layer. The
+    counting itself is core's `consume` -- this only supplies a different key.
+
+    `bucket` namespaces the counter per endpoint, so a student polling
+    /objects/detect during an exam cannot exhaust the budget that
+    /face/verify needs a moment later. Sharing one bucket across all four
+    proctoring endpoints would mean their individually-safe polling rates add
+    up to a limit none of them alone would ever hit.
+    """
+    limit = max_requests if max_requests is not None else settings.AI_RATE_LIMIT_MAX_REQUESTS
+    window = window_seconds if window_seconds is not None else settings.AI_RATE_LIMIT_WINDOW_SECONDS
+
+    def _checker(user: User = Depends(get_current_user)) -> None:
+        rate_limit.consume(
+            bucket, str(user.id), limit=limit, window=window,
+            message=("You're sending proctoring checks faster than expected. "
+                     "Pause for a moment -- your exam is not affected."),
+        )
+
     return _checker
 
 

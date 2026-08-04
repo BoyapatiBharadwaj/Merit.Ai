@@ -1,12 +1,12 @@
 """AI proctoring endpoints."""
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, require_admin, require_student
+from app.api.deps import get_current_user, rate_limit_user, require_admin, require_student
 from app.database.session import get_db
 from app.models.enums import RoleName
 from app.models.user import User
@@ -16,7 +16,9 @@ from app.schemas.proctor import (
     FaceMatchResponse, IDCardVerifyResponse, ObjectDetectionResponse,
     PoseCheckResponse, ProctorEventBatchCreate, ProctorEventCreate, ProctorEventOut,
 )
-from app.services import admin_service, identity_service, lockdown_service, organization_service, proctor_service
+from app.models.activity_log import ActivityType
+from app.services import (activity_service, admin_service, identity_service, lockdown_service,
+                          organization_service, proctor_service)
 
 router = APIRouter(prefix="/proctoring", tags=["AI Proctoring"])
 
@@ -33,8 +35,8 @@ def _can_view_attempt(user: User, attempt) -> bool:
     return bool(user.examiner_profile and user.examiner_profile.id == attempt.exam.examiner_id)
 
 
-@router.post("/face/register")
-def register_face(payload: ImagePayload, db: Session = Depends(get_db), user: User = Depends(require_student)):
+@router.post("/face/register", dependencies=[Depends(rate_limit_user("ai_face_register"))])
+def register_face(payload: ImagePayload, request: Request, db: Session = Depends(get_db), user: User = Depends(require_student)):
     student = user_repository.get_student_by_user_id(db, user.id)
     if student.identity_locked:
         raise HTTPException(
@@ -42,23 +44,38 @@ def register_face(payload: ImagePayload, db: Session = Depends(get_db), user: Us
             "Your identity is already verified and locked. Contact an administrator to re-register your face.",
         )
     _, message = proctor_service.register_face(db, student.id, payload.image_base64)
+    was_locked = bool(student.identity_locked)
     identity_service.record_face_registration(db, student)
+    activity_service.record(db, activity_type=ActivityType.FACE_REGISTERED, subject=user, request=request)
+    if student.identity_locked and not was_locked:
+        activity_service.record(db, activity_type=ActivityType.IDENTITY_LOCKED, subject=user, request=request)
     return {"registered": True, "message": message, **identity_service.verification_state(db, student)}
 
 
-@router.post("/face/verify", response_model=FaceMatchResponse)
+@router.post("/face/verify", response_model=FaceMatchResponse,
+             dependencies=[Depends(rate_limit_user("ai_face_verify"))])
 def verify_face(payload: ImagePayload, db: Session = Depends(get_db), user: User = Depends(require_student)):
     student = user_repository.get_student_by_user_id(db, user.id)
     return FaceMatchResponse(**proctor_service.verify_live_face(db, student.id, payload.image_base64))
 
 
-@router.post("/id-card/verify", response_model=IDCardVerifyResponse)
-def verify_id_card(payload: ImagePayload, db: Session = Depends(get_db), user: User = Depends(require_student)):
+@router.post("/id-card/verify", response_model=IDCardVerifyResponse,
+             dependencies=[Depends(rate_limit_user("ai_id_card"))])
+def verify_id_card(payload: ImagePayload, request: Request, db: Session = Depends(get_db), user: User = Depends(require_student)):
     student = user_repository.get_student_by_user_id(db, user.id)
     result, image_path = proctor_service.verify_id_card(db, student.id, user.full_name, payload.image_base64)
+    matched = bool(result.get("name_matched"))
+    was_locked = bool(student.identity_locked)
     identity_service.record_id_verification(
-        db, student, bool(result.get("name_matched")), result.get("extracted_text"), image_path,
+        db, student, matched, result.get("extracted_text"), image_path,
     )
+    activity_service.record(
+        db,
+        activity_type=ActivityType.ID_VERIFIED if matched else ActivityType.ID_VERIFICATION_FAILED,
+        subject=user, request=request,
+    )
+    if student.identity_locked and not was_locked:
+        activity_service.record(db, activity_type=ActivityType.IDENTITY_LOCKED, subject=user, request=request)
     return IDCardVerifyResponse(**result)
 
 
@@ -140,12 +157,14 @@ def get_id_card_photo(student_id: int, db: Session = Depends(get_db), user: User
     return FileResponse(path, media_type="image/jpeg")
 
 
-@router.post("/objects/detect", response_model=ObjectDetectionResponse)
+@router.post("/objects/detect", response_model=ObjectDetectionResponse,
+             dependencies=[Depends(rate_limit_user("ai_objects"))])
 def detect_objects(payload: ImagePayload, user: User = Depends(require_student)):
     return ObjectDetectionResponse(**proctor_service.detect_objects(payload.image_base64))
 
 
-@router.post("/pose/check", response_model=PoseCheckResponse)
+@router.post("/pose/check", response_model=PoseCheckResponse,
+             dependencies=[Depends(rate_limit_user("ai_pose"))])
 def check_pose(payload: ImagePayload, user: User = Depends(require_student)):
     return PoseCheckResponse(**proctor_service.analyze_pose(payload.image_base64))
 

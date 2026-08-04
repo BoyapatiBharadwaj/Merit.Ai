@@ -26,7 +26,22 @@ import { createFaceTracker } from "./faceMesh.js";
 // substituted student is caught by the same check that three seconds was,
 // and the request costs ~4x less server time per attempt.
 const FACE_IDENTITY_INTERVAL_MS = 12000;
-const OBJECT_CHECK_INTERVAL_MS = 10000;
+
+// 10s -> 5s. A phone held up for eight seconds could previously fall entirely
+// between two polls and never be seen at all -- the detector was accurate, it
+// just was not looking often enough. Halving the interval is affordable now
+// only because captureFrame() downscales: the per-poll payload dropped roughly
+// 4x, so twice as many polls still move far less data than before.
+const OBJECT_CHECK_INTERVAL_MS = 5000;
+
+// Longest edge, in pixels, of every frame uploaded for server-side inference.
+// 640 is exactly what both models resize to internally, so this is the largest
+// size that carries any information at all -- see captureFrame().
+const CAPTURE_MAX_EDGE = 640;
+// 0.72 rather than 0.7: at 640px the file is small enough that the extra few
+// KB is free, and JPEG artefacts hurt a face-embedding model more than they
+// hurt a human viewer.
+const CAPTURE_QUALITY = 0.72;
 const MONITOR_CHECK_INTERVAL_MS = 30000;
 const NOISE_CHECK_INTERVAL_MS = 1000;
 const SPEECH_BAND_HZ = [85, 3400];
@@ -89,6 +104,7 @@ export function createProctoring() {
   let attemptId = null;
   let videoEl = null;
   let statusEl = null;
+  let captureCanvas = null;
   let faceCheckInterval = null;
   let audioContext, analyser, micStream, noiseCheckInterval;
   let objectCheckInterval = null;
@@ -133,13 +149,46 @@ export function createProctoring() {
     }
   }
 
-  function captureFrame() {
-    const canvas = document.createElement("canvas");
-    canvas.width = videoEl.videoWidth || 320;
-    canvas.height = videoEl.videoHeight || 240;
-    const ctx = canvas.getContext("2d");
-    ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL("image/jpeg", 0.7);
+  /**
+   * A JPEG of the current video frame, downscaled to CAPTURE_MAX_EDGE.
+   *
+   * This used to send the webcam's native resolution. On a 1080p camera that is
+   * a ~250KB base64 payload uploaded every few seconds, per candidate -- and it
+   * bought nothing, because every model on the other end immediately scales the
+   * image down anyway: YOLO letterboxes to 640 (object_service.INPUT_SIZE) and
+   * InsightFace prepares at det_size 640x640. Every pixel above 640 was encoded,
+   * base64'd, uploaded, decoded and then thrown away.
+   *
+   * Capping the long edge at 640 therefore costs no accuracy at all and cuts the
+   * payload roughly 4x on a 720p camera and 9x on 1080p. That is the single
+   * biggest win available on this path: the bottleneck was never inference, it
+   * was moving the frame.
+   *
+   * The canvas is created once and reused. A fresh one per capture allocated a
+   * multi-megabyte backing buffer every few seconds for the whole exam.
+   */
+  function captureFrame(maxEdge = CAPTURE_MAX_EDGE) {
+    const sourceW = videoEl.videoWidth || 320;
+    const sourceH = videoEl.videoHeight || 240;
+    // Never upscale -- a 480p webcam should stay 480p, not be interpolated up
+    // to 640 and then re-encoded, which adds bytes and no detail.
+    const scale = Math.min(1, maxEdge / Math.max(sourceW, sourceH));
+    const width = Math.max(1, Math.round(sourceW * scale));
+    const height = Math.max(1, Math.round(sourceH * scale));
+
+    if (!captureCanvas) captureCanvas = document.createElement("canvas");
+    if (captureCanvas.width !== width || captureCanvas.height !== height) {
+      captureCanvas.width = width;
+      captureCanvas.height = height;
+    }
+    const ctx = captureCanvas.getContext("2d", { alpha: false });
+    // The browser's built-in smoothing is what makes a downscale look like a
+    // resize rather than a nearest-neighbour crunch; "high" matters for small
+    // faces, which is exactly what the identity model needs to read.
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(videoEl, 0, 0, width, height);
+    return captureCanvas.toDataURL("image/jpeg", CAPTURE_QUALITY);
   }
 
   /**
@@ -248,6 +297,20 @@ export function createProctoring() {
       try {
         const frame = captureFrame();
         const result = await Api.post("/proctoring/face/verify", { image_base64: frame });
+
+        // available=false means the signal was not collected -- the operator
+        // switched face matching off (FACE_MATCHING_ENABLED), or no model could
+        // load. That is NOT a failed check, and must never flag the candidate:
+        // treating "we didn't look" as "we looked and it was wrong" is how a
+        // proctoring platform manufactures false accusations. Stop polling and
+        // leave the signal neutral.
+        if (result.available === false) {
+          setStatus("Face matching unavailable", "idle");
+          reportSignal("face", "idle");
+          if (faceCheckInterval) clearInterval(faceCheckInterval);
+          faceCheckInterval = null;
+          return;
+        }
 
         // spoof_suspected is only ever set by a *trained* anti-spoofing
         // model now; the classical heuristic no longer accuses on its own

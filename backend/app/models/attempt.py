@@ -61,6 +61,34 @@ class StudentAnswer(Base):
     code_test_results_json = Column(Text, nullable=True)  # JSON list of per-test-case results, computed at submit time
     answered_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
+    # --- concurrency control for autosave ------------------------------------
+    #
+    # The answer path used to be unconditional last-write-wins: whichever
+    # request reached the database last won, regardless of which represented the
+    # candidate's newer intent. That is not a theoretical race. The client
+    # autosaves on every change and retries with backoff, so a request stalled
+    # on a slow connection can land AFTER a newer one for the same question --
+    # silently reverting an answer the candidate had already changed, with no
+    # error shown to them and nothing in the logs to distinguish it from them
+    # simply picking that option.
+    #
+    # `answer_version` is a per-(attempt, question) counter owned by the CLIENT,
+    # incremented on every local change. The server refuses any write whose
+    # version is older than what it already holds. Client-owned rather than
+    # server-issued because the ordering that matters is the order the candidate
+    # made the changes in, which only the client observes -- a server-issued
+    # version would just re-derive arrival order, which is the thing that is
+    # already wrong.
+    answer_version = Column(Integer, default=0, nullable=False)
+    # Last accepted request's unique id. Makes a retry of a request that DID
+    # land (but whose response was lost) a no-op rather than a second write --
+    # the exact case the client's network-error backoff produces.
+    idempotency_key = Column(String(64), nullable=True)
+    # Server receipt time, distinct from answered_at's onupdate: this is only
+    # touched when a write is actually APPLIED, so a stale or duplicate request
+    # leaves it alone and it stays a true record of when the answer last changed.
+    saved_at = Column(DateTime(timezone=True), nullable=True)
+
     attempt = relationship("StudentExamAttempt", back_populates="answers")
     question = relationship("Question", back_populates="answers")
     selected_option = relationship("Option")

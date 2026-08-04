@@ -97,6 +97,34 @@ def change_password(db: Session, user: User, current_password: str, new_password
         raise
 
 
+def reset_password_by_email(db: Session, email: str, new_password: str) -> bool:
+    """Set a new password for `email`. Returns whether an account was found.
+
+    Called only after otp_service.verify_code has already proved the caller
+    controls that mailbox, which is what stands in for the current-password
+    check `change_password` makes -- the whole premise of a reset is that the
+    user no longer has the old password.
+
+    Returns a bool rather than raising on an unknown address, deliberately. The
+    endpoint above it reports success either way, because a reset form that
+    404s on unregistered addresses is an account-enumeration oracle -- the same
+    reason otp_service.request_code stays silent. A caller that genuinely needs
+    to branch on existence still can; the HTTP layer chooses not to.
+    """
+    user = user_repository.get_user_by_email(db, email.lower())
+    if not user:
+        return False
+    if not user.is_active:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Account is deactivated.")
+    try:
+        user.hashed_password = hash_password(new_password)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return True
+
+
 def admin_reset_password(db: Session, target: User, new_password: str) -> None:
     """Admin override -- no current-password check, because the whole point is
     that the user has lost access to it."""

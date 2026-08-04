@@ -177,7 +177,8 @@ def get_answers_map(db: Session, student_id: int, attempt_id: int) -> dict[int, 
     return result
 
 
-def save_answer(db: Session, student_id: int, attempt_id: int, question_id: int, selected_option_id: int | None):
+def save_answer(db: Session, student_id: int, attempt_id: int, question_id: int, selected_option_id: int | None,
+                *, answer_version: int | None = None, idempotency_key: str | None = None):
     attempt = ensure_attempt_is_active(db, student_id, attempt_id)
     question_ids = {int(x) for x in attempt.question_order.split(",")}
     if question_id not in question_ids:
@@ -189,10 +190,15 @@ def save_answer(db: Session, student_id: int, attempt_id: int, question_id: int,
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "This question is not a single-answer multiple-choice question.")
     if selected_option_id is not None and selected_option_id not in {option.id for option in question.options}:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Selected option does not belong to this question.")
-    return attempt_repository.upsert_answer(db, attempt.id, question_id, selected_option_id)
+    return attempt_repository.upsert_answer(
+        db, attempt.id, question_id, selected_option_id,
+        answer_version=answer_version, idempotency_key=idempotency_key,
+    )
 
 
-def save_multi_select_answer(db: Session, student_id: int, attempt_id: int, question_id: int, selected_option_ids: list[int] | None):
+def save_multi_select_answer(db: Session, student_id: int, attempt_id: int, question_id: int,
+                             selected_option_ids: list[int] | None,
+                             *, answer_version: int | None = None, idempotency_key: str | None = None):
     """Counterpart to save_answer for MULTI_SELECT questions: persists a set
     of chosen option ids rather than a single one. An empty/None list clears
     the answer (leaves the question unattempted), matching save_answer's
@@ -214,15 +220,22 @@ def save_multi_select_answer(db: Session, student_id: int, attempt_id: int, ques
     # thrash the stored JSON string.
     deduped = sorted(set(selected_option_ids))
     payload = json.dumps(deduped) if deduped else None
-    return attempt_repository.upsert_multi_answer(db, attempt.id, question_id, payload)
+    return attempt_repository.upsert_multi_answer(
+        db, attempt.id, question_id, payload,
+        answer_version=answer_version, idempotency_key=idempotency_key,
+    )
 
 
-def save_code_answer(db: Session, student_id: int, attempt_id: int, question_id: int, source_code: str):
+def save_code_answer(db: Session, student_id: int, attempt_id: int, question_id: int, source_code: str,
+                     *, answer_version: int | None = None, idempotency_key: str | None = None):
     """Pure autosave -- persists the student's current code without running
     it, so every keystroke-debounced save stays cheap. Grading (running
     against every test case) happens once, at final submit time."""
     attempt, question = _get_owned_coding_question(db, student_id, attempt_id, question_id)
-    return attempt_repository.upsert_code_answer(db, attempt.id, question_id, source_code)
+    return attempt_repository.upsert_code_answer(
+        db, attempt.id, question_id, source_code,
+        answer_version=answer_version, idempotency_key=idempotency_key,
+    )
 
 
 def run_sample_test_cases(db: Session, student_id: int, attempt_id: int, question_id: int, source_code: str) -> dict:

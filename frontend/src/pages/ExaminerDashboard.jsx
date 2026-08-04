@@ -5,6 +5,7 @@ import EmptyState from "../components/EmptyState.jsx";
 import IdentityPhotoModal from "../components/IdentityPhotoModal.jsx";
 import { Api, ApiError } from "../lib/api.js";
 import { btnPrimary, btnGhost, fieldInput, fieldLabel, fieldInputCompact, fieldLabelCompact } from "../lib/ui.js";
+import "../lib/vendorChart.js";
 
 const CHART_PALETTE = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#0891b2", "#db2777", "#65a30d"];
 const EXAM_STATUS_STYLES = {
@@ -524,20 +525,69 @@ function QuestionForm({ sectionId, question, onSaved, onCancel }) {
 // question had exactly four options. Marks/Explanation may be left blank
 // (an empty segment between two pipes), but their pipes must still be
 // present so the parser knows where the option list ends.
+/**
+ * Parses one bulk-import row.
+ *
+ *   Question | Opt1 | Opt2 | ... | Correct | Marks | Explanation
+ *
+ * `Correct` accepts either a single option number (`2`) or several separated by
+ * commas or spaces (`2,4` / `2 4`). One correct answer produces an `mcq`; two or
+ * more produce a `multi_select`, so the question type is inferred from the data
+ * rather than needing its own column — an examiner pasting a mixed list should
+ * not have to declare the type twice per row.
+ *
+ * Returns `{ question }` on success or `{ error }` describing what was wrong,
+ * instead of a bare null. The old version returned null for every failure, so a
+ * hundred-row paste with one typo reported "some rows had a bad format" and left
+ * the examiner to find it by eye.
+ */
 function parseBulkLine(line) {
   const parts = line.split("|").map((p) => p.trim());
-  if (parts.length < 6) return null; // text + >=2 options + correct + marks + explanation
+  if (parts.length < 6) {
+    return { error: "needs at least: question, 2 options, correct, marks, explanation (keep every pipe)" };
+  }
+
   const text = parts[0];
   const explanation = parts[parts.length - 1];
   const marksStr = parts[parts.length - 2];
   const correctStr = parts[parts.length - 3];
-  const optionTexts = parts.slice(1, parts.length - 3);
-  const correctIdx = parseInt(correctStr, 10) - 1;
-  const options = optionTexts.filter(Boolean).map((t, i) => ({ text: t, is_correct: i === correctIdx }));
-  if (!text || options.length < 2 || correctIdx < 0 || correctIdx >= options.length) return null;
+  const optionTexts = parts.slice(1, parts.length - 3).filter(Boolean);
+
+  if (!text) return { error: "the question text is empty" };
+  if (optionTexts.length < 2) return { error: `only ${optionTexts.length} option(s) — at least 2 are needed` };
+
+  // Split on commas and/or whitespace so "2,4", "2, 4" and "2 4" all work --
+  // the difference between them is invisible in a spreadsheet paste.
+  const correctNumbers = correctStr.split(/[,\s]+/).filter(Boolean).map((n) => parseInt(n, 10));
+  if (!correctNumbers.length || correctNumbers.some(Number.isNaN)) {
+    return { error: `"${correctStr}" is not an option number (use e.g. 2, or 2,4 for multiple)` };
+  }
+
+  const correctIdx = [...new Set(correctNumbers.map((n) => n - 1))];
+  const outOfRange = correctIdx.filter((i) => i < 0 || i >= optionTexts.length);
+  if (outOfRange.length) {
+    return { error: `correct answer ${outOfRange.map((i) => i + 1).join(", ")} is outside the ${optionTexts.length} options given` };
+  }
+  // Every option correct is almost certainly a miscount rather than intent, and
+  // it would grade as "select all" — worth refusing rather than silently importing.
+  if (correctIdx.length === optionTexts.length) {
+    return { error: "every option is marked correct — check the numbering" };
+  }
+
+  const options = optionTexts.map((t, i) => ({ text: t, is_correct: correctIdx.includes(i) }));
+
   return {
-    text, marks: parseInt(marksStr, 10) || 1, order_index: 0, question_type: "mcq", options,
-    explanation: explanation || null,
+    question: {
+      text,
+      marks: parseInt(marksStr, 10) || 1,
+      order_index: 0,
+      // The whole point of this change: more than one correct answer is a
+      // different question type, graded as an exact set match server-side (see
+      // attempt_service._grade_multi_select_answer).
+      question_type: correctIdx.length > 1 ? "multi_select" : "mcq",
+      options,
+      explanation: explanation || null,
+    },
   };
 }
 
@@ -549,30 +599,51 @@ function BulkImportForm({ sectionId, onImported, onCancel }) {
   async function handleImport() {
     setStatus("");
     const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
-    const parsed = lines.map(parseBulkLine);
-    const invalidCount = parsed.filter((p) => !p).length;
-    const valid = parsed.filter(Boolean);
+
+    // Line numbers are tracked so a rejection can name the row it came from.
+    // Telling someone "3 rows were invalid" in a 100-row paste is barely more
+    // useful than saying nothing.
+    const results = lines.map((line, i) => ({ lineNo: i + 1, ...parseBulkLine(line) }));
+    const badRows = results.filter((r) => r.error);
+    const valid = results.filter((r) => r.question);
+
     if (!valid.length) {
-      setStatus("No valid rows found. Check the format: Question | Option1 | Option2 | ... | CorrectNumber | Marks | Explanation");
+      setStatus(
+        "No valid rows found. Format: Question | Option 1 | Option 2 | ... | Correct | Marks | Explanation\n" +
+        (badRows.length ? `Line ${badRows[0].lineNo}: ${badRows[0].error}` : "")
+      );
       return;
     }
+
     setImporting(true);
     let created = 0;
-    let failed = 0;
-    for (const question of valid) {
+    const serverErrors = [];
+    for (const row of valid) {
       try {
-        await Api.post(`/exams/sections/${sectionId}/questions`, question);
+        await Api.post(`/exams/sections/${sectionId}/questions`, row.question);
         created++;
-      } catch {
-        failed++;
+      } catch (err) {
+        serverErrors.push(`Line ${row.lineNo}: ${err?.message || "rejected by the server"}`);
       }
     }
     setImporting(false);
     onImported();
-    if (invalidCount || failed) {
-      setStatus(`Imported ${created} question(s). ${invalidCount} row(s) had a bad format and ${failed} were rejected by the server.`);
+
+    const multiCount = valid.filter((r) => r.question.question_type === "multi_select").length;
+    if (badRows.length || serverErrors.length) {
+      const details = [
+        ...badRows.slice(0, 5).map((r) => `Line ${r.lineNo}: ${r.error}`),
+        ...serverErrors.slice(0, 5),
+      ];
+      const extra = (badRows.length + serverErrors.length) - details.length;
+      setStatus(
+        `Imported ${created} question(s)${multiCount ? ` (${multiCount} multi-answer)` : ""}. ` +
+        `${badRows.length + serverErrors.length} row(s) skipped:\n` +
+        details.join("\n") + (extra > 0 ? `\n…and ${extra} more` : "")
+      );
     } else {
       setText("");
+      setStatus("");
     }
   }
 
@@ -580,23 +651,32 @@ function BulkImportForm({ sectionId, onImported, onCancel }) {
     <div className="mt-4 border-t border-border pt-4 flex flex-col gap-3">
       <label className="block text-xs font-semibold text-muted">
         Paste one question per line:{" "}
-        <code className="text-ink">Question text | Option 1 | Option 2 | ... | CorrectOptionNumber | Marks | Explanation</code>
+        <code className="text-ink">Question text | Option 1 | Option 2 | ... | Correct | Marks | Explanation</code>
       </label>
       <p className="text-[11px] text-muted -mt-1">
-        Any number of options is fine (2 or more -- e.g. True/False just needs two). Marks and Explanation can be left
-        blank, but keep their pipes, e.g. <code className="text-ink">... | 2 | | </code> for no explanation.
+        Any number of options (2 or more — True/False just needs two). For{" "}
+        <strong className="text-ink">multiple correct answers</strong>, separate the numbers with commas:{" "}
+        <code className="text-ink">2,4</code> — that creates a select-all-that-apply question, graded as an exact match.
+        Marks and Explanation can be left blank, but keep their pipes:{" "}
+        <code className="text-ink">... | 2 | | </code>
       </p>
       <textarea
-        rows={6}
+        rows={7}
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder={"2 + 2 = ? | 3 | 4 | 5 | 6 | 2 | 1 | Basic addition\nIs the sky blue? | True | False | 1 | 1 |"}
+        placeholder={
+          "2 + 2 = ? | 3 | 4 | 5 | 6 | 2 | 1 | Basic addition\n" +
+          "Is the sky blue? | True | False | 1 | 1 |\n" +
+          "Which are prime? | 2 | 4 | 7 | 9 | 1,3 | 2 | 2 and 7 are prime"
+        }
         className={`${fieldInputCompact} font-mono`}
       />
       {status && (
         <div className="flex items-start gap-2.5 rounded-xl border border-danger/30 bg-danger/5 px-3 py-2.5 text-sm text-danger">
           <Icon name="alert" width={15} height={15} className="mt-0.5 shrink-0" />
-          <span>{status}</span>
+          {/* whitespace-pre-line: the status now names the offending line
+              numbers one per row, which is the whole point of it. */}
+          <span className="whitespace-pre-line">{status}</span>
         </div>
       )}
       <div className="flex gap-2">
@@ -624,6 +704,23 @@ function SectionCard({ section, isDraft = false, onQuestionAdded, onReordered })
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [deletingId, setDeletingId] = useState(null);
   const [deleteError, setDeleteError] = useState(null); // { id, message } | null
+  const [confirmSectionDelete, setConfirmSectionDelete] = useState(false);
+  const [deletingSection, setDeletingSection] = useState(false);
+  const [sectionDeleteError, setSectionDeleteError] = useState("");
+
+  async function confirmDeleteSection() {
+    setDeletingSection(true);
+    setSectionDeleteError("");
+    try {
+      await Api.del(`/exams/sections/${section.id}`);
+      // No local state reset needed -- this card is about to unmount, and the
+      // parent reload is what removes it.
+      onQuestionAdded();
+    } catch (err) {
+      setSectionDeleteError(err instanceof ApiError ? err.message : "Couldn't delete this section.");
+      setDeletingSection(false);
+    }
+  }
 
   function handleDrop(targetId) {
     setDragOverId(null);
@@ -736,11 +833,46 @@ function SectionCard({ section, isDraft = false, onQuestionAdded, onReordered })
         <div className="flex items-center gap-2 mb-3">
           <span className="font-semibold text-ink">{section.title}</span>
           {isDraft && (
-            <button type="button" onClick={() => { setRenaming(true); setTitleDraft(section.title); setTitleError(""); }}
-                    className="text-xs font-semibold text-muted hover:text-primary transition-colors">
-              Rename
-            </button>
+            <>
+              <button type="button" onClick={() => { setRenaming(true); setTitleDraft(section.title); setTitleError(""); }}
+                      className="text-xs font-semibold text-muted hover:text-primary transition-colors">
+                Rename
+              </button>
+              {/* Draft-only, mirroring the backend's own gate
+                  (exam_service.delete_section) rather than relying on the
+                  button being hidden. Once published, a candidate may be
+                  mid-attempt against this exact paper. */}
+              <button type="button" onClick={() => { setConfirmSectionDelete(true); setSectionDeleteError(""); }}
+                      className="text-xs font-semibold text-muted hover:text-danger transition-colors ml-auto">
+                Delete section
+              </button>
+            </>
           )}
+        </div>
+      )}
+
+      {/* Inline confirm rather than window.confirm: it can state exactly how
+          much is about to be destroyed, which a native dialog cannot. */}
+      {confirmSectionDelete && (
+        <div className="mb-3 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3">
+          <p className="text-sm text-ink">
+            Delete <strong>{section.title}</strong>
+            {section.questions.length > 0 && (
+              <> and its <strong>{section.questions.length}</strong> question{section.questions.length === 1 ? "" : "s"}</>
+            )}?
+          </p>
+          <p className="text-xs text-muted mt-1">This can't be undone.</p>
+          {sectionDeleteError && <p className="text-xs text-danger mt-2">{sectionDeleteError}</p>}
+          <div className="flex gap-2 mt-3">
+            <button type="button" disabled={deletingSection} onClick={confirmDeleteSection}
+                    className="text-xs font-semibold rounded-lg bg-danger text-white px-3 py-1.5 disabled:opacity-60">
+              {deletingSection ? "Deleting…" : "Delete section"}
+            </button>
+            <button type="button" disabled={deletingSection} onClick={() => setConfirmSectionDelete(false)}
+                    className="text-xs font-semibold text-muted hover:text-ink px-2 py-1.5">
+              Cancel
+            </button>
+          </div>
         </div>
       )}
       <div className="flex flex-col gap-2 mb-3">

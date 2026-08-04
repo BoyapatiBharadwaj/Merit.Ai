@@ -21,6 +21,12 @@ from tests.test_exam_workflow import (
 )
 
 
+def _login_student(client, email="student@example.com", password="Sup3rSecret!"):
+    """Fresh token for an already-registered student, for tests that need to act
+    as them again after changing their row directly."""
+    return client.post("/api/v1/auth/login", json={"email": email, "password": password}).json()["access_token"]
+
+
 def _student_row(db_session, email="student@example.com"):
     user = user_repository.get_user_by_email(db_session, email)
     return user_repository.get_student_by_user_id(db_session, user.id)
@@ -82,31 +88,50 @@ def test_unlocked_student_can_change_name(client, seed_roles):
     assert body["full_name"] == "Renamed Student"
 
 
-def test_locked_student_can_still_change_password(client, seed_roles, db_session):
-    token = _register_student_and_login(client)
+def test_an_identity_locked_student_is_not_stuck_without_a_password_route(client, seed_roles, db_session, admin_token):
+    """Identity locking freezes a student's name and email, and passwords are
+    now administrator-managed -- so the thing worth proving is that the two
+    together do not strand someone.
+
+    This previously asserted that a locked student could change their own
+    password. That route is gone by design (users.change_my_password is
+    admin-only now), so the test asserts the remaining route instead: an admin
+    can still reset it, and the new password works.
+    """
+    _register_student_and_login(client)
     student = _student_row(db_session)
     student.id_verified = True
     student.identity_locked = True
     db_session.commit()
 
-    response = client.post(
+    # The student's own attempt is refused...
+    own = client.post(
         "/api/v1/users/me/password",
         json={"current_password": "Sup3rSecret!", "new_password": "An0therSecret!"},
-        headers=auth_headers(token),
+        headers=auth_headers(_login_student(client)),
     )
-    assert response.status_code == 200, response.text
+    assert own.status_code == 403
 
-    # The new password must actually work.
+    # ...but the administrator route works, and identity lock does not block it.
+    reset = client.post(
+        f"/api/v1/users/{student.user_id}/reset-password",
+        json={"new_password": "An0therSecret!"},
+        headers=auth_headers(admin_token),
+    )
+    assert reset.status_code == 200, reset.text
+
     login = client.post("/api/v1/auth/login", json={"email": "student@example.com", "password": "An0therSecret!"})
     assert login.status_code == 200
 
 
-def test_password_change_rejects_wrong_current_password(client, seed_roles):
-    token = _register_student_and_login(client)
+def test_password_change_rejects_wrong_current_password(client, seed_roles, admin_token):
+    """The current-password check still matters -- a stolen session must not be
+    enough to lock the real owner out. Exercised against an admin now, since
+    that is the only role permitted to change its own password."""
     response = client.post(
         "/api/v1/users/me/password",
         json={"current_password": "not-the-password", "new_password": "An0therSecret!"},
-        headers=auth_headers(token),
+        headers=auth_headers(admin_token),
     )
     assert response.status_code == 400
 

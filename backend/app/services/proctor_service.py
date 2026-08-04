@@ -17,6 +17,7 @@ from app.ai.image_utils import decode_image
 from app.core.config import settings
 from app.database.session import SessionLocal
 from app.repositories import proctor_repository, attempt_repository
+from app.services import biometric_service
 
 logger = logging.getLogger("app")
 
@@ -52,14 +53,30 @@ def register_face(db: Session, student_id: int, base64_image: str):
     if not success:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, message)
     profile = proctor_repository.save_face_profile(db, student_id, filename, encoding_json)
+    # Stamp the consent wording in force at capture time. Done here rather than
+    # in the repository because it is a policy fact about this capture, not a
+    # storage detail -- see biometric_service for why it is per-profile.
+    biometric_service.record_face_consent(profile)
+    db.commit()
+    db.refresh(profile)
     return profile, message
 
 
 def verify_live_face(db: Session, student_id: int, base64_image: str) -> dict:
+    if not settings.FACE_MATCHING_ENABLED:
+        # Switched off operationally. Reported as "not collected" rather than as
+        # a pass or a failure: claiming a match we never computed would be a lie
+        # on a proctoring report, and claiming a mismatch would accuse an
+        # innocent candidate. The exam client skips the check on available=False.
+        return {
+            "available": False, "face_count": 0, "match": None, "distance": None,
+            "spoof_suspected": False, "liveness_score": None,
+            "message": "Face matching is currently disabled by the administrator.",
+        }
     profile = proctor_repository.get_face_profile(db, student_id)
     if not profile:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Face not registered yet.")
-    return face_service.verify_live_frame(base64_image, profile.encoding)
+    return {"available": True, **face_service.verify_live_frame(base64_image, profile.encoding)}
 
 
 def verify_id_card(db: Session, student_id: int, student_full_name: str, base64_image: str) -> tuple[dict, str | None]:
@@ -99,7 +116,15 @@ def detect_objects(base64_image: str) -> dict:
 
     Still never raises -- an unavailable detector returns the same shape with
     available=False, so the frontend stops polling quietly instead of erroring.
+    That existing contract is exactly what OBJECT_DETECTION_ENABLED reuses: an
+    operationally disabled detector is indistinguishable, to the client, from
+    one that could not load -- and should be, because the correct client
+    behaviour is identical.
     """
+    if not settings.OBJECT_DETECTION_ENABLED:
+        return {"available": False, "detections": [], "person_count": 0,
+                "message": "Object detection is currently disabled by the administrator."}
+
     worker_result = ai_worker_client.detect_objects(base64_image)
     if worker_result is not None:
         return {"available": True, **worker_result, "message": "ok"}
@@ -110,6 +135,9 @@ def detect_objects(base64_image: str) -> dict:
 
 def analyze_pose(base64_image: str) -> dict:
     """Local head-pose + gaze-deviation analysis (no AI worker required)."""
+    if not settings.POSE_DETECTION_ENABLED:
+        return {"available": False, "face_count": 0,
+                "message": "Pose and gaze analysis is currently disabled by the administrator."}
     return pose_service.analyze_frame(base64_image)
 
 

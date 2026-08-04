@@ -5,7 +5,7 @@ One public endpoint (the marketing site's request form) and three admin-only
 ones for reviewing the queue. Examiners cannot self-register, so this is the
 supported route from "interested institution" to "examiner account".
 """
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_admin
@@ -22,7 +22,8 @@ router = APIRouter(prefix="/access-requests", tags=["Access Requests"])
 
 
 @router.post("", status_code=201)
-def submit_access_request(payload: AccessRequestCreate, db: Session = Depends(get_db)):
+def submit_access_request(payload: AccessRequestCreate, background: BackgroundTasks,
+                          db: Session = Depends(get_db)):
     """Public. Intentionally returns the same response whether this is a new
     request or a repeat of a pending one -- see access_request_service.submit
     for why it must not reveal whether an email is already known."""
@@ -33,6 +34,7 @@ def submit_access_request(payload: AccessRequestCreate, db: Session = Depends(ge
         email=payload.email,
         organization_name=payload.organization_name,
         purpose=payload.purpose,
+        background=background,
     )
     return {
         "submitted": True,
@@ -53,10 +55,11 @@ def pending_count(db: Session = Depends(get_db), _: User = Depends(require_admin
 
 
 @router.post("/{request_id}/approve", response_model=AccessRequestOut)
-def approve_access_request(request_id: int, payload: AccessRequestApprove,
+def approve_access_request(request_id: int, payload: AccessRequestApprove, background: BackgroundTasks,
                            db: Session = Depends(get_db), admin: User = Depends(require_admin)):
-    """Creates the examiner account and marks the request approved."""
-    return access_request_service.approve(db, request_id, admin, payload.password, payload.review_note)
+    """Creates the examiner account, emails the credentials, marks it approved."""
+    return access_request_service.approve(db, request_id, admin, payload.password, payload.review_note,
+                                          background=background)
 
 
 @router.post("/{request_id}/reject", response_model=AccessRequestOut)

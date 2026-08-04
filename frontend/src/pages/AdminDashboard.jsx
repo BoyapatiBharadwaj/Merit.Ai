@@ -8,6 +8,7 @@ import { TextField, PasswordField } from "../components/FormField.jsx";
 import CredentialsHandoff, { generatePassword } from "../components/CredentialsHandoff.jsx";
 import { Api, ApiError } from "../lib/api.js";
 import { btnPrimary } from "../lib/ui.js";
+import "../lib/vendorChart.js";
 
 /**
  * Sidebar items are a mix of same-page anchors (Overview, Access Requests,

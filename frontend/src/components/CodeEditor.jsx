@@ -1,3 +1,4 @@
+import "../lib/vendorCodeMirror.js";
 import { useEffect, useRef } from "react";
 
 /**

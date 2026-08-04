@@ -2,13 +2,29 @@
 import json
 from datetime import datetime, timedelta, timezone
 
-from fastapi import HTTPException, status
+from fastapi import BackgroundTasks, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.models.enums import AttemptStatus, ExamStatus
 from app.models.examiner import Examiner
 from app.repositories import exam_repository
-from app.services import code_runner_service
+from app.services import code_runner_service, email_service
+
+
+def format_exam_time(value: datetime | None) -> str | None:
+    """Render a scheduled time for an email body.
+
+    UTC and explicitly labelled as such. The alternative -- rendering in the
+    server's local timezone -- produces a string that is wrong for most
+    recipients and, worse, gives no hint that it might be: "starts at 09:00"
+    with no zone is the kind of detail someone misses an exam over. The app
+    itself localises times in the browser, where the reader's zone is actually
+    known; an email has no such luxury.
+    """
+    if value is None:
+        return None
+    aware = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return aware.astimezone(timezone.utc).strftime("%d %b %Y, %H:%M UTC")
 
 # Mirrors schemas.exam.SCHEDULE_GRACE -- kept as a separate constant rather
 # than a shared import because this check runs at a different layer (here we
@@ -17,7 +33,39 @@ from app.services import code_runner_service
 SCHEDULE_GRACE = timedelta(seconds=30)
 
 
-def create_exam(db: Session, examiner_id: int, payload: dict):
+def notify_exam_address(db: Session, exam, *, background: BackgroundTasks | None = None,
+                         reason: str = "added") -> bool:
+    """Email the exam's nominated address with its current details.
+
+    Called whenever that address is SET or CHANGED -- not only at publish. An
+    examiner who types an address into the exam has just told the platform "tell
+    this person about this exam", and waiting until publish to act on it means
+    the confirmation arrives long after the moment they expected it, or never,
+    if the exam stays a draft.
+
+    Sends the exam's details as they stand right now, draft or published, so the
+    recipient gets something meaningful rather than a bare "you've been added".
+    Returns whether a message was queued, so callers can log or test it.
+    """
+    if not exam.notify_email:
+        return False
+
+    examiner = db.query(Examiner).filter(Examiner.id == exam.examiner_id).first()
+    examiner_name = examiner.user.full_name if examiner and examiner.user else "An examiner"
+    subject, text, html = email_service.exam_published_message(
+        exam_title=exam.title,
+        examiner_name=examiner_name,
+        starts_at=format_exam_time(exam.start_time),
+        duration_minutes=exam.duration_minutes,
+        status=exam.status.value if hasattr(exam.status, "value") else str(exam.status),
+        reason=reason,
+    )
+    email_service.queue(background, to=exam.notify_email, subject=subject,
+                        text_body=text, html_body=html)
+    return True
+
+
+def create_exam(db: Session, examiner_id: int, payload: dict, background: BackgroundTasks | None = None):
     """Stamp the owning examiner's organization onto the exam.
 
     This is the only writer of Exam.organization_id, and it is what makes the
@@ -35,7 +83,11 @@ def create_exam(db: Session, examiner_id: int, payload: dict):
             status.HTTP_400_BAD_REQUEST,
             "Your account is not linked to an organization yet, so students would not be "
             "able to see this exam. Ask an administrator to assign your organization.")
-    return exam_repository.create_exam(db, examiner_id, {**payload, "organization_id": examiner.organization_id})
+    exam = exam_repository.create_exam(db, examiner_id, {**payload, "organization_id": examiner.organization_id})
+    # An address supplied at creation counts as "added" just as much as one
+    # typed in later -- the examiner should not have to guess which path sends.
+    notify_exam_address(db, exam, background=background, reason="added")
+    return exam
 
 
 def add_section(db: Session, examiner_id: int, exam_id: int, payload: dict):
@@ -152,6 +204,39 @@ def delete_question(db: Session, examiner_id: int, question_id: int):
     exam_repository.delete_question(db, question)
 
 
+def delete_section(db: Session, examiner_id: int, section_id: int) -> dict:
+    """Delete a section and everything in it. Draft-only.
+
+    Same owner + DRAFT gate as every other structural edit (_get_editable_exam):
+    once an exam is published a candidate may be mid-attempt against that exact
+    paper, and removing a section under them would invalidate their attempt's
+    question_order and their answers along with it.
+
+    Refuses to delete the LAST section. An exam with no sections cannot be
+    published (publish_exam requires at least one question) and shows as an
+    empty shell in the builder -- so this would leave the examiner in a state
+    whose only exit is deleting the exam. Deleting the exam is a separate,
+    clearly-labelled action; a section delete should not become one by accident.
+
+    Returns what was removed so the UI can confirm it concretely rather than
+    just closing a dialog.
+    """
+    section = exam_repository.get_section(db, section_id)
+    if not section:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Section not found.")
+    exam = _get_editable_exam(db, examiner_id, section.exam_id)
+
+    if len(exam.sections) <= 1:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "An exam needs at least one section. Add another section first, or delete the exam itself.",
+        )
+
+    removed = {"section_id": section.id, "title": section.title, "questions_deleted": len(section.questions)}
+    exam_repository.delete_section(db, section)
+    return removed
+
+
 def reorder_questions(db: Session, examiner_id: int, section_id: int, question_ids: list[int]):
     section = exam_repository.get_section(db, section_id)
     if not section:
@@ -175,20 +260,39 @@ def delete_exam(db: Session, examiner_id: int, exam_id: int):
     exam_repository.delete_exam(db, exam)
 
 
-def publish_exam(db: Session, examiner_id: int, exam_id: int):
+def publish_exam(db: Session, examiner_id: int, exam_id: int, background: BackgroundTasks | None = None):
+    """Publish, then notify the nominated address.
+
+    The notification hangs off publish rather than create on purpose. A draft
+    is a work in progress that an examiner may build over days and never
+    finish; publishing is the single moment the exam becomes real to
+    candidates, so it is the only point at which "an exam has been scheduled"
+    is true enough to email about.
+    """
     exam = _get_editable_exam(db, examiner_id, exam_id)
     if not exam.sections or not any(section.questions for section in exam.sections):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Cannot publish an exam with no questions.")
-    return exam_repository.publish_exam(db, exam)
+    published = exam_repository.publish_exam(db, exam)
+
+    notify_exam_address(db, published, background=background, reason="published")
+    return published
 
 
-def update_exam_details(db: Session, examiner_id: int, exam_id: int, payload: dict):
+def update_exam_details(db: Session, examiner_id: int, exam_id: int, payload: dict,
+                         background: BackgroundTasks | None = None):
     """Full edit of every exam field (title, duration, pass mark, schedule,
     etc.) -- draft only, reusing _get_editable_exam's owner+draft gate. Once
     published, structural fields are frozen and only the schedule can still
     move, through the narrower, state-aware update_exam_schedule below."""
     exam = _get_editable_exam(db, examiner_id, exam_id)
-    return exam_repository.update_exam(db, exam, payload)
+    previous_email = exam.notify_email
+    updated = exam_repository.update_exam(db, exam, payload)
+    # Only on a genuine change. Re-saving the exam with the same address must
+    # not re-notify -- an examiner tweaking the pass mark three times should not
+    # send three emails to the same person.
+    if updated.notify_email and updated.notify_email != previous_email:
+        notify_exam_address(db, updated, background=background, reason="added")
+    return updated
 
 
 def has_exam_started(exam, now: datetime | None = None) -> bool:

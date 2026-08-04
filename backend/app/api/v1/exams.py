@@ -1,7 +1,7 @@
 """Exam, section, and question management endpoints."""
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, require_examiner, require_student
@@ -18,9 +18,10 @@ router = APIRouter(prefix="/exams", tags=["Exams"])
 
 
 @router.post("", response_model=ExamOut, status_code=201)
-def create_exam(payload: ExamCreate, db: Session = Depends(get_db), user: User = Depends(require_examiner)):
+def create_exam(payload: ExamCreate, background: BackgroundTasks, db: Session = Depends(get_db),
+                user: User = Depends(require_examiner)):
     examiner = user_repository.get_examiner_by_user_id(db, user.id)
-    return exam_service.create_exam(db, examiner.id, payload.model_dump())
+    return exam_service.create_exam(db, examiner.id, payload.model_dump(), background=background)
 
 
 @router.get("/my", response_model=list[ExamOut])
@@ -87,12 +88,14 @@ def get_exam(exam_id: int, db: Session = Depends(get_db), user: User = Depends(g
 
 
 @router.put("/{exam_id}", response_model=ExamOut)
-def update_exam(exam_id: int, payload: ExamDetailsUpdate, db: Session = Depends(get_db), user: User = Depends(require_examiner)):
+def update_exam(exam_id: int, payload: ExamDetailsUpdate, background: BackgroundTasks,
+                db: Session = Depends(get_db), user: User = Depends(require_examiner)):
     """Edit of every exam-level setting except the schedule -- draft only
     (see exam_service.update_exam_details). Once published, these are all
     frozen; only the schedule can still move, via PATCH /{exam_id}/schedule."""
     examiner = user_repository.get_examiner_by_user_id(db, user.id)
-    return exam_service.update_exam_details(db, examiner.id, exam_id, payload.model_dump())
+    return exam_service.update_exam_details(db, examiner.id, exam_id, payload.model_dump(),
+                                            background=background)
 
 
 @router.patch("/{exam_id}/schedule", response_model=ExamOut)
@@ -126,6 +129,18 @@ def update_section(section_id: int, payload: SectionUpdate, db: Session = Depend
     exam_service.update_section for why this freezes at publish."""
     examiner = user_repository.get_examiner_by_user_id(db, user.id)
     return exam_service.update_section(db, examiner.id, section_id, payload.title)
+
+
+@router.delete("/sections/{section_id}", status_code=200)
+def delete_section(section_id: int, db: Session = Depends(get_db), user: User = Depends(require_examiner)):
+    """Delete a section and every question in it. Draft-only, owner-only.
+
+    Returns what was removed rather than a bare 204: the UI confirms the delete
+    by naming the section and the question count, and inventing that client-side
+    would mean trusting a stale local copy of the section.
+    """
+    examiner = user_repository.get_examiner_by_user_id(db, user.id)
+    return exam_service.delete_section(db, examiner.id, section_id)
 
 
 @router.post("/sections/{section_id}/questions", response_model=QuestionOut, status_code=201)
@@ -170,6 +185,7 @@ def reorder_questions(section_id: int, payload: QuestionReorderRequest, db: Sess
 
 
 @router.post("/{exam_id}/publish", response_model=ExamOut)
-def publish_exam(exam_id: int, db: Session = Depends(get_db), user: User = Depends(require_examiner)):
+def publish_exam(exam_id: int, background: BackgroundTasks, db: Session = Depends(get_db),
+                 user: User = Depends(require_examiner)):
     examiner = user_repository.get_examiner_by_user_id(db, user.id)
-    return exam_service.publish_exam(db, examiner.id, exam_id)
+    return exam_service.publish_exam(db, examiner.id, exam_id, background=background)

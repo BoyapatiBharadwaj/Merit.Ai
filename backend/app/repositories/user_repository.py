@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from app.models.user import User, Role
 from app.models.student import Student
 from app.models.examiner import Examiner
+from app.models.enums import RoleName
 
 
 def get_role_by_name(db: Session, name: str) -> Role | None:
@@ -15,6 +16,24 @@ def get_user_by_email(db: Session, email: str) -> User | None:
 
 def get_user_by_id(db: Session, user_id: int) -> User | None:
     return db.query(User).filter(User.id == user_id).first()
+
+
+def list_admin_emails(db: Session) -> list[str]:
+    """Email addresses of every active admin.
+
+    The fallback recipient list for administrative notifications when
+    ADMIN_NOTIFICATION_EMAIL isn't configured. Deactivated admins are excluded:
+    a disabled account should stop receiving operational mail, and someone who
+    has left the institution keeping a feed of access requests is exactly the
+    kind of quiet leak nobody notices.
+    """
+    rows = (
+        db.query(User.email)
+        .join(Role, User.role_id == Role.id)
+        .filter(Role.name == RoleName.ADMIN.value, User.is_active.is_(True))
+        .all()
+    )
+    return [email for (email,) in rows if email]
 
 
 def create_user(db: Session, first_name: str, last_name: str, email: str, hashed_password: str, role_id: int, commit: bool = True) -> User:

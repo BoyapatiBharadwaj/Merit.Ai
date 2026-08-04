@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { Navigate } from "react-router-dom";
+import { Link, Navigate } from "react-router-dom";
 import DashboardHeader from "../components/DashboardHeader.jsx";
 import CaptureCard from "../components/CaptureCard.jsx";
+import { PhotoBox } from "../components/IdentityPhotoModal.jsx";
 import Icon from "../components/Icon.jsx";
 import { PasswordField } from "../components/FormField.jsx";
 import { btnPrimary, btnGhost, sectionEyebrow } from "../lib/ui.js";
@@ -40,13 +41,21 @@ export default function Profile() {
   if (!isLoggedIn()) return <Navigate to="/login" replace />;
 
   // Examiners and admins get this page too. Identity verification is
-  // student-only. Password management is for students and admins only --
-  // examiner credentials are issued and rotated by an admin (see
-  // Admin.jsx's reset-password action), so an examiner has nothing to do in
-  // a "change password" section and it's hidden here rather than shown and
-  // rejected by the backend.
+  // student-only.
+  //
+  // Password management is now ADMIN-ONLY. Student and examiner credentials
+  // are both issued and rotated by an administrator, so neither role has
+  // anything to do in a "change password" section -- it is hidden here and
+  // also refused by the backend (users.change_my_password), since hiding a
+  // form does not stop a direct API call.
+  //
+  // Note this is not a lockout: both roles can still recover a forgotten
+  // password themselves via the emailed one-time code on /forgot-password,
+  // which proves control of the mailbox rather than knowledge of the old
+  // password. The card below points there.
   const isStudent = getRole() === "student";
   const isExaminer = getRole() === "examiner";
+  const isAdmin = getRole() === "admin";
 
   return (
     <div className="min-h-screen flex flex-col bg-page text-ink">
@@ -68,9 +77,9 @@ export default function Profile() {
               ? locked
                 ? "Both checks are complete, so you can now sit proctored exams. Your name and email are locked to the ID you verified."
                 : "Both steps below must be completed before your first proctored exam. Make sure you're in a well-lit space with only your face in frame."
-              : isExaminer
-                ? "Review your account details. Your password is managed by your administrator."
-                : "Review your account details and manage the password you use to sign in."}
+              : isAdmin
+                ? "Review your account details and manage the password you use to sign in."
+                : "Review your account details. Your password is managed by your administrator."}
           </p>
         </div>
 
@@ -122,19 +131,41 @@ export default function Profile() {
                 formatResult={(res) => ({ tone: res.name_matched ? "success" : "error", message: res.message })}
               />
             </StepCard>
+
+            {/* Shown only once something is actually on file. A pair of empty
+                boxes before the student has captured anything would read as a
+                broken feature rather than an empty state -- the capture cards
+                above are already the empty state. */}
+            {(faceDone || idDone) && (
+              <VerifiedPhotos studentId={me?.student_id} faceDone={faceDone} idDone={idDone} />
+            )}
           </section>
         )}
 
-        {!isExaminer && (
-          <section className="flex flex-col gap-5">
-            <SectionHeading
-              icon="lock"
-              title="Sign-in & security"
-              description="The password you use to log in to Merit.Ai."
-            />
+        <section className="flex flex-col gap-5">
+          <SectionHeading
+            icon="lock"
+            title="Sign-in & security"
+            description="The password you use to log in to Merit.Ai."
+          />
+          {isAdmin ? (
             <ChangePasswordCard />
-          </section>
-        )}
+          ) : (
+            // Says who to ask AND offers the self-service route, so this reads
+            // as "handled elsewhere" rather than "you are stuck".
+            <div className="rounded-2xl border border-border bg-surface shadow-card p-6">
+              <p className="text-sm text-ink font-semibold mb-1.5">Your password is managed by your administrator</p>
+              <p className="text-sm text-muted leading-relaxed">
+                Passwords on Merit.Ai are issued and rotated centrally. If you've forgotten yours, you can set a new
+                one yourself using a code sent to <strong className="text-ink">{me?.email}</strong> — no need to wait
+                for an administrator.
+              </p>
+              <Link to="/forgot-password" className={`${btnGhost.replace("px-5 py-3", "px-4 py-2.5")} text-sm mt-4 inline-flex`}>
+                Reset my password by email
+              </Link>
+            </div>
+          )}
+        </section>
       </main>
     </div>
   );
@@ -175,6 +206,47 @@ function VerificationPill({ faceDone, idDone }) {
     </span>
   );
 }
+
+/**
+ * The student's own verified face and ID card.
+ *
+ * People are entitled to see the biometric material held about them, and there
+ * is a practical reason too: a candidate whose face match keeps failing at the
+ * exam gate can look at what was actually registered and tell immediately
+ * whether it is a bad capture. Before this, only staff could see it.
+ *
+ * Reuses PhotoBox from IdentityPhotoModal, so these load through the same
+ * authenticated-blob path as the staff viewer -- the endpoints already allow
+ * the student themselves (proctoring._can_view_student_identity), so no new
+ * access is being granted here, only a place to look.
+ */
+function VerifiedPhotos({ studentId, faceDone, idDone }) {
+  if (!studentId) return null;
+  return (
+    <div className="rounded-2xl border border-border bg-surface shadow-card p-6">
+      <div className="flex items-start justify-between gap-3 mb-1">
+        <h3 className="text-base font-bold text-ink">Your verified photos</h3>
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-success shrink-0">
+          <Icon name="shield-check" width={14} height={14} />
+          On file
+        </span>
+      </div>
+      <p className="text-sm text-muted leading-relaxed mb-5">
+        This is what Merit.Ai matches you against during a proctored exam. Only you, your examiner and an
+        administrator can see these.
+      </p>
+      <div className="flex flex-col sm:flex-row gap-4">
+        {faceDone && (
+          <PhotoBox label="Registered face" path={`/proctoring/face/photo/${studentId}`} active />
+        )}
+        {idDone && (
+          <PhotoBox label="ID card" path={`/proctoring/id-card/photo/${studentId}`} active />
+        )}
+      </div>
+    </div>
+  );
+}
+
 
 /** Read-only account summary. Once identity is locked these fields are not
  * editable anywhere in the UI, matching the server-side rule in

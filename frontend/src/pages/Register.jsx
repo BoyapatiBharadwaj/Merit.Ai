@@ -1,57 +1,16 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import AuthLayout from "../components/AuthLayout.jsx";
 import { TextField, PasswordField } from "../components/FormField.jsx";
-import CaptureCard from "../components/CaptureCard.jsx";
 import Icon from "../components/Icon.jsx";
-import { btnPrimary, btnGhost } from "../lib/ui.js";
+import { btnPrimary } from "../lib/ui.js";
 import { Api, ApiError } from "../lib/api.js";
 import { setSession, isLoggedIn } from "../lib/auth.js";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-const STEPS = [
-  { n: 1, label: "Account details" },
-  { n: 2, label: "Identity verification" },
-];
-
-/** The 1 ── 2 progress rail above both steps. A plain row of text would say
- * the same thing, but this is the one place in signup that visually promises
- * "there are two short steps, not one long form" -- worth a few lines of its
- * own markup to make good on. */
-function StepIndicator({ current }) {
-  return (
-    <div className="flex items-center gap-3 mb-7" aria-label={`Step ${current} of ${STEPS.length}`}>
-      {STEPS.map((step, i) => {
-        const done = step.n < current;
-        const active = step.n === current;
-        return (
-          <div key={step.n} className="flex items-center gap-3 flex-1 last:flex-initial">
-            <div className="flex items-center gap-2 shrink-0">
-              <span
-                className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold shrink-0 transition-colors ${
-                  done ? "bg-success text-white" : active ? "bg-primary text-white" : "border border-border text-muted"
-                }`}
-              >
-                {done ? <Icon name="check" width={11} height={11} /> : step.n}
-              </span>
-              <span className={`text-xs font-semibold whitespace-nowrap ${active ? "text-ink" : done ? "text-muted" : "text-muted/60"}`}>
-                {step.label}
-              </span>
-            </div>
-            {i < STEPS.length - 1 && (
-              <span aria-hidden="true" className={`h-px flex-1 ${done ? "bg-success" : "bg-border"}`} />
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 export default function Register() {
   const navigate = useNavigate();
-  const [step, setStep] = useState(1);
   const [form, setForm] = useState({
     firstName: "", lastName: "", email: "", studentId: "", password: "", confirmPassword: "",
     agreeTerms: false, agreeProctoring: false,
@@ -62,22 +21,33 @@ export default function Register() {
   const [touched, setTouched] = useState({});
   const [formError, setFormError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [faceDone, setFaceDone] = useState(false);
-  const [idDone, setIdDone] = useState(false);
 
-  // step === 1 guards this rather than isLoggedIn() alone: step 1's own
-  // submit handler calls setSession() and then moves to step 2 *without*
-  // navigating away, so an unconditional redirect-when-logged-in would fire
-  // the instant that happens and yank someone out of step 2 before they ever
-  // saw it. A reload during step 2 does still land on /dashboard -- step
-  // resets to 1 on remount, isLoggedIn() is now true, and this guard sends
-  // them onward -- which is an acceptable fallback (identity verification
-  // was always resumable from Profile) rather than a bug worth the
-  // complexity of persisting wizard position across a reload.
+  // Email verification. Signup is two phases now: request a code, then create
+  // the account with it. The account does NOT exist until the code checks out
+  // (POST /auth/register/student/verified verifies BEFORE creating), so no
+  // unverified rows can accumulate.
+  //
+  // `codeSent` doubles as the phase flag rather than a separate step counter --
+  // there are only two states and one of them is "we have sent a code".
+  const [codeSent, setCodeSent] = useState(false);
+  const [code, setCode] = useState("");
+  const [expiresIn, setExpiresIn] = useState(10);
+  const [cooldown, setCooldown] = useState(0);
+  const [otpUnavailable, setOtpUnavailable] = useState(false);
+
+  useEffect(() => {
+    if (cooldown <= 0) return undefined;
+    const timer = setTimeout(() => setCooldown((s) => s - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [cooldown]);
+
+  // Signup is now a single step, so an already-signed-in visitor is simply
+  // sent onward -- there is no longer a second wizard stage this could yank
+  // someone out of mid-flow.
   //
   // Placed after every hook above (not as an early return before them) for
   // the same Rules-of-Hooks reason documented in Profile.jsx and Exam.jsx.
-  if (step === 1 && isLoggedIn()) return <Navigate to="/dashboard" replace />;
+  if (isLoggedIn()) return <Navigate to="/dashboard" replace />;
 
   function computeErrors(values) {
     const next = {};
@@ -135,20 +105,48 @@ export default function Register() {
 
     setLoading(true);
     try {
-      const data = await Api.registerStudent({
+      // Phase 1: ask for a code, if we haven't already.
+      if (!codeSent && !otpUnavailable) {
+        try {
+          const res = await Api.post("/auth/otp/signup/request", { email: form.email.trim() });
+          setExpiresIn(res.expires_in_minutes ?? 10);
+          setCooldown(60);
+          setCodeSent(true);
+          return;
+        } catch (err) {
+          // 503 means this deployment has no mail configured. Falling back to
+          // unverified signup rather than blocking the person entirely: the
+          // server is the authority on whether email works, and a candidate
+          // should not be locked out of an exam platform by its SMTP settings.
+          if (err instanceof ApiError && err.status === 503) {
+            setOtpUnavailable(true);
+          } else {
+            throw err;
+          }
+        }
+      }
+
+      // Phase 2: create the account. The verified endpoint checks the code
+      // first, so a wrong code never leaves a half-made account behind.
+      const payload = {
         first_name: form.firstName.trim(),
         last_name: form.lastName.trim(),
         email: form.email.trim(),
         password: form.password,
         roll_number: form.studentId.trim() || null,
-      });
+      };
+      const data = otpUnavailable
+        ? await Api.registerStudent(payload)
+        : await Api.post("/auth/register/student/verified", { ...payload, code: code.trim() });
       setSession(data);
-      // Straight into step 2 rather than /dashboard -- the account exists
-      // and the person is signed in, but identity verification is the
-      // second half of "signing up" on a proctored platform, not a separate
-      // errand for later. They can still skip it below and finish from
-      // Profile whenever they're ready.
-      setStep(2);
+      // Straight to the dashboard. Identity verification used to be a second
+      // signup step, which put a camera prompt in front of someone who had not
+      // yet seen the product and could not yet know whether they needed an
+      // account at all. It now lives on Profile, where the candidate chooses
+      // the moment -- and attempt_service still refuses to start a proctored
+      // exam until it is done, so nothing about the identity guarantee is
+      // weakened by moving where it is collected.
+      navigate("/dashboard", { replace: true });
     } catch (err) {
       setFormError(describeError(err));
     } finally {
@@ -156,73 +154,15 @@ export default function Register() {
     }
   }
 
-  if (step === 2) {
-    return (
-      <AuthLayout
-        variant="register"
-        eyebrow="One more step"
-        title="Verify your identity"
-        subtitle="Two quick captures -- required before your first proctored exam, but you can finish them later from Profile if you'd rather do this now and that later."
-      >
-        <StepIndicator current={2} />
-
-        <div className="flex flex-col gap-5">
-          <StepBadgeCard number={1} done={faceDone}>
-            <CaptureCard
-              title="Face Registration"
-              description="This photo is used to verify your identity during exams."
-              mirrored
-              captureLabel="Capture Photo"
-              submitLabel="Register Face"
-              onSubmit={async (image) => {
-                const res = await Api.post("/proctoring/face/register", { image_base64: image });
-                setFaceDone(true);
-                return res;
-              }}
-              formatResult={(res) => ({ tone: "success", message: res.message })}
-            />
-          </StepBadgeCard>
-
-          <StepBadgeCard number={2} done={idDone}>
-            <CaptureCard
-              title="ID Card Verification"
-              description="Capture your student/government ID card. We'll read the name and compare it to your registered name."
-              captureLabel="Capture ID Card"
-              submitLabel="Verify ID"
-              onSubmit={async (image) => {
-                const res = await Api.post("/proctoring/id-card/verify", { image_base64: image });
-                if (res.name_matched) setIdDone(true);
-                return res;
-              }}
-              formatResult={(res) => ({ tone: res.name_matched ? "success" : "error", message: res.message })}
-            />
-          </StepBadgeCard>
-        </div>
-
-        <div className="flex flex-col sm:flex-row gap-3 mt-7">
-          <button
-            type="button"
-            onClick={() => navigate("/dashboard")}
-            className={`${btnGhost.replace("px-5 py-3", "px-5 py-4")} flex-1 justify-center`}
-          >
-            Skip for now
-          </button>
-          <button
-            type="button"
-            onClick={() => navigate("/dashboard")}
-            className={`${btnPrimary.replace("px-5 py-3", "px-5 py-4")} flex-1 justify-center`}
-          >
-            {faceDone && idDone ? "Continue to Dashboard" : "Finish later, go to Dashboard"}
-            <Icon name="arrow" width={15} height={15} />
-          </button>
-        </div>
-        {!(faceDone && idDone) && (
-          <p className="mt-3 text-center text-xs text-muted">
-            You can complete whichever step you skipped anytime from your Profile page.
-          </p>
-        )}
-      </AuthLayout>
-    );
+  async function resendCode() {
+    setFormError("");
+    try {
+      const res = await Api.post("/auth/otp/signup/request", { email: form.email.trim() });
+      setExpiresIn(res.expires_in_minutes ?? 10);
+      setCooldown(60);
+    } catch (err) {
+      setFormError(describeError(err));
+    }
   }
 
   return (
@@ -240,7 +180,6 @@ export default function Register() {
         </>
       }
     >
-      <StepIndicator current={1} />
 
       {formError && (
         <div className="mb-5 flex items-start gap-2.5 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger animate-fade-in">
@@ -283,7 +222,7 @@ export default function Register() {
             on everyone as a permanent block of text under the name fields. */}
         <p className="-mt-1 mb-4 text-xs text-muted leading-relaxed inline-flex items-start gap-1">
           Enter your name exactly as shown on your ID. It can't be edited after verification.
-          <span title="Your name is matched against the ID card you'll verify in the next step. Once that match succeeds, your name and email are locked and an administrator would need to change them." className="cursor-help text-muted/70 shrink-0 mt-0.5">
+          <span title="Your name is matched against the ID card you verify from your Profile page before your first exam. Once that match succeeds, your name and email are locked and an administrator would need to change them." className="cursor-help text-muted/70 shrink-0 mt-0.5">
             <Icon name="alert" width={12} height={12} />
           </span>
         </p>
@@ -371,40 +310,56 @@ export default function Register() {
           </label>
         </div>
 
+        {codeSent && (
+          <div className="rounded-xl border border-primary/25 bg-primary/5 px-4 py-4 mb-5">
+            <div className="flex items-start gap-2.5 mb-3">
+              <span className="text-primary mt-0.5 shrink-0"><Icon name="mail" width={16} height={16} /></span>
+              <p className="text-sm text-ink leading-relaxed">
+                We've sent a 6-digit code to <strong>{form.email.trim()}</strong>. It expires in {expiresIn} minutes.
+              </p>
+            </div>
+            <TextField
+              id="signup-code"
+              label="Verification code"
+              icon="shield"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              autoFocus
+              placeholder="123456"
+              className="mb-0"
+            />
+            <div className="flex items-center justify-between gap-3 mt-3">
+              <button type="button" onClick={resendCode} disabled={cooldown > 0}
+                      className="text-xs font-semibold text-primary disabled:text-muted disabled:cursor-not-allowed">
+                {cooldown > 0 ? `Resend in ${cooldown}s` : "Resend code"}
+              </button>
+              <button type="button" onClick={() => { setCodeSent(false); setCode(""); }}
+                      className="text-xs font-semibold text-muted hover:text-ink">
+                Change email
+              </button>
+            </div>
+          </div>
+        )}
+
         <button
           type="submit"
           disabled={loading}
           className={`${btnPrimary.replace("px-5 py-3", "px-5 py-4")} w-full group ${loading ? "opacity-70 pointer-events-none" : ""}`}
         >
           {loading && <Icon name="spinner" width={16} height={16} className="animate-spin" />}
-          {loading ? "Creating account…" : (
-            <>
-              Continue
-              <Icon name="arrow" width={16} height={16} className="transition-transform duration-200 group-hover:translate-x-1" />
-            </>
-          )}
+          {loading
+            ? (codeSent || otpUnavailable ? "Creating account…" : "Sending code…")
+            : (
+              <>
+                {codeSent ? "Verify & create account" : "Continue"}
+                <Icon name="arrow" width={16} height={16} className="transition-transform duration-200 group-hover:translate-x-1" />
+              </>
+            )}
         </button>
       </form>
     </AuthLayout>
   );
 }
 
-/** Wraps a CaptureCard with a numbered step badge, same treatment as
- * Profile.jsx's identical StepCard -- kept as its own small copy here rather
- * than importing Profile's (unexported) version, since sharing it would mean
- * either exporting a component out of a page module or lifting it into
- * components/ for exactly one other caller. */
-function StepBadgeCard({ number, done, children }) {
-  return (
-    <div className="relative">
-      <span
-        className={`absolute -top-3 -left-3 z-10 inline-flex items-center justify-center w-7 h-7 rounded-full text-xs font-bold shadow-card ${
-          done ? "bg-success text-white" : "bg-ink text-page"
-        }`}
-      >
-        {done ? <Icon name="check" width={13} height={13} /> : number}
-      </span>
-      {children}
-    </div>
-  );
-}

@@ -55,7 +55,10 @@ export function usePhotoBlob(path, active) {
   return state;
 }
 
-function PhotoBox({ label, path, active }) {
+/** Exported so the student's own Profile page can render the same two boxes
+ * with the same auth-aware loading and the same "not on file yet" fallback,
+ * rather than a near-identical second copy that drifts. */
+export function PhotoBox({ label, path, active }) {
   const { loading, url, error } = usePhotoBlob(path, active);
   return (
     <div className="flex-1 min-w-0">

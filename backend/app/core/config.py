@@ -108,6 +108,127 @@ class Settings(BaseSettings):
     AUTH_RATE_LIMIT_MAX_REQUESTS: int = 10
     AUTH_RATE_LIMIT_WINDOW_SECONDS: int = 60
 
+    # Per-USER ceiling on the CPU-expensive proctoring endpoints (face/verify,
+    # id-card/verify, objects/detect, pose/check). Each runs a real model --
+    # ArcFace, EasyOCR, YOLO11s, MediaPipe -- on an image of up to ~7MB, and
+    # before this existed a single valid student token could loop any of them
+    # and starve every other exam in progress of CPU.
+    #
+    # Applied per endpoint, not shared across them, and sized against what the
+    # client actually does (frontend/src/lib/proctoring.js): pose every 5s
+    # (12/min), objects every 10s (6/min), face identity every 12s (5/min). 30
+    # per minute leaves the busiest of those 2.5x headroom, so a slow tick,
+    # a retry, or a reconnect never trips it -- while still cutting a tight
+    # loop off almost immediately.
+    #
+    # Keyed by user id rather than IP on purpose: an exam hall behind one NAT
+    # shares a source address, so an IP-keyed limit would throttle the whole
+    # room as though it were one abuser.
+    AI_RATE_LIMIT_MAX_REQUESTS: int = 30
+    AI_RATE_LIMIT_WINDOW_SECONDS: int = 60
+
+    # --- Outbound email (app/services/email_service.py) ----------------------
+    # Everything email-driven in this app is OFF by default and degrades to a
+    # logged no-op rather than an error, which is deliberate: a fresh clone, the
+    # test suite, and a local dev stack must all run with no mail server and no
+    # credentials, exactly as they did before email existed here at all.
+    #
+    # Set EMAIL_ENABLED=true plus the SMTP_* values to switch it on. With Gmail
+    # that means an App Password (16 characters, no spaces), NOT the account
+    # password -- Google blocks plain-password SMTP, and an App Password
+    # requires 2-Step Verification to be enabled on the account first.
+    EMAIL_ENABLED: bool = False
+    SMTP_HOST: str = "smtp.gmail.com"
+    # 587 = STARTTLS (upgrade a plaintext connection), 465 = implicit TLS.
+    # SMTP_USE_TLS below selects which handshake is used; the two must agree or
+    # the connection hangs until timeout rather than failing cleanly.
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_USE_TLS: bool = True
+    # Bounded so a wedged or blackholed SMTP host cannot pin a worker thread
+    # indefinitely. Sending already happens off the request path, but an
+    # unbounded socket read would still leak a thread per stuck send.
+    SMTP_TIMEOUT_SECONDS: float = 20.0
+    # Defaults to SMTP_USERNAME when blank (see email_service.from_address) --
+    # for Gmail these are the same address anyway, and a From: that doesn't
+    # match the authenticated account is silently rewritten by Google.
+    EMAIL_FROM: str = ""
+    EMAIL_FROM_NAME: str = "Merit.Ai"
+    # Where "an examiner requested access" notifications go. Falls back to
+    # every active admin account's email when blank.
+    ADMIN_NOTIFICATION_EMAIL: str = ""
+    # Used to build absolute links in emails (a relative /login is meaningless
+    # in an inbox). Should match the origin students actually load the app on.
+    APP_BASE_URL: str = "http://localhost"
+
+    # --- One-time passcodes (app/services/otp_service.py) --------------------
+    OTP_LENGTH: int = 6
+    OTP_TTL_MINUTES: int = 10
+    # Wrong-guess budget per issued code. At 6 digits there are a million
+    # possibilities, so this is not really about brute force -- it is about
+    # making an intercepted-but-unknown code useless after a handful of tries
+    # and bounding how long one issued code stays alive under attack.
+    OTP_MAX_ATTEMPTS: int = 5
+    # Minimum gap between issuing two codes to the same address. Stops the
+    # "resend" button from being used to mailbomb someone else's inbox.
+    OTP_RESEND_COOLDOWN_SECONDS: int = 60
+
+    # --- Proctoring signal kill switches -------------------------------------
+    # Each AI signal can be switched off independently, without a redeploy and
+    # without stopping exams in progress.
+    #
+    # This exists because the failure mode it addresses has already happened
+    # here: the classical anti-spoof heuristic false-positived on legitimate
+    # candidates every few seconds for the length of an exam (see the long note
+    # in face_service.verify_live_frame). The fix then was a code change. During
+    # a live exam sitting, a code change is not an option -- so a misbehaving
+    # model needs to be silenceable from the environment.
+    #
+    # Turning one off degrades that signal to "not collected"; it never fails an
+    # attempt, and every other signal keeps working. The exam is always more
+    # important than any individual proctoring input.
+    # Deliberately only the three MONITORING signals. ID-card OCR is not here
+    # on purpose: it gates exam entry rather than raising violations, so a
+    # switch that turned it off would lock every unverified candidate out of
+    # their exam instead of degrading gracefully. Making that safe needs a
+    # manual-verification path first, which is a feature, not a flag.
+    FACE_MATCHING_ENABLED: bool = True
+    OBJECT_DETECTION_ENABLED: bool = True
+    POSE_DETECTION_ENABLED: bool = True
+
+    # --- Biometric data lifecycle (app/services/biometric_service.py) --------
+    # This platform stores face photos, 512-d ArcFace embeddings, ID-card images
+    # and violation screenshots. Until now none of it had a lifecycle at all:
+    # no recorded consent, no expiry, and no way to delete it short of SQL.
+    #
+    # The consent text shown to a candidate at capture time. Bumping this string
+    # is what marks every previously-recorded consent as stale -- consent is
+    # only meaningful against the wording that was actually agreed to, so the
+    # version is stored per capture rather than assumed global.
+    BIOMETRIC_CONSENT_VERSION: str = "2026-08-04.v1"
+    # Days after a student's last activity before their biometric data becomes
+    # eligible for automatic deletion.
+    #
+    # 0 means NEVER auto-delete, and that is the default deliberately: the right
+    # retention period is a policy and legal decision for the institution
+    # deploying this, not something a library author should pick on their
+    # behalf, and a default that silently destroys evidence during an open
+    # appeal would be far worse than one that keeps too much. Set it explicitly.
+    # The manual deletion endpoints work regardless of this setting.
+    BIOMETRIC_RETENTION_DAYS: int = 0
+    # How often the purge sweep runs, when retention is enabled at all.
+    BIOMETRIC_PURGE_INTERVAL_HOURS: int = 24
+
+    # --- Exam reminders (app/services/reminder_service.py) -------------------
+    EXAM_REMINDER_ENABLED: bool = True
+    EXAM_REMINDER_MINUTES_BEFORE: int = 5
+    # How often the background loop looks for exams due a reminder. Must be
+    # comfortably smaller than EXAM_REMINDER_MINUTES_BEFORE or a reminder can
+    # be skipped entirely: the window it looks for is bounded on both sides,
+    # and a poll interval wider than that window steps straight over it.
+    EXAM_REMINDER_POLL_SECONDS: int = 60
+
     class Config:
         env_file = ".env"
 

@@ -11,24 +11,45 @@ reveals whether an email already belongs to a user, and it silently de-dupes
 repeat submissions instead of erroring, so the form can't be used to probe for
 registered addresses.
 """
+import logging
 from datetime import datetime, timezone
 
-from fastapi import HTTPException, status
+from fastapi import BackgroundTasks, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models.access_request import AccessRequest
 from app.models.enums import AccessRequestStatus
 from app.models.user import User
 from app.repositories import access_request_repository, user_repository
-from app.services import auth_service
+from app.services import auth_service, email_service
+
+logger = logging.getLogger("app")
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _admin_recipients(db: Session) -> list[str]:
+    """Who to tell about a new access request.
+
+    An explicitly configured ADMIN_NOTIFICATION_EMAIL wins outright -- that is
+    the shared operational mailbox, and once it is set, fanning out to every
+    individual admin as well would just duplicate the message. Only when it is
+    unset does this fall back to the admin accounts in the database, so a
+    deployment that configures nothing still gets the notification somewhere
+    rather than nowhere.
+    """
+    configured = settings.ADMIN_NOTIFICATION_EMAIL.strip()
+    if configured:
+        return [configured]
+    return user_repository.list_admin_emails(db)
+
+
 def submit(db: Session, *, first_name: str, last_name: str, email: str,
-           organization_name: str, purpose: str) -> AccessRequest:
+           organization_name: str, purpose: str,
+           background: BackgroundTasks | None = None) -> AccessRequest:
     """Record a request from the public form.
 
     Returns the existing row when this email already has one pending, so a
@@ -39,9 +60,14 @@ def submit(db: Session, *, first_name: str, last_name: str, email: str,
     """
     existing = access_request_repository.get_pending_by_email(db, email)
     if existing:
+        # No email on this branch, on purpose. A repeat submission is usually a
+        # double-click or a refresh, and re-notifying every admin each time
+        # would turn the de-dupe that protects their queue into a way to spam
+        # their inbox instead -- the same abuse this function's account-
+        # enumeration defence already anticipates, through a different door.
         return existing
 
-    return access_request_repository.create(
+    request = access_request_repository.create(
         db,
         first_name=first_name,
         last_name=last_name,
@@ -49,6 +75,15 @@ def submit(db: Session, *, first_name: str, last_name: str, email: str,
         organization_name=organization_name,
         purpose=purpose,
     )
+
+    subject, text, html = email_service.access_request_message(
+        first_name=first_name, last_name=last_name, email=email,
+        organization_name=organization_name, purpose=purpose,
+    )
+    for recipient in _admin_recipients(db):
+        email_service.queue(background, to=recipient, subject=subject, text_body=text, html_body=html)
+
+    return request
 
 
 def _load_pending(db: Session, request_id: int) -> AccessRequest:
@@ -63,7 +98,8 @@ def _load_pending(db: Session, request_id: int) -> AccessRequest:
     return request
 
 
-def approve(db: Session, request_id: int, admin: User, password: str, review_note: str | None) -> AccessRequest:
+def approve(db: Session, request_id: int, admin: User, password: str, review_note: str | None,
+            background: BackgroundTasks | None = None) -> AccessRequest:
     """Approve a request and mint the examiner account it asked for.
 
     The account creation and the status flip are one commit, not two.
@@ -109,6 +145,19 @@ def approve(db: Session, request_id: int, admin: User, password: str, review_not
     except Exception:
         db.rollback()
         raise
+
+    # Strictly AFTER the commit. Queuing the credentials email inside the try
+    # block would mean a rollback still sends someone a working-looking password
+    # for an account that does not exist -- and unlike the database, an email
+    # cannot be rolled back once it is on its way.
+    subject, text, html = email_service.credentials_message(
+        full_name=request.full_name,
+        email=request.email,
+        password=password,
+        organization_name=request.organization_name,
+    )
+    email_service.queue(background, to=request.email, subject=subject, text_body=text, html_body=html)
+
     return request
 
 

@@ -45,6 +45,12 @@ class ProctorEventOut(BaseModel):
 
 
 class FaceMatchResponse(BaseModel):
+    # Mirrors ObjectDetectionResponse/PoseCheckResponse below: False means the
+    # signal was not collected (switched off, or the model is unavailable), as
+    # distinct from "collected and found nothing". The exam client must treat
+    # an unavailable signal as no information rather than as a failed check --
+    # see FACE_MATCHING_ENABLED in app/core/config.py.
+    available: bool = True
     face_count: int
     match: bool | None = None
     distance: float | None = None

@@ -8,7 +8,7 @@ tenancy filtering, unlike organization_service, because an admin is the one
 role meant to see across every organization at once.
 """
 from sqlalchemy import func, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.models.attempt import StudentExamAttempt
 from app.models.enums import AttemptStatus
@@ -89,16 +89,23 @@ def expected_students_for_exam(db: Session, exam: Exam) -> list[Student]:
     (participant rows present) uses exactly that allow-list, resolved to
     real accounts only; an unrestricted exam uses the organization roster.
     """
+    # joinedload(user): every caller reads student.user.full_name / .email while
+    # building a row, and `user` is a lazy relationship -- so without this the
+    # loop emits one extra SELECT per candidate purely to fetch a name. Eager-
+    # loading it here fixes that for all callers at once rather than leaving
+    # each list endpoint to remember.
+    base = db.query(Student).options(joinedload(Student.user))
+
     restricted = db.query(ExamParticipant.id).filter(ExamParticipant.exam_id == exam.id).first() is not None
     if restricted:
         ids = [sid for (sid,) in db.query(ExamParticipant.student_id)
                .filter(ExamParticipant.exam_id == exam.id, ExamParticipant.student_id.isnot(None)).all()]
         if not ids:
             return []
-        return db.query(Student).filter(Student.id.in_(ids)).all()
+        return base.filter(Student.id.in_(ids)).all()
     if not exam.organization_id:
         return []
-    return db.query(Student).filter(Student.organization_id == exam.organization_id).all()
+    return base.filter(Student.organization_id == exam.organization_id).all()
 
 
 def violation_counts_for_attempts(db: Session, attempt_ids: list[int]) -> dict[int, int]:

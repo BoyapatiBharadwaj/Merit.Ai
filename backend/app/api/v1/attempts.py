@@ -136,17 +136,46 @@ def get_answers(attempt_id: int, db: Session = Depends(get_db), user: User = Dep
 
 @router.put("/{attempt_id}/answer")
 def save_answer(attempt_id: int, payload: SaveAnswerRequest, db: Session = Depends(get_db), user: User = Depends(require_student)):
+    """Autosave one MCQ answer.
+
+    Returns 200 even when the write was NOT applied, and says so in `applied`.
+    A stale or duplicate save is a normal consequence of the client's retry
+    backoff on a bad connection, not a client error -- surfacing it as a 4xx
+    would light up the candidate's screen with failures during exactly the
+    network conditions where they most need reassurance. The stored state comes
+    back either way so the client can reconcile.
+    """
     student = user_repository.get_student_by_user_id(db, user.id)
-    answer = attempt_service.save_answer(db, student.id, attempt_id, payload.question_id, payload.selected_option_id)
-    return {"saved": True, "question_id": answer.question_id, "selected_option_id": answer.selected_option_id}
+    answer, outcome = attempt_service.save_answer(
+        db, student.id, attempt_id, payload.question_id, payload.selected_option_id,
+        answer_version=payload.answer_version, idempotency_key=payload.idempotency_key,
+    )
+    return {
+        "saved": True,
+        "applied": outcome == attempt_repository.AnswerWriteOutcome.APPLIED,
+        "outcome": outcome,
+        "question_id": answer.question_id,
+        "selected_option_id": answer.selected_option_id,
+        "answer_version": answer.answer_version,
+    }
 
 
 @router.put("/{attempt_id}/multi-answer")
 def save_multi_answer(attempt_id: int, payload: SaveMultiAnswerRequest, db: Session = Depends(get_db), user: User = Depends(require_student)):
     student = user_repository.get_student_by_user_id(db, user.id)
-    answer = attempt_service.save_multi_select_answer(db, student.id, attempt_id, payload.question_id, payload.selected_option_ids)
+    answer, outcome = attempt_service.save_multi_select_answer(
+        db, student.id, attempt_id, payload.question_id, payload.selected_option_ids,
+        answer_version=payload.answer_version, idempotency_key=payload.idempotency_key,
+    )
     selected_ids = json.loads(answer.selected_option_ids_json) if answer.selected_option_ids_json else []
-    return {"saved": True, "question_id": answer.question_id, "selected_option_ids": selected_ids}
+    return {
+        "saved": True,
+        "applied": outcome == attempt_repository.AnswerWriteOutcome.APPLIED,
+        "outcome": outcome,
+        "question_id": answer.question_id,
+        "selected_option_ids": selected_ids,
+        "answer_version": answer.answer_version,
+    }
 
 
 @router.put("/{attempt_id}/code-answer")
@@ -154,8 +183,17 @@ def save_code_answer(attempt_id: int, payload: CodeAnswerRequest, db: Session = 
     """Autosave only -- persists the student's current code without running
     it. Grading happens once at final submit (see attempt_service)."""
     student = user_repository.get_student_by_user_id(db, user.id)
-    answer = attempt_service.save_code_answer(db, student.id, attempt_id, payload.question_id, payload.source_code)
-    return {"saved": True, "question_id": answer.question_id}
+    answer, outcome = attempt_service.save_code_answer(
+        db, student.id, attempt_id, payload.question_id, payload.source_code,
+        answer_version=payload.answer_version, idempotency_key=payload.idempotency_key,
+    )
+    return {
+        "saved": True,
+        "applied": outcome == attempt_repository.AnswerWriteOutcome.APPLIED,
+        "outcome": outcome,
+        "question_id": answer.question_id,
+        "answer_version": answer.answer_version,
+    }
 
 
 @router.post("/{attempt_id}/code-answer/run")

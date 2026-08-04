@@ -28,10 +28,6 @@ def list_all_exams(db: Session) -> list[Exam]:
     return db.query(Exam).order_by(Exam.created_at.desc()).all()
 
 
-def list_published_exams(db: Session) -> list[Exam]:
-    now = datetime.now(timezone.utc)
-    return (db.query(Exam).filter(Exam.status == ExamStatus.PUBLISHED).filter(or_(Exam.start_time.is_(None), Exam.start_time <= now)).filter(or_(Exam.end_time.is_(None), Exam.end_time >= now)).order_by(Exam.created_at.desc()).all())
-
 
 def publish_exam(db: Session, exam: Exam) -> Exam:
     exam.status = ExamStatus.PUBLISHED
@@ -140,6 +136,18 @@ def replace_options(db: Session, question_id: int, options: list[dict]) -> None:
 
 def delete_question(db: Session, question: Question) -> None:
     db.delete(question)
+    db.commit()
+
+
+def delete_section(db: Session, section: Section) -> None:
+    """Delete a section and, by cascade, every question and option inside it.
+
+    The cascade is the schema's (questions.section_id is ON DELETE CASCADE, and
+    options hang off questions the same way), not something re-implemented here
+    -- so this cannot leave orphaned questions behind if the loop it would
+    otherwise need were ever to fail halfway.
+    """
+    db.delete(section)
     db.commit()
 
 

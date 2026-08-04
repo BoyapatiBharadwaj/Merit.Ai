@@ -35,6 +35,11 @@ class Student(Base):
     # in the same request, so nobody could review it afterwards. Saved
     # regardless of whether the name matched; see identity_service.
     id_card_image_path = Column(String(255), nullable=True)
+    # Consent captured alongside the ID-card upload. Separate from the face
+    # profile's own consent because the two are captured at different moments
+    # and a candidate may complete one and abandon the other.
+    id_consent_version = Column(String(50), nullable=True)
+    id_consented_at = Column(DateTime(timezone=True), nullable=True)
 
     # Set once face + ID are both confirmed. From that point the student's
     # legal name and email are frozen -- otherwise a student could verify as

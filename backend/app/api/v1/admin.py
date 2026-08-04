@@ -12,9 +12,10 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_admin
+from app.models.user import User
 from app.database.session import get_db
 from app.schemas.admin import ExaminerUpdateRequest
-from app.services import admin_service, organization_service
+from app.services import activity_service, admin_service, organization_service
 
 router = APIRouter(prefix="/admin", tags=["Admin Dashboard"])
 
@@ -124,3 +125,25 @@ def get_violations(severity: str | None = None, decision: str | None = None,
     return admin_service.violations_overview(
         db, severity=severity, decision=decision, exam_id=exam_id, examiner_id=examiner_id,
     )
+
+
+# ------------------------------------------------------------------------------
+# Activity trail
+# ------------------------------------------------------------------------------
+
+@router.get("/users/{user_id}/activity")
+def user_activity(user_id: int, limit: int = 100, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """One account's security and identity timeline, newest first.
+
+    Keyed on user id rather than student/examiner id so a single endpoint serves
+    both the candidate and examiner drill-downs -- the events (login, password,
+    account status) are identical for either role.
+    """
+    return activity_service.list_for_user(db, user_id, limit=min(limit, 500))
+
+
+@router.get("/activity")
+def recent_activity(limit: int = 200, activity_type: str | None = None,
+                    db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """Platform-wide feed, optionally filtered to one event type."""
+    return activity_service.list_recent(db, limit=min(limit, 500), activity_type=activity_type)

@@ -51,3 +51,46 @@ class UpdateProfileRequest(BaseModel):
 
 class AdminResetPasswordRequest(BaseModel):
     new_password: str = Field(min_length=8, max_length=128)
+
+
+# --- One-time passcode flows --------------------------------------------------
+
+class OtpRequest(BaseModel):
+    """Ask for a code. Used by both signup verification and password reset;
+    which one is decided by the endpoint, not by a field here, so a caller can
+    never request a signup code and spend it on a password reset."""
+    email: EmailStr
+
+
+class OtpVerifyRequest(BaseModel):
+    email: EmailStr
+    # Length is deliberately a range rather than pinned to OTP_LENGTH: the
+    # setting is configurable, and a schema that hard-codes 6 would start
+    # rejecting valid codes the moment someone raises it.
+    code: str = Field(min_length=4, max_length=12)
+
+
+class OtpRequestAccepted(BaseModel):
+    """Intentionally says nothing about whether the address is registered --
+    see otp_service.request_code on account enumeration."""
+    sent: bool = True
+    message: str
+    # Surfaced so the UI can render "expires in N minutes" without hard-coding
+    # a value the server is free to change.
+    expires_in_minutes: int
+
+
+class RegisterStudentWithOtpRequest(RegisterStudentRequest):
+    """Student self-registration, gated on a code already mailed to `email`.
+
+    Subclasses the existing request rather than replacing it so the two share
+    one definition of what a student registration is; the plain endpoint stays
+    available for deployments running with EMAIL_ENABLED=false.
+    """
+    code: str = Field(min_length=4, max_length=12)
+
+
+class PasswordResetConfirmRequest(BaseModel):
+    email: EmailStr
+    code: str = Field(min_length=4, max_length=12)
+    new_password: str = Field(min_length=8, max_length=128)
