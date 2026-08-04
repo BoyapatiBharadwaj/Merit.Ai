@@ -14,6 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.router import api_router
+from app.core import shared_state
 from app.core.config import settings
 from app.database.session import SessionLocal
 
@@ -37,31 +38,31 @@ if not settings.cors_origins:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Start and stop background workers around the app's serving lifetime.
+    """Startup checks. This process no longer runs any periodic work.
 
-    A lifespan context rather than the older on_event pair: on_event is
-    deprecated in this FastAPI version, and more usefully, startup and shutdown
-    for one subsystem live next to each other here instead of in two handlers
-    that can drift apart.
+    The exam-reminder loop used to start here. It now lives in its own
+    single-replica service (app/scheduler/main.py), because a loop inside the
+    API is only correct while the API is one process -- run four uvicorn workers
+    and four copies of it wake up together, racing to send the same reminders.
+    Moving it out is what makes scaling this service safe.
 
-    Both halves are guarded. A scheduler that cannot start must not stop the API
-    from serving -- exams still run and candidates still sit them, only the
-    courtesy reminder is lost -- and an error while stopping must not turn a
-    clean shutdown into a hung container.
+    What remains is a startup warning for the one configuration that is silently
+    wrong: several workers with no shared state. Each worker would keep private
+    rate-limit counters, so every limit is quietly multiplied by the worker
+    count, and nothing about the running system looks broken.
     """
-    from app.services import reminder_service
-
-    try:
-        reminder_service.start()
-    except Exception:
-        logger.exception("Could not start the exam reminder scheduler; the API will run without it")
+    workers = int(os.getenv("WEB_CONCURRENCY", "1") or 1)
+    if workers > 1 and not shared_state.is_available():
+        logger.warning(
+            "Running %s uvicorn workers with no Redis (REDIS_URL is unset or unreachable). "
+            "Rate-limit counters are PER PROCESS, so every limit is effectively multiplied by %s. "
+            "Set REDIS_URL, or run a single worker.",
+            workers, workers,
+        )
+    elif shared_state.is_available():
+        logger.info("Shared state is available; rate limits are enforced across all workers.")
 
     yield
-
-    try:
-        await reminder_service.stop()
-    except Exception:
-        logger.exception("Error while stopping the exam reminder scheduler")
 
 
 # Interactive docs are development-only.

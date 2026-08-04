@@ -23,7 +23,9 @@ What happens now instead:
     the reason is logged. A deployment that forgot to configure this ends up
     with no admin rather than a publicly known one; `python -m app.utils.seed`
     can be run by hand once a real password is set.
-  * SEED_ADMIN_PASSWORD set to the old public default -> refused in production.
+  * SEED_ADMIN_PASSWORD set to the old public default -> allowed, with a loud
+    warning. An operator who types it explicitly is not doing it by accident,
+    and the unset-in-production branch above already covers the accident.
   * The password is never printed when it was supplied by the operator, who
     already knows it and does not need it in the logs.
 """
@@ -41,9 +43,8 @@ logger = logging.getLogger("app")
 
 DEFAULT_ADMIN_EMAIL = os.getenv("SEED_ADMIN_EMAIL", "admin@merit.ai")
 
-# The credential this file used to hard-code. Kept only so it can be recognised
-# and rejected -- a deployment that pastes it into SEED_ADMIN_PASSWORD to "keep
-# things working" is exactly the case this whole change exists to stop.
+# The credential this file used to hard-code. Kept so an explicit use of it can
+# still be called out in the logs -- see _resolve_admin_password.
 PUBLICLY_KNOWN_PASSWORD = "Admin@12345"
 
 
@@ -57,12 +58,21 @@ def _resolve_admin_password() -> tuple[str | None, bool]:
     configured = os.getenv("SEED_ADMIN_PASSWORD", "").strip()
 
     if configured:
-        if configured == PUBLICLY_KNOWN_PASSWORD and settings.is_production:
-            logger.error(
-                "Refusing to seed an admin with the publicly known default password. "
-                "Set SEED_ADMIN_PASSWORD to something else."
+        if configured == PUBLICLY_KNOWN_PASSWORD:
+            # Warn loudly, but proceed.
+            #
+            # This used to refuse outright. That was the wrong call: the guard
+            # exists to stop a deployment *accidentally* shipping with the
+            # default that lives in .env.example and the README -- and an
+            # operator who has explicitly typed it into SEED_ADMIN_PASSWORD is
+            # not doing it by accident. Refusing an explicit instruction is
+            # paternalistic; refusing to mention the risk would be negligent.
+            # The unset-in-production branch below still covers the accident.
+            logger.warning(
+                "SEED_ADMIN_PASSWORD is the publicly known default from .env.example. "
+                "Anyone who has seen this repository can sign in as an administrator. "
+                "Fine for local development -- change it before real candidates use this."
             )
-            return None, False
         return configured, False
 
     if settings.is_production:

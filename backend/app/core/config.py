@@ -174,6 +174,42 @@ class Settings(BaseSettings):
     # "resend" button from being used to mailbomb someone else's inbox.
     OTP_RESEND_COOLDOWN_SECONDS: int = 60
 
+    # --- Database pool (app/database/session.py) -----------------------------
+    # PER PROCESS. Total connections to Postgres are
+    # (DB_POOL_SIZE + DB_MAX_OVERFLOW) x WEB_CONCURRENCY x replicas, plus the
+    # worker and scheduler services. Postgres defaults to max_connections=100,
+    # so this is the number to revisit before raising WEB_CONCURRENCY much.
+    DB_POOL_SIZE: int = 5
+    DB_MAX_OVERFLOW: int = 10
+    DB_POOL_TIMEOUT_SECONDS: int = 30
+    DB_POOL_RECYCLE_SECONDS: int = 1800
+
+    # --- Shared state / Redis (app/core/shared_state.py) ---------------------
+    # Needed only once this app runs as more than one process. A single uvicorn
+    # worker has nothing to share state WITH, so this stays optional and empty
+    # by default -- the test suite and a fresh clone must not require a Redis.
+    #
+    # Set it, and rate-limit counters become shared across every API worker and
+    # replica. Leave it unset while running several workers and each keeps its
+    # own counters, which quietly multiplies every limit by the worker count.
+    # main.py warns loudly about exactly that combination at startup.
+    REDIS_URL: str = ""
+    # Bounded so a wedged Redis cannot hold a request thread. Everything Redis
+    # is used for here has a working fallback, so waiting is never worth it.
+    REDIS_TIMEOUT_SECONDS: float = 2.0
+
+    # --- Background job queue (app/worker/) ----------------------------------
+    # Work that must not block a request: PDF report generation, bulk email,
+    # post-exam analysis. Requires REDIS_URL; without it these run inline
+    # exactly as they do today.
+    JOB_QUEUE_NAME: str = "meritai:jobs"
+    # Wall-clock ceiling on one job. Generous because a PDF for a large cohort
+    # is legitimately slow, but finite so a wedged job cannot occupy a worker
+    # slot forever.
+    JOB_TIMEOUT_SECONDS: int = 600
+    # How long a finished job's result is kept for the caller to collect.
+    JOB_RESULT_TTL_SECONDS: int = 3600
+
     # --- Proctoring signal kill switches -------------------------------------
     # Each AI signal can be switched off independently, without a redeploy and
     # without stopping exams in progress.

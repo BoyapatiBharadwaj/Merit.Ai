@@ -99,4 +99,12 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD curl -f http://127.0.0.1:8000/api/health || exit 1
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Workers come from WEB_CONCURRENCY at runtime, so the same image serves a
+# single-worker dev stack and a multi-worker deployment without a rebuild.
+# Shell form (not exec form) because the value must be expanded by a shell --
+# exec form would pass the literal string "$WEB_CONCURRENCY" to uvicorn.
+#
+# NOTE: with >1 worker, REDIS_URL must be set or rate-limit counters become
+# per-process and every limit is silently multiplied. app/main.py warns about
+# exactly that at startup.
+CMD ["sh", "-c", "exec python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${WEB_CONCURRENCY:-1}"]

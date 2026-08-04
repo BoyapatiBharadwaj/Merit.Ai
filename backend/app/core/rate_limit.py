@@ -12,16 +12,21 @@ process-wide lock guards the shared dict, because FastAPI runs each sync
 kind of bug if skipped) as the locks added around the shared MediaPipe/
 ArcFace model instances in app/ai/face_service.py and app/ai/pose_service.py.
 
-Two deliberate scope limits, not oversights:
+Two storage backends, chosen at runtime:
 
-  * In-process, not Redis-backed. This app runs as a single uvicorn process
-    (see the run instructions in the repo root), so an external shared store
-    would be pure overhead for no benefit. Running multiple worker processes
-    behind a load balancer would split real traffic across separate
-    in-memory counters, one per process, each seeing only a fraction of any
-    given attacker's requests -- worth swapping for a shared store at that
-    point, not before.
-  * The outer `_buckets` dict itself is never pruned of long-idle keys, only
+  * **Redis**, when REDIS_URL is set. Every API worker and replica then counts
+    against one shared budget. This is required once core-api runs more than a
+    single uvicorn worker -- N processes with N private counters means an
+    attacker gets N times the limit, and nothing about the system looks wrong
+    while it happens.
+  * **In-process**, otherwise. Exactly correct for one worker, and what the
+    test suite and any Redis-less deployment use. A Redis outage also falls
+    back here rather than failing the request: looser limits for a moment beat
+    nobody being able to sign in.
+
+One scope limit that remains:
+
+  * The in-process `_buckets` dict is never pruned of long-idle keys, only
     the timestamps inside each one. An attacker rotating through a very
     large number of distinct source IPs could grow it unboundedly. Doing
     that at meaningful scale needs real distributed infrastructure (a
@@ -29,13 +34,17 @@ Two deliberate scope limits, not oversights:
     single-source credential-stuffing this exists to stop; a TTL-evicting
     store is the right answer if that ever becomes a real concern here.
 """
+import logging
 import threading
 import time
 from collections import defaultdict, deque
 
 from fastapi import HTTPException, Request, status
 
+from app.core import shared_state
 from app.core.config import settings
+
+logger = logging.getLogger("app")
 
 _lock = threading.Lock()
 _buckets: dict[tuple[str, str], deque] = defaultdict(deque)
@@ -73,6 +82,70 @@ def consume(bucket: str, identity: str, *, limit: int, window: int,
     is both the more precise key and the harder one to rotate -- and keying those
     endpoints by IP would throttle an entire exam hall behind one NAT as though
     it were a single abuser.
+
+    Backed by Redis when it is configured, so every API worker and replica
+    counts against ONE budget. Without Redis it falls back to the per-process
+    deque below, which is correct for a single worker and quietly wrong for
+    several -- see _consume_in_process.
+    """
+    if _consume_in_redis(bucket, identity, limit=limit, window=window, message=message):
+        return
+    _consume_in_process(bucket, identity, limit=limit, window=window, message=message)
+
+
+def _consume_in_redis(bucket: str, identity: str, *, limit: int, window: int, message: str) -> bool:
+    """Shared counter. Returns False if Redis isn't available, so the caller falls back.
+
+    INCR + EXPIRE in one pipeline, not a read-modify-write. Reading the count and
+    then writing it back would let two workers both see `limit - 1` and both
+    proceed, which is precisely the race a shared counter exists to remove.
+    INCR is atomic server-side, so the Nth caller always gets N.
+
+    The window is a fixed bucket keyed on the current interval rather than a
+    sliding log of timestamps: it costs one integer per key instead of a list,
+    and the difference in fairness at a boundary is not worth per-request memory
+    proportional to traffic.
+    """
+    client = shared_state.get_client()
+    if client is None:
+        return False
+
+    now = int(time.time())
+    slot = now // window
+    key = f"ratelimit:{bucket}:{identity}:{slot}"
+
+    try:
+        pipe = client.pipeline()
+        pipe.incr(key)
+        # Set on every call rather than only on creation: a key that somehow
+        # loses its TTL would otherwise count forever and permanently lock the
+        # caller out. Re-setting an equal TTL is free.
+        pipe.expire(key, window)
+        count, _ = pipe.execute()
+    except Exception:
+        # A Redis blip must never turn into a 500 on a login. Fall through to
+        # the in-process counter, which is strictly more permissive but always
+        # available -- the failure mode is "limits are looser for a moment",
+        # not "nobody can sign in".
+        logger.warning("Rate-limit check against Redis failed; using per-process counters", exc_info=True)
+        return False
+
+    if count > limit:
+        retry_after = max(1, window - (now % window))
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            message,
+            headers={"Retry-After": str(retry_after)},
+        )
+    return True
+
+
+def _consume_in_process(bucket: str, identity: str, *, limit: int, window: int, message: str) -> None:
+    """The original per-process sliding window.
+
+    Correct for one worker. With several, each process keeps its own deque, so
+    the effective limit is `limit x worker_count` -- which is why main.py warns
+    at startup if workers > 1 and Redis is absent.
     """
     key = (bucket, identity)
     now = time.monotonic()
@@ -102,3 +175,12 @@ def _reset_all() -> None:
     """
     with _lock:
         _buckets.clear()
+    # Redis keys as well, when it is in play -- otherwise a test that exhausts a
+    # limit leaves it exhausted for every test after it.
+    client = shared_state.get_client()
+    if client is not None:
+        try:
+            for key in client.scan_iter("ratelimit:*", count=500):
+                client.delete(key)
+        except Exception:
+            logger.warning("Could not clear Redis rate-limit keys", exc_info=True)

@@ -63,6 +63,35 @@ services:
     #   - "127.0.0.1:5432:5432"
 
   # ----------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Shared state for processes that must agree with each other: rate-limit
+    # counters across every API worker, and the background job queue. Not a
+    # cache of the database -- nothing here is authoritative, and everything
+    # that uses it degrades to per-process behaviour if it disappears (see
+    # app/core/shared_state.py).
+    #
+    # appendonly yes: the job queue holds work that has been accepted but not
+    # yet run. Losing that on a restart means silently dropping a queued report
+    # or email, which nobody would notice until someone asked where it went.
+    command: >-
+      redis-server
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy noeviction
+    volumes:
+      - redis_data:/data
+    networks:
+      - cache-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # ----------------------------------------------------------------------------
   ai-worker:
     build:
       context: ./backend
@@ -128,6 +157,19 @@ services:
       LOCKDOWN_STRIKE_LIMIT: ${LOCKDOWN_STRIKE_LIMIT:-3}
       CODE_EXECUTION_ENABLED: ${CODE_EXECUTION_ENABLED:-true}
       CODE_EXECUTION_MAX_CONCURRENT: ${CODE_EXECUTION_MAX_CONCURRENT:-4}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      # uvicorn worker processes. The default of 1 is what this app ran as
+      # before shared state existed; raising it is the single biggest
+      # throughput change available, because request handling was previously
+      # confined to one CPU core no matter how many the host had.
+      #
+      # Rule of thumb: (2 x cores) + 1, capped by the database. Total Postgres
+      # connections are (DB_POOL_SIZE + DB_MAX_OVERFLOW) x this number, and
+      # Postgres allows 100 by default -- so 4 workers at the defaults is 60,
+      # which is fine, and 8 would not be.
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-4}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
       # Defaults to true so an existing deployment keeps booting correctly.
       # Set false once migrations run as an explicit, backed-up deploy step --
       # see backend/entrypoint.sh for why that matters for rollback.
@@ -184,15 +226,18 @@ services:
     # every code-runner request.
     group_add:
       - "${DOCKER_GID:-999}"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      ai-worker:
-        condition: service_started
     networks:
       - data-net
       - ai-net
       - api-net
+      - cache-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ai-worker:
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/api/health"]
       interval: 30s
@@ -218,6 +263,113 @@ services:
     #     - "127.0.0.1:8000:8000"   # loopback only, never 0.0.0.0
     expose:
       - "8000"
+
+  # ----------------------------------------------------------------------------
+  scheduler:
+    # Periodic work: exam reminders, OTP purge, biometric retention.
+    #
+    # MUST stay at one replica. This loop used to live inside core-api, which
+    # was correct only while core-api was a single process -- with several
+    # workers, each ran its own copy and raced to send the same reminders.
+    # Splitting it out is what makes scaling core-api safe; scaling THIS would
+    # reintroduce the bug. There is nothing to gain from it either: the work is
+    # a few queries a minute.
+    #
+    # Shares the core-api image because it imports the same services and models.
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: ["python", "-m", "app.scheduler.main"]
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-merit_ai}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-merit_ai}
+      SECRET_KEY: "${SECRET_KEY:?Set SECRET_KEY in .env}"
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      UPLOAD_DIR: /app/uploads
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost}
+      # A scheduler with one job at a time needs a pool of one. The default of
+      # 5+10 would hold 15 idle Postgres connections doing nothing.
+      DB_POOL_SIZE: 1
+      DB_MAX_OVERFLOW: 2
+      EMAIL_ENABLED: ${EMAIL_ENABLED:-false}
+      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+      EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-Merit.Ai}
+      EXAM_REMINDER_ENABLED: ${EXAM_REMINDER_ENABLED:-true}
+      EXAM_REMINDER_MINUTES_BEFORE: ${EXAM_REMINDER_MINUTES_BEFORE:-5}
+      EXAM_REMINDER_POLL_SECONDS: ${EXAM_REMINDER_POLL_SECONDS:-60}
+      BIOMETRIC_RETENTION_DAYS: ${BIOMETRIC_RETENTION_DAYS:-0}
+      BIOMETRIC_PURGE_INTERVAL_HOURS: ${BIOMETRIC_PURGE_INTERVAL_HOURS:-24}
+      # This process never serves a request, so it must never run migrations
+      # either -- core-api owns the schema. Two containers racing to migrate the
+      # same database at boot is a genuinely nasty way to corrupt a deploy.
+      RUN_MIGRATIONS_ON_START: "false"
+      AUTO_SEED_ADMIN: "false"
+    volumes:
+      - uploads:/app/uploads
+    networks:
+      - data-net
+      - cache-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      replicas: 1
+
+  # ----------------------------------------------------------------------------
+  job-worker:
+    # Consumes the background job queue: PDF reports, bulk email, purges.
+    #
+    # Unlike the scheduler, scale this freely -- RQ hands each job to exactly
+    # one worker, so more replicas simply means more jobs in flight.
+    #
+    # Without REDIS_URL this container exits immediately and those jobs run
+    # inline inside core-api instead (see app/worker/jobs.py). That is a
+    # supported configuration, not a broken one.
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker.main"]
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-merit_ai}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-merit_ai}
+      SECRET_KEY: "${SECRET_KEY:?Set SECRET_KEY in .env}"
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      UPLOAD_DIR: /app/uploads
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost}
+      DB_POOL_SIZE: ${WORKER_DB_POOL_SIZE:-2}
+      DB_MAX_OVERFLOW: ${WORKER_DB_MAX_OVERFLOW:-3}
+      EMAIL_ENABLED: ${EMAIL_ENABLED:-false}
+      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+      EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-Merit.Ai}
+      JOB_QUEUE_NAME: ${JOB_QUEUE_NAME:-meritai:jobs}
+      RUN_MIGRATIONS_ON_START: "false"
+      AUTO_SEED_ADMIN: "false"
+    volumes:
+      - uploads:/app/uploads
+    networks:
+      - data-net
+      - cache-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      replicas: ${JOB_WORKER_REPLICAS:-1}
 
   # ----------------------------------------------------------------------------
   frontend:
@@ -261,9 +413,13 @@ networks:
   ai-net:
   api-net:
   web-net:
+  # redis <-> core-api, scheduler and job-worker only. The frontend and the
+  # proxy have no path to it, same reasoning as data-net for Postgres.
+  cache-net:
 
 volumes:
   pgdata:
+  redis_data:
   uploads:
   core_models:
   ai_models:

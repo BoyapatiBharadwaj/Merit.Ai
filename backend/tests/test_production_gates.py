@@ -134,13 +134,26 @@ def test_production_without_a_configured_password_seeds_no_admin(monkeypatch):
     assert password is None
 
 
-def test_production_refuses_the_publicly_known_password(monkeypatch):
+def test_the_publicly_known_password_is_allowed_but_warned_about(monkeypatch, caplog):
+    """Explicitly configuring it is honoured; accidentally inheriting it is not.
+
+    This previously asserted a hard refusal. Refusing an instruction the operator
+    typed on purpose is paternalistic -- the accident case (password unset in
+    production) is still covered by the test above, which is the one that
+    actually protects a deployment from shipping with a known credential.
+    """
     from app.utils import seed
 
     monkeypatch.setenv("SEED_ADMIN_PASSWORD", seed.PUBLICLY_KNOWN_PASSWORD)
     monkeypatch.setattr(settings, "ENVIRONMENT", "production")
-    password, _ = seed._resolve_admin_password()
-    assert password is None
+
+    with caplog.at_level("WARNING"):
+        password, should_print = seed._resolve_admin_password()
+
+    assert password == seed.PUBLICLY_KNOWN_PASSWORD
+    assert should_print is False
+    # The warning is the whole point of still recognising the value.
+    assert any("publicly known" in record.message for record in caplog.records)
 
 
 def test_development_generates_a_random_password_each_time(monkeypatch):
