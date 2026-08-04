@@ -1,0 +1,83 @@
+# Python virtual environments
+.venv/
+venv/
+backend/venv/
+backend/.runvenv/
+
+# Python cache and build output
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Environment and local secrets
+.env
+.env.*
+!.env.example
+
+# Downloaded AI model weights (ArcFace/buffalo_*, YOLO). Fetched on first use,
+# hundreds of MB, and reproducible -- never belongs in the repo.
+#
+# ANCHORED with a leading slash, and this matters a great deal. A bare
+# `models/` has no slash inside it, so git applies it at EVERY depth -- which
+# silently excluded `backend/app/models/`, the twelve SQLAlchemy ORM modules
+# (user, exam, attempt, question, proctor_event, ...) that define every table
+# in this application. The first commit would have looked completely normal
+# and produced a repository that cannot import `app.main`, with `git status`
+# reporting nothing wrong because ignored files are not reported as missing.
+#
+# The two directories genuinely are unrelated despite the shared name:
+# `backend/app/models/` is source, `backend/models/` is a weights cache. See
+# the naming note in CODEBASE_REVIEW.md.
+/backend/models/
+*.onnx
+*.pt
+
+# Runtime uploads and generated files
+uploads/
+backend/uploads/
+backend/.mpl-cache/
+*.log
+*.pid
+
+# Local databases and data dumps
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+*.sql
+
+# Node/frontend dependencies and build output
+node_modules/
+dist/
+build/
+.cache/
+.parcel-cache/
+.vite/
+# Vite rewrites its config to a temp .mjs beside the original on every dev-server
+# start and leaves them behind; three are sitting in frontend/ right now. They
+# are regenerated per run and meaningless to anyone else.
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# IDE/editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Docker/local volume artifacts
+postgres-data/
+pgdata/

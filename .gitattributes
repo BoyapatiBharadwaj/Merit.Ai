@@ -1,0 +1,54 @@
+# Line-ending policy.
+#
+# Git on Windows is typically configured with core.autocrlf=true, which
+# rewrites LF to CRLF on checkout. For most files that is harmless. For the
+# files below it is not, and the failure it causes is confusing enough to be
+# worth preventing outright rather than debugging later:
+#
+#   * Shell scripts run INSIDE the Linux containers. `backend/entrypoint.sh`
+#     and `backend/ai_worker/entrypoint.sh` are COPYed straight from the build
+#     context into the image and used as ENTRYPOINT. With CRLF endings the
+#     kernel reads the shebang as `/bin/sh\r`, which does not exist, and the
+#     container dies at startup with "no such file or directory" naming a file
+#     that is plainly there -- or, if it gets further, `$'\r': command not
+#     found` on every line. Nothing about either message points at line
+#     endings.
+#   * nginx .conf files and Dockerfiles are read by Linux tooling for the same
+#     reason and have the same class of problem.
+#
+# This does not depend on each developer's local git config, which is the
+# point: the repository states what these files must be.
+
+# Sensible default -- normalise text in the repo, let git pick the working-tree
+# form per platform for everything not listed explicitly below.
+* text=auto
+
+# Must be LF in the working tree, on every platform, always.
+*.sh            text eol=lf
+entrypoint.sh   text eol=lf
+Dockerfile      text eol=lf
+*.conf          text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+.env.example    text eol=lf
+
+# Python and web sources: LF everywhere keeps diffs clean between the Windows
+# dev machine and the Linux containers/CI that also read them.
+*.py            text eol=lf
+*.js            text eol=lf
+*.jsx           text eol=lf
+*.css           text eol=lf
+*.html          text eol=lf
+*.json          text eol=lf
+*.md            text eol=lf
+*.ini           text eol=lf
+*.mako          text eol=lf
+
+# Binary -- never touch, never diff as text.
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.ico           binary
+*.onnx          binary
+*.pt            binary
+*.pdf           binary

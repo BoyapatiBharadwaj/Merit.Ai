@@ -1,0 +1,60 @@
+# AI Worker -- deliberately a small subset of backend/requirements.txt.
+#
+# This process never touches Postgres, never issues or checks a JWT, and
+# never runs OCR (ID-card verification always stays in-process on the Core
+# API -- see README section 4). So it carries none of: sqlalchemy,
+# psycopg2-binary, alembic, python-jose, passlib, bcrypt, python-multipart,
+# email-validator, easyocr, reportlab. Trimming those out of this image is
+# most of the point of splitting this service out in the first place -- the
+# Core API keeps the full list (including these AI libraries) so it can still
+# fall back to local inference if this worker is ever down or unreachable;
+# see app/ai/face_service.py and app/ai/object_service.py.
+#
+# Versions are pinned to match backend/requirements.txt exactly for the
+# shared subset -- both processes run the same app/ai/*.py source (see
+# ai_worker/Dockerfile), and keeping the underlying model libraries in lockstep
+# is what guarantees the two ever produce the same ArcFace embedding for the
+# same frame, per that module's own docstring.
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+pydantic==2.7.1
+# app/core/config.py (imported transitively via app.ai.face_service ->
+# app.ai.ai_worker_client -> app.core.config) needs BaseSettings, and its
+# `class Config: env_file = ".env"` makes pydantic-settings import
+# python-dotenv eagerly at Settings() instantiation time -- even though this
+# container has no .env file and gets its config from docker-compose
+# `environment:` instead. Both are required or the worker crash-loops on boot.
+pydantic-settings==2.2.1
+python-dotenv==1.0.1
+numpy==1.26.4
+Pillow==12.2.0
+
+# Local (in-process, from this worker's point of view) face identity --
+# ArcFace via insightface + onnxruntime. Model weights (buffalo_l, ~280MB;
+# buffalo_s, ~16MB) download on first use into FACE_MODEL_ROOT, which
+# docker-compose.yml mounts as a named volume so a container restart doesn't
+# re-pay that download.
+mediapipe==0.10.14
+insightface>=1.0.1
+onnxruntime>=1.18.0
+
+# Object detection (phone / book / extra person). ultralytics is needed to
+# produce the yolo11s.onnx export and as the runtime fallback if that export
+# is missing -- see app/ai/object_service.py. AGPL-3.0; fine for internal use,
+# check it against your licensing before distributing this image.
+ultralytics>=8.3.0
+
+# --- PyTorch, CPU build, pinned explicitly ------------------------------------
+# This image carries no easyocr, but it still gets torch transitively through
+# ultralytics above -- so it hit the identical ~2GB CUDA download that broke the
+# Core API build, for the same reason and with the same non-benefit (this
+# container is given no GPU device by docker-compose.yml, and its actual
+# inference path is onnxruntime on CPU).
+#
+# Pinned to exactly the versions in backend/requirements.txt, for the same
+# reason every other shared dependency here is: both processes run the same
+# app/ai/*.py, and the two must stay in lockstep to keep producing identical
+# ArcFace embeddings. See that file for the full explanation of the `+cpu` pin.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.2.2+cpu
+torchvision==0.17.2+cpu

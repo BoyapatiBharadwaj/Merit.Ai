@@ -1,0 +1,270 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------------------------------------------------------------------------
+   Colour tokens.
+
+   These are stored as bare "R G B" channel triplets, NOT hex, because the
+   Tailwind palette maps each one through `rgb(var(--x) / <alpha-value>)`.
+   That is what makes opacity modifiers (bg-primary/10, border-danger/30,
+   ring-primary/10, text-muted/60 ...) actually compile.
+
+   They used to be hex, which silently broke every one of those: Tailwind
+   cannot derive an alpha channel from an opaque `var(--x)` reference, so it
+   emitted no rule at all -- 139 utility classes across the app resolved to
+   nothing, taking every subtle tint, hover border, focus ring, and status
+   badge background with them. Nothing errored; the styles were simply absent.
+
+   Consequence for hand-written CSS and inline styles: these vars are channel
+   lists, so they must be wrapped -- `rgb(var(--primary))`, never
+   `var(--primary)`. The exceptions below (--radius, --shadow, --brand-*) are
+   not part of the Tailwind palette and stay in their literal form.
+--------------------------------------------------------------------------- */
+:root {
+  --primary: 37 99 235;
+  --primary-dark: 29 78 216;
+  --danger: 220 38 38;
+  --warning: 217 119 6;
+  --success: 22 163 74;
+  --bg: 244 246 251;
+  --card-bg: 255 255 255;
+  --border: 226 232 240;
+  --text: 30 41 59;
+  --text-muted: 100 116 139;
+  --input-bg: 255 255 255;
+  /* Spotlight surface for a section that needs to break the page rhythm
+     without inverting it -- deeper and bluer than --bg (244 246 251) by
+     enough to read as a deliberate band rather than a rendering artefact,
+     while staying light enough that white cards still separate cleanly
+     against it. */
+  --surface-accent: 228 235 247;
+
+  --radius: 10px;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.06);
+
+  /* Brand gradient endpoints. Hex, because they are consumed only by
+     .brand-gradient below and never through the Tailwind palette.
+
+     These are separate from --primary/--primary-dark on purpose. In the dark
+     theme --primary-dark is *lighter* than --primary (it functions as a
+     brighter accent there), so `from-primary to-primary-dark` silently
+     inverts direction and renders a flat, washed-out wash on large surfaces
+     like the hero CTA. These two always run deep -> deeper, in both themes. */
+  --brand-from: #2563eb;
+  --brand-to: #1741b6;
+}
+
+[data-theme="dark"] {
+  --primary: 59 130 246;
+  --primary-dark: 96 165 250;
+  --danger: 248 113 113;
+  --warning: 251 191 36;
+  --success: 74 222 128;
+  --bg: 15 23 42;
+  --card-bg: 30 41 59;
+  --border: 51 65 85;
+  --text: 226 232 240;
+  --text-muted: 148 163 184;
+  --input-bg: 15 23 42;
+  /* Mirror of the light value: pushed *darker* than --bg here, so the
+     spotlight section separates from the page in both themes rather than
+     staying dark in one of them. Tuned so the band reads at ~1.10:1 against
+     the page, matching the light theme's step, instead of the ~1.06:1 a
+     straight sign-flip of the light value gave (perceptibly fainter, which
+     is how a "same in both themes" surface ends up looking wrong in one). */
+  --surface-accent: 6 11 22;
+
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+
+  /* Slightly lifted vs. light mode so the gradient still reads as a bright
+     brand surface against a near-black page, but never washes out. */
+  --brand-from: #2f6ef0;
+  --brand-to: #1b3fa8;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: rgb(var(--bg));
+  color: rgb(var(--text));
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+/* Loading skeleton shimmer, reused from the static dashboards' polish pass. */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: rgb(var(--border));
+  border-radius: 6px;
+  color: transparent !important;
+  pointer-events: none;
+  user-select: none;
+}
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  animation: skeletonShimmer 1.4s infinite;
+}
+[data-theme="dark"] .skeleton::after {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.08), transparent);
+}
+@keyframes skeletonShimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* ===================== Admin sidebar (AdminDashboard.jsx) ===================== */
+.dash-sidebar {
+  width: 15rem;
+  transition: width 0.2s ease;
+}
+.dash-sidebar.collapsed {
+  width: 4.25rem;
+}
+.dash-sidebar.collapsed .sidebar-label,
+.dash-sidebar.collapsed .sidebar-brand {
+  display: none;
+}
+.dash-sidebar .sidebar-link.active {
+  background: rgb(var(--bg));
+  color: rgb(var(--primary));
+  font-weight: 700;
+}
+@media (max-width: 768px) {
+  .dash-sidebar:not(.force-expanded) {
+    width: 4.25rem;
+  }
+  .dash-sidebar:not(.force-expanded) .sidebar-label,
+  .dash-sidebar:not(.force-expanded) .sidebar-brand {
+    display: none;
+  }
+}
+
+/* ===================== Exam interface (Exam.jsx) ===================== */
+.cm-host .CodeMirror {
+  height: 360px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.85rem;
+}
+.exam-toast {
+  animation: examToastIn 0.25s ease;
+}
+@keyframes examToastIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.exam-timer-danger {
+  animation: examTimerPulse 1s ease-in-out infinite;
+}
+@keyframes examTimerPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Exam lockdown. Toggled by lib/lockdown.js via body.exam-locked for the
+   duration of an attempt.
+
+   Selection and drag are suppressed so the question paper cannot be swept up
+   and dragged into another window -- the copy/paste event handlers cover the
+   clipboard path, this covers the pointer path. Form controls and the code
+   editor are explicitly exempt, since a student legitimately needs to select
+   and edit their own answer text.
+
+   -webkit-touch-callout stops the iOS/Android long-press "Copy / Share"
+   sheet, which is a separate mechanism from selectstart.
+--------------------------------------------------------------------------- */
+body.exam-locked {
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+body.exam-locked input,
+body.exam-locked textarea,
+body.exam-locked [contenteditable="true"],
+body.exam-locked .cm-editor,
+body.exam-locked .cm-content {
+  -webkit-user-select: text;
+  -moz-user-select: text;
+  -ms-user-select: text;
+  user-select: text;
+}
+
+/* Images are the easiest thing to drag out of a page wholesale. */
+body.exam-locked img {
+  -webkit-user-drag: none;
+  user-drag: none;
+  pointer-events: none;
+}
+
+/* ---------------------------------------------------------------------------
+   Brand gradient. Single definition used by the primary button, the auth
+   split-panel, the logo mark, and the marketing CTA, so the brand surface is
+   identical everywhere and can never drift between them.
+
+   Uses --brand-from/--brand-to rather than Tailwind's from-primary/
+   to-primary-dark for the reason documented next to those variables above.
+--------------------------------------------------------------------------- */
+.brand-gradient {
+  background-image: linear-gradient(135deg, var(--brand-from) 0%, var(--brand-to) 100%);
+}
+
+/* ---------------------------------------------------------------------------
+   Autofilled inputs (FormField.jsx's TextField/PasswordField).
+
+   Chrome/Edge/Safari paint their own yellow/blue fill the instant a field is
+   autofilled, ignoring background-color entirely -- the huge transition delay
+   is the only reliable override: it stalls the browser's own repaint long
+   enough that ours (via -webkit-text-fill-color + this same background) wins
+   instead, on every subsequent paint. text-fill-color is also required
+   because autofill overrides color the same way it overrides background.
+--------------------------------------------------------------------------- */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-text-fill-color: rgb(var(--text));
+  -webkit-box-shadow: 0 0 0 1000px rgb(var(--input-bg)) inset;
+  box-shadow: 0 0 0 1000px rgb(var(--input-bg)) inset;
+  transition: background-color 9999s ease-in-out 0s, color 9999s ease-in-out 0s;
+}

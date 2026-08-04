@@ -1,0 +1,44 @@
+# Same intent as .gitignore, scoped to what the Core API image build never
+# needs to see -- keeps the build context small and the image reproducible
+# regardless of what happens to exist on the machine running `docker build`.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+.env
+.env.*
+!.env.example
+
+# Downloaded AI model weights -- these belong in the named volume mounted at
+# /app/models, never baked into the image layer (multi-hundred-MB layers that
+# never change would defeat image layer caching for every other change).
+models/
+*.onnx
+*.pt
+
+uploads/
+*.log
+*.pid
+
+*.db
+*.sqlite
+*.sqlite3
+
+.git/
+.gitignore
+README.md
+
+# NOTE: ai_worker/ is intentionally NOT excluded here. Both core-api and
+# ai-worker (see docker-compose.yml) build with `context: ./backend`, and
+# .dockerignore applies to the whole context regardless of which Dockerfile
+# is building it -- excluding ai_worker/ would silently break the ai-worker
+# image build (its Dockerfile COPYs ai_worker/main.py, requirements.txt,
+# entrypoint.sh from this same context). The Core API's own Dockerfile never
+# COPYs ai_worker/, so its presence in context costs a few KB, not an
+# accidental inclusion in the image.

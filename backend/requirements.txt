@@ -1,0 +1,97 @@
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+sqlalchemy==2.0.30
+psycopg2-binary==2.9.9
+alembic==1.13.1
+# KNOWN ISSUE, not yet actioned -- deliberately left pinned rather than bumped
+# blind. 3.3.0 carries CVE-2024-33664 (a JWE decompression bomb reachable from
+# jwt.decode on an attacker-supplied bearer token) and CVE-2024-33663
+# (algorithm confusion; needs asymmetric keys, so not reachable on this
+# HS256-only configuration). python-jose is barely maintained; the durable fix
+# is migrating app/core/security.py to PyJWT, which is a small, well-contained
+# change but needs its own test pass. Tracked in the audit report.
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+# 0.0.9 was vulnerable to CVE-2024-53981: a malformed multipart boundary makes
+# the parser burn CPU (and emit huge log volume) per request -- a cheap
+# unauthenticated DoS against every form/upload endpoint. Patched in 0.0.18;
+# this pin is the version the suite is verified against.
+python-multipart==0.0.32
+pydantic==2.7.1
+pydantic-settings==2.2.1
+email-validator==2.1.1
+mediapipe==0.10.14
+numpy==1.26.4
+# Pinned well behind the installed/tested version, which meant the declared
+# dependency set carried image-decoder CVEs fixed in later 10.x/11.x releases
+# -- and Pillow decodes attacker-supplied images here (face frames, ID cards,
+# violation screenshots), so its parsers are directly reachable.
+Pillow==12.2.0
+python-dotenv==1.0.1
+# Local (in-process) face identity: the SAME ArcFace model the ai_worker runs,
+# so embeddings are interchangeable between the two paths. Used when
+# AI_SERVICE_URL is unset or the worker is unreachable.
+#
+# insightface >=1.0.1 ships a pure-Python wheel, and onnxruntime ships prebuilt
+# binaries, so neither needs cmake or a C++ toolchain -- unlike the
+# face_recognition/dlib model this replaced. Model weights (buffalo_l, ~280MB;
+# set FACE_MODEL_NAME=buffalo_s for ~16MB) download on first use.
+insightface>=1.0.1
+onnxruntime>=1.18.0
+# Object detection (phone / book / extra person), app/ai/object_service.py.
+# This used to exist only inside the optional ai_worker container, which meant
+# that with AI_SERVICE_URL blank it was switched off entirely rather than
+# merely degraded. It now runs in-process, preferring an exported
+# yolo11s.onnx through onnxruntime above (no torch involved at inference);
+# ultralytics is needed to produce that export and as a runtime fallback.
+#   python -m app.utils.fetch_models --only yolo
+# Note: ultralytics is AGPL-3.0. Fine for internal/academic use; check it
+# against your licensing before distributing this as a closed-source product.
+ultralytics>=8.3.0
+
+# --- PyTorch, CPU build, pinned explicitly ------------------------------------
+# Both easyocr (OCR) and ultralytics (the YOLO export path / runtime fallback)
+# depend on torch. This block is what makes them resolve to the CPU wheels.
+#
+# It is NOT optional and it is NOT a micro-optimisation. The comment below used
+# to claim easyocr "pulls in PyTorch (CPU build)" -- nothing enforced that, and
+# it stopped being true: the plain `torch` wheel on PyPI for linux x86_64 IS
+# the CUDA build, and current versions declare the whole NVIDIA runtime as hard
+# dependencies. An unpinned `torch` therefore downloaded, in one docker build:
+#
+#     torch                526 MB      nvidia-cublas          423 MB
+#     nvidia-cudnn-cu13    366 MB      nvidia-nccl-cu13       206 MB
+#     triton               198 MB      nvidia-cusparselt      170 MB
+#     nvidia-nvshmem        60 MB
+#     ------------------------------------------------------------
+#     ~1.95 GB of GPU libraries
+#
+# None of it can ever execute here. ArcFace runs through onnxruntime's
+# CPUExecutionProvider, insightface is prepared with ctx_id=-1, and the compose
+# stack requests no GPU device. The only effects were a ~2GB image and a build
+# that failed outright on any connection that couldn't hold files.pythonhosted
+# open long enough to stream 423 MB (a read timeout mid-cublas is exactly how
+# this first surfaced).
+#
+# The `+cpu` local version identifier is the mechanism: those wheels exist only
+# on PyTorch's own index, so the pin cannot be silently satisfied by the CUDA
+# build on PyPI. Every other package still resolves from PyPI as normal.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.2.2+cpu
+torchvision==0.17.2+cpu
+
+# ID-card OCR. Uses the CPU torch pinned above (~200MB rather than ~2GB); the
+# first request after boot is still slower while the OCR weights download.
+easyocr==1.7.1
+# PDF result reports & certificates. Pure Python, no compiled/build-tool
+# dependency.
+reportlab==4.2.2
+# Coding-question sandboxed execution (app/services/code_runner_service.py)
+# needs no extra pip package -- it shells out to the `docker` CLI, which must
+# be installed and on PATH separately. See README section on coding questions.
+
+# --- test-only dependencies (see backend/tests/) ---
+pytest==8.2.2
+httpx==0.27.0
+

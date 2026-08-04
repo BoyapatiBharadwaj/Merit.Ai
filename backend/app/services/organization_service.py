@@ -1,0 +1,482 @@
+"""
+Organization membership and exam access control.
+
+`can_student_access_exam` below is the single authority for "may this student
+see or sit this exam". Every caller -- the student exam list, the exam detail
+endpoint, and `attempt_service.start_attempt` -- goes through it.
+
+That single-authority property is the point, not a stylistic preference. The
+bug this module fixes was not really "the exam list is unfiltered": it was that
+filtering the list would have looked like a fix while `start_attempt` still
+accepted any exam id. One function used by all three paths means a future
+endpoint cannot accidentally reintroduce the hole by forgetting to filter.
+"""
+import re
+from datetime import datetime, timezone
+
+from fastapi import HTTPException, status
+from sqlalchemy import and_, func, or_
+from sqlalchemy.orm import Session, joinedload
+
+from app.models.enums import ExamStatus
+from app.models.exam import Exam, Section
+from app.models.organization import ExamParticipant, Organization, OrganizationMember
+from app.models.student import Student
+
+# Deliberately identical for "this exam does not exist" and "this exam exists
+# but is not yours". Saying "not enrolled" would confirm the exam is real and
+# let an outsider enumerate exam ids and map out other organizations' activity.
+NO_ACCESS_DETAIL = "Exam not available."
+
+
+def normalize_email(email: str) -> str:
+    return (email or "").strip().lower()
+
+
+# Deliberately permissive. This is a roster key, not an identity claim -- the
+# address still has to survive registration, and a real institution's
+# addressing scheme is not ours to second-guess. It only needs to catch the
+# things that are certainly not addresses: a stray header row, a name column
+# pasted by mistake, a trailing "and 12 others".
+_EMAIL_SHAPE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _looks_like_email(email: str) -> bool:
+    return bool(email) and len(email) <= 150 and bool(_EMAIL_SHAPE.match(email))
+
+
+# ---------------------------------------------------------------------------
+# Organizations
+# ---------------------------------------------------------------------------
+
+def get_or_create(db: Session, name: str, commit: bool = True) -> Organization:
+    """Find an organization by name, or create it. Names are matched
+    case-insensitively and stored trimmed, so "Acme", "acme" and "Acme "
+    resolve to one tenant rather than three."""
+    cleaned = (name or "").strip()
+    if not cleaned:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Organization name is required.")
+
+    # func.lower(...) == , NOT ilike(). ILIKE treats % and _ in the *caller's*
+    # string as wildcards, and this name arrives from the unauthenticated
+    # access-request form: submitting "%" matched the first existing
+    # organization and bonded the new examiner into someone else's tenant,
+    # handing them that org's roster and the ability to publish exams to its
+    # students. The accidental version needed no attacker at all -- a typo'd
+    # "Acme_University" silently joined the real "Acme University".
+    existing = (db.query(Organization)
+                .filter(func.lower(Organization.name) == cleaned.lower())
+                .first())
+    if existing:
+        return existing
+
+    organization = Organization(name=cleaned)
+    db.add(organization)
+    db.flush()  # assign an id without ending the caller's transaction
+    if commit:
+        db.commit()
+        db.refresh(organization)
+    return organization
+
+
+def list_organizations(db: Session) -> list[Organization]:
+    return db.query(Organization).order_by(Organization.name).all()
+
+
+# ---------------------------------------------------------------------------
+# Roster
+# ---------------------------------------------------------------------------
+
+def link_student(db: Session, student: Student, email: str, commit: bool = True) -> Student:
+    """Resolve and cache which organization a student belongs to.
+
+    Called at registration and whenever the roster changes. A student enrolled
+    in several organizations keeps the earliest membership: exam history is
+    tied to an organization, so silently moving someone between tenants
+    because a second examiner added their address would reassign work they
+    have already done.
+    """
+    membership = (db.query(OrganizationMember)
+                  .filter(OrganizationMember.email == normalize_email(email))
+                  .order_by(OrganizationMember.created_at, OrganizationMember.id)
+                  .first())
+    if membership is None:
+        return student
+
+    if membership.student_id is None:
+        membership.student_id = student.id
+        membership.linked_at = datetime.now(timezone.utc)
+    if student.organization_id is None:
+        student.organization_id = membership.organization_id
+
+    if commit:
+        db.commit()
+        db.refresh(student)
+    return student
+
+
+def enrol_emails(db: Session, organization_id: int, emails: list[str],
+                 invited_by_id: int | None) -> dict:
+    """Add email addresses to an organization's roster.
+
+    Idempotent by design: re-adding an existing address is a no-op rather than
+    an error, because the realistic input is a pasted list that overlaps last
+    term's. Addresses that already have a student account are linked
+    immediately; the rest stay as outstanding invitations.
+
+    Malformed entries are *reported*, not silently dropped. Skipping them
+    quietly is how a typo'd address turns into a student who never gets access
+    and an examiner who has no idea why -- the failure would only surface on
+    exam day.
+    """
+    added, already_present, linked, invalid, elsewhere = [], [], [], [], []
+
+    for raw in emails:
+        email = normalize_email(raw)
+        if not _looks_like_email(email):
+            if raw and raw.strip():
+                invalid.append(raw.strip()[:150])
+            continue
+
+        existing = (db.query(OrganizationMember)
+                    .filter(OrganizationMember.organization_id == organization_id,
+                            OrganizationMember.email == email)
+                    .first())
+        if existing:
+            already_present.append(email)
+            continue
+
+        member = OrganizationMember(organization_id=organization_id, email=email,
+                                    invited_by_id=invited_by_id)
+        db.add(member)
+        db.flush()
+        added.append(email)
+
+        # If this person already registered before being enrolled, link them
+        # now -- otherwise they would have to re-register to gain access.
+        student = (db.query(Student)
+                   .join(Student.user)
+                   .filter(Student.user.has(email=email))
+                   .first())
+        if student:
+            member.student_id = student.id
+            member.linked_at = datetime.now(timezone.utc)
+            if student.organization_id is None:
+                student.organization_id = organization_id
+            if student.organization_id == organization_id:
+                linked.append(email)
+            else:
+                # Already a member of a different organization. The roster row
+                # exists, but link_student deliberately keeps the earliest
+                # membership, so this enrolment grants nothing. Reporting it
+                # as "linked" was actively misleading: the UI said "Registered"
+                # while can_student_access_exam still denied every exam here,
+                # and the student did not even appear in the allow-list
+                # picker -- a failure that would only surface on exam day.
+                elsewhere.append(email)
+
+    db.commit()
+    return {"added": added, "already_present": already_present, "linked": linked,
+            "invalid": invalid, "in_another_organization": elsewhere}
+
+
+def remove_member(db: Session, organization_id: int, member_id: int) -> None:
+    """Remove a roster entry and, if it was the source of that student's
+    membership, revoke it.
+
+    Existing attempts and results are left untouched. Removing someone from a
+    cohort must not delete the exam they already sat -- that would destroy
+    assessment records, and the examiner still needs the result.
+    """
+    member = (db.query(OrganizationMember)
+              .filter(OrganizationMember.id == member_id,
+                      OrganizationMember.organization_id == organization_id)
+              .first())
+    if not member:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Roster entry not found.")
+
+    student = member.student
+    db.delete(member)
+    db.flush()
+
+    if student is not None and student.organization_id == organization_id:
+        # Fall back to any other organization that still lists them, so
+        # removing a secondary enrolment does not strip a student of their
+        # primary one.
+        fallback = (db.query(OrganizationMember)
+                    .filter(OrganizationMember.email == normalize_email(student.user.email))
+                    .order_by(OrganizationMember.created_at, OrganizationMember.id)
+                    .first())
+        student.organization_id = fallback.organization_id if fallback else None
+
+    db.commit()
+
+
+def list_members(db: Session, organization_id: int) -> list[OrganizationMember]:
+    return (db.query(OrganizationMember)
+            .filter(OrganizationMember.organization_id == organization_id)
+            .order_by(OrganizationMember.email)
+            .all())
+
+
+# ---------------------------------------------------------------------------
+# Access control -- the single authority
+# ---------------------------------------------------------------------------
+
+def can_student_access_exam(db: Session, student: Student, exam: Exam) -> bool:
+    """Is this student permitted to see and sit this exam?
+
+    1. An exam whose organization is NULL is treated as inaccessible rather
+       than public. Legacy rows are backfilled by migration 0008, so a NULL
+       here means something went wrong, and failing closed on ambiguity is
+       the only safe default for an access check.
+    2. If the exam has any participant rows, it is in allow-list mode and
+       being on that list is sufficient BY ITSELF -- independent of the
+       student's own organization. That is the point of a per-exam invite:
+       an examiner can grant one specific person access to this one exam (a
+       guest, a transfer, someone sitting a make-up) without first adding
+       them to the org-wide roster, which would also open every OTHER
+       unrestricted exam in the organization to them.
+
+       Previously this also required organization_id to match, which
+       silently defeated an invite sent to anyone not already on the roster
+       -- exactly the roster-optional case add_exam_participants documents
+       supporting, and the exact scenario its own "not_in_organization" flag
+       (surfaced in the UI as a "Not enrolled" badge) warns about without
+       actually closing the gap. The badge now means what it says: this
+       person isn't on your general roster, not "this invite does nothing."
+    3. Otherwise (an unrestricted exam) the student must belong to the same
+       organization as the exam. A student with no organization matches
+       nothing -- correct for a fresh self-registration that no examiner has
+       enrolled.
+    """
+    if student is None or exam is None:
+        return False
+    if exam.organization_id is None:
+        return False
+
+    restricted = (db.query(ExamParticipant.id)
+                  .filter(ExamParticipant.exam_id == exam.id)
+                  .first() is not None)
+
+    if restricted:
+        # Match on id OR email. The email arm is what makes a pending invite
+        # work the moment its owner registers, without depending on a
+        # resolution step having run first -- authorisation that silently
+        # relies on a background fixup is authorisation that fails the first
+        # time the fixup is missed.
+        return (db.query(ExamParticipant.id)
+                .filter(ExamParticipant.exam_id == exam.id,
+                        or_(ExamParticipant.student_id == student.id,
+                            ExamParticipant.email == normalize_email(student.user.email)))
+                .first() is not None)
+
+    if student.organization_id is None:
+        return False
+    return exam.organization_id == student.organization_id
+
+
+def require_student_access(db: Session, student: Student, exam: Exam) -> None:
+    """can_student_access_exam, but raising the deliberately vague 404."""
+    if not can_student_access_exam(db, student, exam):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, NO_ACCESS_DETAIL)
+
+
+def examiner_can_view_student(db: Session, examiner, student: Student) -> bool:
+    """May this examiner view this student's identity materials (registered
+    face photo, ID card photo)? The single authority for both
+    GET /proctoring/face/photo/{id} and GET /proctoring/id-card/photo/{id},
+    for the same reason can_student_access_exam is the single authority for
+    exam access: one function used by every caller means the two checks
+    cannot quietly drift apart.
+
+    Two independent routes:
+
+    1. Same organization -- the original rule: an examiner may see biometrics
+       for any student enrolled in their own organization.
+    2. A direct per-exam invite -- a student the examiner added to one of
+       their own exams via ExamParticipant is legitimately being (or about
+       to be) proctored by this examiner, regardless of organization
+       membership, for the same reason that invite is sufficient on its own
+       to grant exam access (see can_student_access_exam). Without this, an
+       examiner could review an outside invitee's proctoring violations and
+       reset their attempt, yet never be allowed to confirm who the face in
+       that attempt actually belongs to -- a real gap for a platform whose
+       whole point is identity verification.
+
+    Neither condition met: false. A student with no relationship at all to
+    this examiner stays exactly as invisible as before.
+    """
+    if examiner is None or student is None:
+        return False
+    if examiner.organization_id is not None and student.organization_id == examiner.organization_id:
+        return True
+    return (db.query(ExamParticipant.id)
+            .join(Exam, Exam.id == ExamParticipant.exam_id)
+            .filter(Exam.examiner_id == examiner.id,
+                    or_(ExamParticipant.student_id == student.id,
+                        ExamParticipant.email == normalize_email(student.user.email)))
+            .first() is not None)
+
+
+def list_accessible_published_exams(db: Session, student: Student) -> list[Exam]:
+    """The student-facing exam list, filtered at the database rather than in
+    Python -- a cohort of thousands should not load every exam in the system
+    to discard most of them.
+
+    Deliberately NOT filtered by start_time/end_time. It used to be, which
+    meant an exam scheduled for tomorrow was invisible today (no way to see
+    it was coming) and an exam whose window had already closed vanished
+    entirely the moment it did (no way to see it had been missed). The
+    dashboard needs all three states -- upcoming, open, and missed -- to
+    categorize exams automatically, so this returns every published exam the
+    student can see and leaves the time-based bucketing to the caller.
+    Actually starting an attempt still enforces the window independently in
+    attempt_service.start_attempt, so relaxing this list has no security
+    effect -- it only changes what the student can *see*, not what they can
+    *do*.
+    """
+    if student is None:
+        return []
+
+    restricted_exam_ids = db.query(ExamParticipant.exam_id).distinct().subquery()
+    # Same id-or-email match as can_student_access_exam, so the list and the
+    # gate cannot disagree about a pending invite.
+    allowed_for_student = (db.query(ExamParticipant.exam_id)
+                           .filter(or_(ExamParticipant.student_id == student.id,
+                                       ExamParticipant.email == normalize_email(student.user.email)))
+                           .subquery())
+
+    # Two independent routes onto this list, mirroring can_student_access_exam:
+    # ordinary org-wide access to an unrestricted exam in the student's own
+    # organization, OR an explicit per-exam invite, which works regardless of
+    # the student's organization (or lack of one) -- see that function's
+    # docstring for why a per-exam allow-list is deliberately not scoped to
+    # the invitee's own organization. When student.organization_id is None
+    # (never enrolled anywhere), the first branch simply matches nothing --
+    # SQLAlchemy compiles the comparison to "organization_id IS NULL", which
+    # no real exam row has -- so an unaffiliated student still sees exactly
+    # the exams they were personally invited to, and nothing else.
+    return (db.query(Exam)
+            # serialize_exam_for_candidate reads exam.sections[*].questions
+            # (for question_count/exam_total_marks) for every row in this
+            # list -- eager-load both levels so that stays two extra queries
+            # total instead of two per exam.
+            .options(joinedload(Exam.sections).joinedload(Section.questions))
+            .filter(Exam.status == ExamStatus.PUBLISHED)
+            .filter(or_(
+                and_(Exam.organization_id == student.organization_id,
+                     Exam.id.notin_(db.query(restricted_exam_ids.c.exam_id))),
+                Exam.id.in_(db.query(allowed_for_student.c.exam_id)),
+            ))
+            .order_by(Exam.created_at.desc())
+            .all())
+
+
+# ---------------------------------------------------------------------------
+# Per-exam participant list
+# ---------------------------------------------------------------------------
+
+def add_exam_participants(db: Session, exam: Exam, emails: list[str],
+                          added_by_id: int | None) -> dict:
+    """Add emails to an exam's allow-list.
+
+    Additive rather than replace-all, because the realistic action is "also
+    let these three people sit it", and a replace-all API turns that into a
+    read-modify-write the caller can get wrong. Removal is its own explicit
+    endpoint.
+
+    Adding an email here does NOT enrol them in the organization -- that stays
+    a separate, deliberate act. An address that is not on the org roster is
+    accepted and stored, and IS enough on its own to get that person into
+    this one exam (see can_student_access_exam) -- it is flagged back to the
+    examiner as `not_in_organization` purely as information: this person will
+    not show up in the general student roster or be able to see any other
+    exam, only this one, via this specific invite.
+    """
+    added, already_present, invalid, not_in_organization = [], [], [], []
+
+    roster_emails = {m.email for m in list_members(db, exam.organization_id)}
+
+    for raw in emails:
+        email = normalize_email(raw)
+        if not _looks_like_email(email):
+            if raw and raw.strip():
+                invalid.append(raw.strip()[:150])
+            continue
+
+        existing = (db.query(ExamParticipant)
+                    .filter(ExamParticipant.exam_id == exam.id,
+                            ExamParticipant.email == email)
+                    .first())
+        if existing:
+            already_present.append(email)
+            continue
+
+        participant = ExamParticipant(exam_id=exam.id, email=email, added_by_id=added_by_id)
+        student = (db.query(Student).join(Student.user)
+                   .filter(Student.user.has(email=email)).first())
+        if student is not None:
+            participant.student_id = student.id
+            participant.linked_at = datetime.now(timezone.utc)
+        db.add(participant)
+        added.append(email)
+
+        if email not in roster_emails:
+            not_in_organization.append(email)
+
+    db.commit()
+    return {"added": added, "already_present": already_present, "invalid": invalid,
+            "not_in_organization": not_in_organization}
+
+
+def remove_exam_participant(db: Session, exam: Exam, participant_id: int) -> None:
+    participant = (db.query(ExamParticipant)
+                   .filter(ExamParticipant.id == participant_id,
+                           ExamParticipant.exam_id == exam.id)
+                   .first())
+    if not participant:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Participant not found.")
+    db.delete(participant)
+    db.commit()
+
+
+def clear_exam_participants(db: Session, exam: Exam) -> None:
+    """Reopen the exam to the whole organization."""
+    db.query(ExamParticipant).filter(ExamParticipant.exam_id == exam.id).delete()
+    db.commit()
+
+
+def link_exam_participants(db: Session, student: Student, email: str, commit: bool = True) -> None:
+    """Fill in student_id on any pending invites for this address.
+
+    Purely a display convenience -- access already matches on email, so this
+    only affects whether the UI shows "Registered" or "Invited". Deliberately
+    not load-bearing: see the ExamParticipant docstring.
+    """
+    pending = (db.query(ExamParticipant)
+               .filter(ExamParticipant.email == normalize_email(email),
+                       ExamParticipant.student_id.is_(None))
+               .all())
+    for participant in pending:
+        participant.student_id = student.id
+        participant.linked_at = datetime.now(timezone.utc)
+    if commit and pending:
+        db.commit()
+
+
+def list_exam_participants(db: Session, exam_id: int) -> list[ExamParticipant]:
+    return (db.query(ExamParticipant)
+            .filter(ExamParticipant.exam_id == exam_id)
+            .order_by(ExamParticipant.id)
+            .all())
+
+
+def list_organization_students(db: Session, organization_id: int) -> list[Student]:
+    """Students with real accounts in this organization -- what an examiner
+    picks from when restricting an exam."""
+    return (db.query(Student)
+            .filter(Student.organization_id == organization_id)
+            .join(Student.user)
+            .order_by(Student.id)
+            .all())

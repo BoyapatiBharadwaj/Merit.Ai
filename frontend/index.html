@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <script>
+      // Applied before paint to avoid a flash of the wrong theme.
+      try {
+        var t = localStorage.getItem("aep_theme");
+        if (t === "dark" || (!t && window.matchMedia("(prefers-color-scheme: dark)").matches)) {
+          document.documentElement.setAttribute("data-theme", "dark");
+        }
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Merit.Ai — Conduct, monitor, and evaluate AI-proctored online exams with real-time monitoring, sandboxed coding assessments, and role-based dashboards for institutions, examiners, and candidates." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+    <title>Merit.Ai — Conduct. Monitor. Evaluate.</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- Chart.js for the admin dashboard's charts, loaded globally (window.Chart)
+         instead of an npm dependency -- consistent with how the legacy frontend
+         used it, and avoids pulling a charting lib into every route's bundle. -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+    <!-- CodeMirror 5 for the exam interface's coding questions -- same CDN
+         build the legacy frontend/exam.html used, loaded globally
+         (window.CodeMirror) rather than an npm dependency. -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/dracula.min.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/javascript/javascript.min.js"></script>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

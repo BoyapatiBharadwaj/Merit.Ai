@@ -1,0 +1,12 @@
+node_modules/
+dist/
+build/
+.cache/
+.parcel-cache/
+.vite/
+.env
+.env.*
+!.env.example
+.git/
+.gitignore
+README.md
