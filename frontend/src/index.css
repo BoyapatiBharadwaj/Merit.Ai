@@ -24,9 +24,20 @@
 :root {
   --primary: 37 99 235;
   --primary-dark: 29 78 216;
-  --danger: 220 38 38;
-  --warning: 217 119 6;
-  --success: 22 163 74;
+  --danger: 185 28 28;
+  /* Darkened for light mode.
+     The previous values were amber-600 (217 119 6) and green-600 (22 163 74),
+     which against white give roughly 3.2:1 and 3.3:1 -- below the 4.5:1 that
+     normal-size text needs. They are used on small labels ("LIVE", "Warning 1
+     of 3", "OK"), which is exactly the size where the shortfall matters most.
+     amber-700 and green-700 clear 4.5:1 while reading as the same colours. */
+  --warning: 180 83 9;
+  --success: 21 128 61;
+
+  /* The brighter originals, kept for large text, icons and filled badges --
+     where 3:1 is the requirement and the darker shades look muddy. */
+  --warning-vivid: 217 119 6;
+  --success-vivid: 22 163 74;
   --bg: 244 246 251;
   --card-bg: 255 255 255;
   --border: 226 232 240;
@@ -58,9 +69,14 @@
 [data-theme="dark"] {
   --primary: 59 130 246;
   --primary-dark: 96 165 250;
+  /* Dark mode was already comfortably above 4.5:1 on the dark surfaces --
+     light text on dark backgrounds is the easy direction -- so these are
+     unchanged. */
   --danger: 248 113 113;
   --warning: 251 191 36;
   --success: 74 222 128;
+  --warning-vivid: 251 191 36;
+  --success-vivid: 74 222 128;
   --bg: 15 23 42;
   --card-bg: 30 41 59;
   --border: 51 65 85;

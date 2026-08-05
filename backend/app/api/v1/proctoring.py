@@ -6,8 +6,11 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, rate_limit_user, require_admin, require_student
+from app.api.deps import (
+    attempt_student, exam_student, get_current_user, rate_limit_user, require_admin, require_student,
+)
 from app.database.session import get_db
+from app.schemas.pagination import Page, PageParams, build_page
 from app.models.enums import RoleName
 from app.models.user import User
 from app.repositories import attempt_repository, exam_repository, proctor_repository, user_repository
@@ -54,7 +57,7 @@ def register_face(payload: ImagePayload, request: Request, db: Session = Depends
 
 @router.post("/face/verify", response_model=FaceMatchResponse,
              dependencies=[Depends(rate_limit_user("ai_face_verify"))])
-def verify_face(payload: ImagePayload, db: Session = Depends(get_db), user: User = Depends(require_student)):
+def verify_face(payload: ImagePayload, db: Session = Depends(get_db), user: User = Depends(exam_student)):
     student = user_repository.get_student_by_user_id(db, user.id)
     return FaceMatchResponse(**proctor_service.verify_live_face(db, student.id, payload.image_base64))
 
@@ -159,19 +162,19 @@ def get_id_card_photo(student_id: int, db: Session = Depends(get_db), user: User
 
 @router.post("/objects/detect", response_model=ObjectDetectionResponse,
              dependencies=[Depends(rate_limit_user("ai_objects"))])
-def detect_objects(payload: ImagePayload, user: User = Depends(require_student)):
+def detect_objects(payload: ImagePayload, user: User = Depends(exam_student)):
     return ObjectDetectionResponse(**proctor_service.detect_objects(payload.image_base64))
 
 
 @router.post("/pose/check", response_model=PoseCheckResponse,
              dependencies=[Depends(rate_limit_user("ai_pose"))])
-def check_pose(payload: ImagePayload, user: User = Depends(require_student)):
+def check_pose(payload: ImagePayload, user: User = Depends(exam_student)):
     return PoseCheckResponse(**proctor_service.analyze_pose(payload.image_base64))
 
 
 @router.post("/events", response_model=ProctorEventOut, status_code=201)
 def log_event(payload: ProctorEventCreate, background_tasks: BackgroundTasks,
-              db: Session = Depends(get_db), user: User = Depends(require_student)):
+              db: Session = Depends(get_db), user: User = Depends(exam_student)):
     student = user_repository.get_student_by_user_id(db, user.id)
     attempt = attempt_repository.get_attempt(db, payload.attempt_id)
     if not attempt or attempt.student_id != student.id:
@@ -184,7 +187,7 @@ def log_event(payload: ProctorEventCreate, background_tasks: BackgroundTasks,
 
 @router.post("/events/batch", status_code=201)
 def log_events_batch(payload: ProctorEventBatchCreate, background_tasks: BackgroundTasks,
-                      db: Session = Depends(get_db), user: User = Depends(require_student)):
+                      db: Session = Depends(get_db), user: User = Depends(exam_student)):
     """Batched counterpart to POST /events -- see frontend/src/lib/eventLogger.js,
     which queues violations from lockdown.js and proctoring.js and flushes
     them together instead of one request per violation.
@@ -220,7 +223,7 @@ class LockdownStrikeRequest(BaseModel):
 
 @router.post("/lockdown/strike")
 def record_lockdown_strike(payload: LockdownStrikeRequest, db: Session = Depends(get_db),
-                           user: User = Depends(require_student)):
+                           user: User = Depends(exam_student)):
     """Report a lockdown breach and get back the authoritative strike state.
 
     Deliberately separate from /events: the response drives whether the exam
@@ -232,7 +235,7 @@ def record_lockdown_strike(payload: LockdownStrikeRequest, db: Session = Depends
 
 
 @router.get("/lockdown/status/{attempt_id}")
-def get_lockdown_status(attempt_id: int, db: Session = Depends(get_db), user: User = Depends(require_student)):
+def get_lockdown_status(attempt_id: int, db: Session = Depends(get_db), user: User = Depends(attempt_student)):
     """Read the strike count without adding one -- used on exam resume so a
     reload shows the true remaining budget instead of starting over at zero."""
     student = user_repository.get_student_by_user_id(db, user.id)
@@ -250,12 +253,39 @@ def get_events_for_attempt(attempt_id: int, db: Session = Depends(get_db), user:
     return proctor_repository.list_events_for_attempt(db, attempt_id)
 
 
-@router.get("/events/exam/{exam_id}", response_model=list[ProctorEventOut])
-def get_events_for_exam(exam_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+@router.get("/events/exam/{exam_id}", response_model=Page[dict])
+def get_events_for_exam(exam_id: int, params: PageParams = Depends(), severity: str = "",
+                        db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """One page of this exam's violations, with enough context to review them.
+
+    Two problems, both fixed here. It returned bare event rows -- an attempt id,
+    a type, a severity and a timestamp -- so reviewing "attempt 47 flagged for
+    multiple_faces" meant leaving the page to find out whose attempt 47 was, and
+    the description and screenshot the proctoring system had already captured
+    were never surfaced. And it returned ALL of them, which for a full hall is
+    thousands of rows sent to render twenty-five.
+    """
     exam = exam_repository.get_exam(db, exam_id)
     if not exam or (user.role.name != "admin" and (not user.examiner_profile or user.examiner_profile.id != exam.examiner_id)):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Exam not found.")
-    return proctor_repository.list_events_for_exam(db, exam_id)
+
+    events, total = proctor_repository.paginated_events_for_exam(
+        db, exam_id, offset=params.offset, limit=params.page_size, severity=severity,
+    )
+    items = [{
+        "id": event.id,
+        "attempt_id": event.attempt_id,
+        "student_name": (event.attempt.student.user.full_name
+                         if event.attempt and event.attempt.student and event.attempt.student.user
+                         else None),
+        "event_type": event.event_type,
+        "severity": event.severity,
+        "description": event.description,
+        "has_screenshot": bool(event.screenshot_path),
+        "admin_decision": getattr(event, "admin_decision", None),
+        "created_at": event.created_at,
+    } for event in events]
+    return build_page(items, total, params)
 
 
 @router.get("/events/{event_id}/screenshot")

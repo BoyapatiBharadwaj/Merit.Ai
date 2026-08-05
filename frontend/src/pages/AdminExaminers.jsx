@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Navigate, Link, useNavigate } from "react-router-dom";
 import DashboardHeader from "../components/DashboardHeader.jsx";
 import Icon from "../components/Icon.jsx";
@@ -24,6 +24,9 @@ export default function AdminExaminers() {
   const [organizationId, setOrganizationId] = useState("");
   const [status, setStatus] = useState("");
   const [page, setPage] = useState(1);
+  // The server's figures, not derived from a list the client holds.
+  const [total, setTotal] = useState(0);
+  const [pageCount, setPageCount] = useState(1);
 
   const [formOpen, setFormOpen] = useState(false);
   const [form, setForm] = useState({ firstName: "", lastName: "", email: "", organizationName: "", password: "" });
@@ -36,15 +39,32 @@ export default function AdminExaminers() {
     return () => clearTimeout(t);
   }, [searchInput]);
 
+  // A request ticket, so a slow OLD request cannot overwrite a newer one.
+  //
+  // The search box debounced but never cancelled: typing "ann" then "annie"
+  // fired two requests, and if the first was slower its results replaced the
+  // second's. The admin was left looking at results for a query they had
+  // already moved past, with the newer term still in the box and nothing to
+  // indicate the list was stale.
+  const requestRef = useRef(0);
+
   async function load() {
+    const ticket = ++requestRef.current;
     try {
       const params = new URLSearchParams();
       if (search) params.set("search", search);
       if (organizationId) params.set("organization_id", organizationId);
       if (status) params.set("status", status);
-      const qs = params.toString();
-      setRows(await Api.get(`/admin/examiners${qs ? `?${qs}` : ""}`));
+      params.set("page", String(page));
+      params.set("page_size", String(PAGE_SIZE));
+      const data = await Api.get(`/admin/examiners?${params.toString()}`);
+      if (ticket !== requestRef.current) return; // a newer search won
+      setRows(data.items);
+      setTotal(data.total);
+      setPageCount(Math.max(1, data.total_pages));
+      setLoadError("");
     } catch (err) {
+      if (ticket !== requestRef.current) return;
       setLoadError(err instanceof ApiError ? err.message : "Couldn't load examiners.");
     }
   }
@@ -53,15 +73,21 @@ export default function AdminExaminers() {
     Api.get("/admin/organizations").then(setOrganizations).catch(() => {});
   }, []);
 
+  // Filters reset to page 1; changing page refetches at the new offset.
   useEffect(() => {
     setPage(1);
+  }, [search, organizationId, status]);
+
+  useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, organizationId, status]);
+  }, [search, organizationId, status, page]);
 
   if (!isLoggedIn() || getRole() !== "admin") return <Navigate to="/login" replace />;
 
-  const { pageRows, pageCount, safePage } = paginate(rows || [], page, PAGE_SIZE);
+  // The server decides the page; `rows` IS the page.
+  const pageRows = rows || [];
+  const safePage = page;
 
   async function handleCreate(e) {
     e.preventDefault();
@@ -201,7 +227,7 @@ export default function AdminExaminers() {
                 ))}
               </tbody>
             </table>
-            <Pagination page={safePage} pageCount={pageCount} onChange={setPage} totalCount={rows.length} pageSize={PAGE_SIZE} />
+            <Pagination page={safePage} pageCount={pageCount} onChange={setPage} totalCount={total} pageSize={PAGE_SIZE} />
           </div>
         )}
       </main>

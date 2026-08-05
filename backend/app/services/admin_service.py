@@ -53,20 +53,65 @@ def exam_bucket(exam: Exam, now: datetime | None = None) -> str:
 RISK_WEIGHTS = {Severity.LOW: 1, Severity.MEDIUM: 3, Severity.HIGH: 5}
 
 
+# Decisions that mean "this was not misconduct". A violation carrying one of
+# these has been looked at by a person and cleared, and must stop counting.
+_CLEARED_DECISIONS = {"dismissed", "false_positive"}
+
+
+def _tier_for(score: int, attempt_status: str | None) -> str:
+    if attempt_status == AttemptStatus.TERMINATED.value or score >= 15:
+        return "high"
+    return "medium" if score >= 5 else "low"
+
+
 def risk_score_and_tier(violations: list, attempt_status: str | None = None) -> tuple[int, str]:
-    """A simple, fully transparent weighted score -- not a black-box model.
-    Each violation adds 1/3/5 points by severity; a terminated attempt is
-    always "high" regardless of the arithmetic, since a lockdown termination
-    is itself the strongest signal this app can raise about one attempt.
+    """The AUTOMATED score: every violation counted, decisions ignored.
+
+    Kept as-is so the raw signal remains visible -- an administrator reviewing a
+    reviewer's judgement needs to see what the system originally flagged, not
+    only what survived adjudication.
     """
     score = sum(RISK_WEIGHTS.get(v.severity, 1) for v in violations)
-    if attempt_status == AttemptStatus.TERMINATED.value or score >= 15:
-        tier = "high"
-    elif score >= 5:
-        tier = "medium"
-    else:
-        tier = "low"
-    return score, tier
+    return score, _tier_for(score, attempt_status)
+
+
+def adjudicated_risk(violations: list, attempt_status: str | None = None) -> dict:
+    """The score after a human reviewer's decisions, and the counts behind it.
+
+    Dismissing a violation used to update `admin_decision` and nothing else. The
+    risk score, the tier and the templated proctoring summary all kept counting
+    it, so a candidate whose three flags a reviewer had explicitly cleared as
+    false positives stayed labelled high risk -- and the label, not the
+    decisions, is what the next person to open the record sees. The review
+    changed the record and not the conclusion drawn from it.
+
+    Both numbers are returned rather than one replacing the other: "automated 82,
+    adjudicated 34 after 3 dismissed" is the honest summary, and collapsing it to
+    a single figure loses either the reviewer's work or the original signal.
+    """
+    confirmed, dismissed, pending = [], 0, 0
+    for violation in violations:
+        decision = (getattr(violation, "admin_decision", None) or "").lower()
+        if decision in _CLEARED_DECISIONS:
+            dismissed += 1
+        else:
+            confirmed.append(violation)
+            if not decision:
+                pending += 1
+
+    automated_score, automated_tier = risk_score_and_tier(violations, attempt_status)
+    score = sum(RISK_WEIGHTS.get(v.severity, 1) for v in confirmed)
+    return {
+        "automated_score": automated_score,
+        "automated_tier": automated_tier,
+        "adjudicated_score": score,
+        # A terminated attempt stays high however the individual events were
+        # judged: the termination is its own signal, not the sum of the flags.
+        "adjudicated_tier": _tier_for(score, attempt_status),
+        "confirmed_count": len(confirmed) - pending,
+        "dismissed_count": dismissed,
+        "pending_review_count": pending,
+    }
 
 
 _EVENT_LABELS = {
@@ -149,13 +194,18 @@ def dashboard_summary(db: Session) -> dict:
         if bucket in buckets:
             buckets[bucket] += 1
     return {
-        "total_examiners": len(admin_repository.list_examiners(db)),
-        "total_candidates": len(admin_repository.list_candidates(db)),
+        # The COUNT from the paginated query, not len() of what it returns.
+        # list_examiners/list_candidates now return (rows, total), so len() of
+        # the tuple was 2 -- always, regardless of how many examiners exist.
+        # A cross-check test caught it immediately, which is the entire argument
+        # for having one.
+        "total_examiners": admin_repository.list_examiners(db, limit=0)[1],
+        "total_candidates": admin_repository.list_candidates(db, limit=0)[1],
         "active_exams": buckets["active"],
         "upcoming_exams": buckets["upcoming"],
         "completed_exams": buckets["completed"],
         "live_sessions": len(admin_repository.list_live_attempts(db)),
-        "violations_logged": len(admin_repository.list_all_violations(db)),
+        "violations_logged": admin_repository.list_all_violations(db, limit=0)[1],
     }
 
 
@@ -208,11 +258,19 @@ def exams_overview(db: Session, status_filter: str | None = None, search: str | 
 # ---------------------------------------------------------------------------
 
 def examiners_overview(db: Session, search: str | None = None, organization_id: int | None = None,
-                        status: str | None = None) -> list[dict]:
+                        status: str | None = None, offset: int | None = None,
+                        limit: int | None = None) -> tuple[list[dict], int]:
     active_filter = {"active": True, "disabled": False}.get(status)
-    examiners = admin_repository.list_examiners(db, search=search, organization_id=organization_id, active=active_filter)
+    examiners, total = admin_repository.list_examiners(
+        db, search=search, organization_id=organization_id, active=active_filter,
+        offset=offset, limit=limit)
     if not examiners:
-        return []
+        return [], total
+
+    # ONE batched query pair instead of two per examiner. This loop used to call
+    # candidate_ids_for_examiner per row, so a page of a hundred staff issued
+    # two hundred round trips to render one table.
+    candidate_counts = admin_repository.candidate_counts_for_examiners(db, examiners)
 
     exams = admin_repository.list_exams_for_examiners(db, [e.id for e in examiners])
     now = datetime.now(timezone.utc)
@@ -229,10 +287,10 @@ def examiners_overview(db: Session, search: str | None = None, organization_id: 
             "id": e.id, "user_id": e.user_id, "full_name": e.user.full_name, "email": e.user.email,
             "organization_id": e.organization_id, "organization_name": e.organization_name,
             "active_exams": counts["active"], "upcoming_exams": counts["upcoming"], "completed_exams": counts["completed"],
-            "candidate_count": len(admin_repository.candidate_ids_for_examiner(db, e)),
+            "candidate_count": candidate_counts.get(e.id, 0),
             "is_active": e.user.is_active,
         })
-    return rows
+    return rows, total
 
 
 def examiner_detail(db: Session, examiner_id: int) -> dict:
@@ -293,20 +351,72 @@ def examiner_exams(db: Session, examiner_id: int, status_filter: str | None = No
     return rows
 
 
+def examiner_user(db: Session, examiner_id: int):
+    """The User behind an examiner profile -- the activity trail records people,
+    not profile rows."""
+    examiner = user_repository.get_examiner_by_id(db, examiner_id)
+    return examiner.user if examiner else None
+
+
 def update_examiner(db: Session, examiner_id: int, first_name: str | None = None,
-                     last_name: str | None = None, organization_name: str | None = None) -> dict:
+                     last_name: str | None = None, organization_name: str | None = None,
+                     organization_id: int | None = None) -> dict:
+    """Edit an examiner, moving them between organizations properly.
+
+    This used to write `organization_name` only -- a display string -- while
+    `organization_id` is the authoritative tenancy field that decides which
+    students they see, which exams are theirs, and which roster they draw from.
+    So an administrator could type a new organization, watch it save, and have
+    moved nobody: the examiner stayed in the old tenant while the interface said
+    otherwise. Every downstream count and filter kept using the old one.
+
+    Setting the name now resolves it to a real organization row and moves the
+    foreign key with it, so the two can no longer disagree.
+    """
+    from app.services import organization_service
+
     examiner = user_repository.get_examiner_by_id(db, examiner_id)
     if not examiner:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Examiner not found.")
     user = examiner.user
+    before = {"organization_id": examiner.organization_id,
+              "organization_name": examiner.organization_name}
+
     if first_name is not None or last_name is not None:
         user.set_name(first_name if first_name is not None else user.first_name,
                       last_name if last_name is not None else user.last_name)
-    if organization_name is not None:
-        examiner.organization_name = organization_name.strip() or None
-    db.commit()
+
+    try:
+        if organization_id is not None:
+            organization = organization_service.get_by_id(db, organization_id)
+            if organization is None:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "That organization does not exist.")
+            examiner.organization_id = organization.id
+            examiner.organization_name = organization.name
+        elif organization_name is not None:
+            name = organization_name.strip()
+            if name:
+                organization = organization_service.get_or_create(db, name, commit=False)
+                examiner.organization_id = organization.id
+                examiner.organization_name = organization.name
+            else:
+                # Clearing the label clears the tenancy too, rather than leaving
+                # a blank name pointing at a real organization.
+                examiner.organization_id = None
+                examiner.organization_name = None
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(examiner)
-    return {"id": examiner.id, "full_name": user.full_name, "organization_name": examiner.organization_name}
+    return {
+        "id": examiner.id, "full_name": user.full_name,
+        "organization_id": examiner.organization_id,
+        "organization_name": examiner.organization_name,
+        # Returned so the caller can record what actually changed rather than
+        # what was requested -- see the audit note in the admin router.
+        "previous": before,
+    }
 
 
 def delete_examiner(db: Session, examiner_id: int) -> None:
@@ -410,7 +520,7 @@ def exam_enrolled_students(db: Session, exam_id: int, *, exam_status: str | None
         else:
             events = events_by_attempt.get(attempt.id, [])
             violation_count = len(events)
-            _, risk_tier = risk_score_and_tier(events, attempt.status.value)
+            risk_tier = adjudicated_risk(events, attempt.status.value)["adjudicated_tier"]
             result_row = results_by_attempt.get(attempt.id)
             if attempt.status == AttemptStatus.TERMINATED:
                 candidate_status = "Terminated"
@@ -450,10 +560,12 @@ def exam_enrolled_students(db: Session, exam_id: int, *, exam_status: str | None
 # Candidates
 # ---------------------------------------------------------------------------
 
-def candidates_overview(db: Session, search: str | None = None, organization_id: int | None = None) -> list[dict]:
-    students = admin_repository.list_candidates(db, search=search, organization_id=organization_id)
+def candidates_overview(db: Session, search: str | None = None, organization_id: int | None = None,
+                        offset: int | None = None, limit: int | None = None) -> tuple[list[dict], int]:
+    students, total = admin_repository.list_candidates(
+        db, search=search, organization_id=organization_id, offset=offset, limit=limit)
     if not students:
-        return []
+        return [], total
 
     all_attempt_ids = [a.id for s in students for a in s.attempts]
     violation_counts = admin_repository.violation_counts_for_attempts(db, all_attempt_ids)
@@ -471,7 +583,7 @@ def candidates_overview(db: Session, search: str | None = None, organization_id:
             "total_violations": sum(violation_counts.get(a.id, 0) for a in attempts),
             "is_active": student.user.is_active,
         })
-    return rows
+    return rows, total
 
 
 def candidate_detail(db: Session, student_id: int) -> dict:
@@ -489,7 +601,7 @@ def candidate_detail(db: Session, student_id: int) -> dict:
         exam = attempt.exam
         result_row = results_by_attempt.get(attempt.id)
         events = events_by_attempt.get(attempt.id, [])
-        _, risk_tier = risk_score_and_tier(events, attempt.status.value)
+        risk_tier = adjudicated_risk(events, attempt.status.value)["adjudicated_tier"]
         result_label = None
         if result_row is not None:
             result_label = "Passed" if result_row.percentage >= exam.pass_percentage else "Failed"
@@ -538,9 +650,12 @@ def live_sessions(db: Session) -> list[dict]:
 
 
 def violations_overview(db: Session, *, severity: str | None = None, decision: str | None = None,
-                         exam_id: int | None = None, examiner_id: int | None = None) -> list[dict]:
-    events = admin_repository.list_all_violations(db, severity=severity, decision=decision,
-                                                   exam_id=exam_id, examiner_id=examiner_id)
+                         exam_id: int | None = None, examiner_id: int | None = None,
+                         search: str | None = None,
+                         offset: int | None = None, limit: int | None = None) -> tuple[list[dict], int]:
+    events, total = admin_repository.list_all_violations(
+        db, severity=severity, decision=decision, exam_id=exam_id, examiner_id=examiner_id,
+        search=search, offset=offset, limit=limit)
     rows = []
     for e in events:
         attempt = e.attempt
@@ -552,7 +667,7 @@ def violations_overview(db: Session, *, severity: str | None = None, decision: s
             "has_screenshot": bool(e.screenshot_path), "admin_decision": e.admin_decision.value,
             "created_at": e.created_at,
         })
-    return rows
+    return rows, total
 
 
 def set_violation_decision(db: Session, event_id: int, decision: str) -> dict:

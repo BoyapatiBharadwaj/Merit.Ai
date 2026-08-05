@@ -52,6 +52,10 @@ class ActivityType(str, enum.Enum):
     PASSWORD_RESET_BY_EMAIL = "password_reset_by_email"
 
     ACCOUNT_CREATED_BY_ADMIN = "account_created_by_admin"
+    # Edits were the gap: creation, password resets and deletions were recorded,
+    # but not changes -- so "who moved this examiner into our organization?" had
+    # no answer, which is exactly the question a surprise tenancy change raises.
+    EXAMINER_UPDATED = "examiner_updated"
     ACCOUNT_DISABLED = "account_disabled"
     ACCOUNT_ENABLED = "account_enabled"
     ACCOUNT_DELETED = "account_deleted"

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useNavigate, Navigate, Link } from "react-router-dom";
-import { Api, ApiError } from "../lib/api.js";
+import { Api, ApiError, setAttemptToken } from "../lib/api.js";
+import { createAutosaveQueue, SaveState } from "../lib/autosave.js";
 import { isLoggedIn, getName, getRole } from "../lib/auth.js";
 import { createProctoring } from "../lib/proctoring.js";
 import { createLockdown, requestScreenShare } from "../lib/lockdown.js";
@@ -48,20 +49,28 @@ function captureVideoFrame(video, maxEdge = 640, quality = 0.8) {
 const RESYNC_INTERVAL_MS = 90000;
 const CODE_SAVE_DEBOUNCE_MS = 1200;
 
-function markStorageKey(examId) {
-  return `aep_marked_${examId}`;
+/**
+ * Keyed on the ATTEMPT, not the exam.
+ *
+ * Keyed on the exam id, a candidate granted a retake after a disruption opened
+ * their fresh attempt already carrying the flags from the abandoned one --
+ * questions they had marked to revisit in a paper they were no longer sitting.
+ * The attempt id is the thing these marks actually belong to.
+ */
+function markStorageKey(attemptId) {
+  return `aep_marked_attempt_${attemptId}`;
 }
-function loadMarked(examId) {
+function loadMarked(attemptId) {
   try {
-    const raw = localStorage.getItem(markStorageKey(examId));
+    const raw = localStorage.getItem(markStorageKey(attemptId));
     return raw ? new Set(JSON.parse(raw)) : new Set();
   } catch {
     return new Set();
   }
 }
-function persistMarked(examId, set) {
+function persistMarked(attemptId, set) {
   try {
-    localStorage.setItem(markStorageKey(examId), JSON.stringify([...set]));
+    localStorage.setItem(markStorageKey(attemptId), JSON.stringify([...set]));
   } catch {
     // best-effort
   }
@@ -137,34 +146,45 @@ export default function Exam() {
   // or a shaky connection before it costs them a lockdown strike.
   const [batteryStatus, setBatteryStatus] = useState(null); // { level: 0-1, charging: bool } | null
   const [networkQuality, setNetworkQuality] = useState(null); // { label: "Good"|"Fair"|"Poor" } | null
-  const pendingSavesRef = useRef(new Map()); // questionId -> { timeoutId, attempt }
 
-  // ---------- autosave ordering ----------
+  // ---------- autosave ----------
   //
-  // Monotonic per-question counter, bumped once per user change and sent with
-  // every save. The server refuses any write older than what it already holds
-  // (see backend attempt_repository._should_apply), which closes a real
-  // answer-loss race: this component autosaves on every change AND retries with
-  // backoff, so a request stalled on a slow connection could land after a newer
-  // one and silently revert an answer the candidate had already changed.
+  // All persistence goes through lib/autosave.js. See that file for what the
+  // three hand-rolled retry loops that used to live here were getting wrong --
+  // in short: they ignored the server's `applied: false`, restarted the version
+  // counter on reload, minted a new idempotency key per retry, retried only
+  // network errors, and could not be awaited, so submission raced them.
   //
-  // Note the retry path below deliberately reuses the version captured when the
-  // change was made rather than taking a fresh one -- a retry is the SAME
-  // change being re-sent, so bumping it would let a late retry beat a genuinely
-  // newer answer, which is the exact bug this exists to prevent.
-  const answerVersionsRef = useRef(new Map()); // key -> integer
-
-  const nextAnswerVersion = useCallback((key) => {
-    const next = (answerVersionsRef.current.get(key) || 0) + 1;
-    answerVersionsRef.current.set(key, next);
-    return next;
-  }, []);
-
-  // A fresh id per REQUEST (not per change), so a retry of a request that
-  // actually landed -- but whose response was lost -- is recognised server-side
-  // as a duplicate instead of being applied twice.
-  const newIdempotencyKey = () =>
-    (crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  // `expiredRef` is checked before every write. Once the deadline passes the
+  // attempt is finished whether or not the submission has landed yet, and
+  // accepting further changes would let a candidate keep working during the
+  // retry window.
+  const [saveSummary, setSaveSummary] = useState({
+    pending: 0, failed: 0, lastSavedAt: null, state: SaveState.SAVED,
+  });
+  const expiredRef = useRef(false);
+  const autosaveRef = useRef(null);
+  if (!autosaveRef.current) {
+    autosaveRef.current = createAutosaveQueue({
+      transports: {
+        mcq: (questionId, optionId, envelope) =>
+          Api.exam.put(`/attempts/${attemptIdRef.current}/answer`, {
+            question_id: questionId, selected_option_id: optionId, ...envelope,
+          }),
+        multi: (questionId, optionIds, envelope) =>
+          Api.exam.put(`/attempts/${attemptIdRef.current}/multi-answer`, {
+            question_id: questionId, selected_option_ids: optionIds || [], ...envelope,
+          }),
+        code: (questionId, sourceCode, envelope) =>
+          Api.exam.put(`/attempts/${attemptIdRef.current}/code-answer`, {
+            question_id: questionId, source_code: sourceCode ?? "", ...envelope,
+          }),
+      },
+      onChange: setSaveSummary,
+      onExpired: (expiredAttemptId) => redirectAfterAutoSubmit(expiredAttemptId),
+    });
+  }
+  const autosave = autosaveRef.current;
 
   const [toasts, setToasts] = useState([]);
   const [signalStates, setSignalStates] = useState({});
@@ -237,6 +257,17 @@ export default function Exam() {
   // carries title/description/duration/question count/marks/window/pass
   // criteria per exam_service.serialize_exam_for_candidate.
   const [examMeta, setExamMeta] = useState(null);
+  // What THIS exam actually asks for, resolved by the server.
+  //
+  // The page demanded camera, microphone, screen sharing and fullscreen from
+  // every candidate regardless of the exam's settings, and then told them "this
+  // exam is not proctored" -- so an ordinary quiz still required handing over a
+  // webcam and sharing a screen for no purpose anyone could name. The defaults
+  // below mirror the old behaviour so a server that has not been upgraded, or
+  // an exam metadata fetch that failed, still errs on the side of asking.
+  const requires = examMeta?.requires ?? {
+    camera: true, microphone: true, screen_share: true, fullscreen: true,
+  };
   const [identityStatus, setIdentityStatus] = useState(null);
   // Live face-match check run once the camera preview is working, comparing
   // the live frame against the registered face profile via the same
@@ -285,168 +316,73 @@ export default function Exam() {
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 4500);
   }, []);
 
-  // ---------- autosave (MCQ) with retry/backoff ----------
-  const persistMcqAnswer = useCallback(
-    (questionId, selectedOptionId, attempt = 0, version = null) => {
-      const entry = pendingSavesRef.current.get(questionId) || {};
-      if (entry.timeoutId) clearTimeout(entry.timeoutId);
-      // First send for this change mints a version; retries carry it forward.
-      const answerVersion = version ?? nextAnswerVersion(`mcq_${questionId}`);
-      Api.put(`/attempts/${attemptIdRef.current}/answer`, {
-        question_id: questionId,
-        selected_option_id: selectedOptionId,
-        answer_version: answerVersion,
-        idempotency_key: newIdempotencyKey(),
-      })
-        .then(() => {
-          pendingSavesRef.current.delete(questionId);
-          setConnectionBanner((prev) => (pendingSavesRef.current.size === 0 ? null : prev));
-        })
-        .catch((err) => {
-          if (isExpiredAutoSubmitError(err)) {
-            pendingSavesRef.current.delete(questionId);
-            redirectAfterAutoSubmit(err.detail.attempt_id);
-            return;
-          }
-          const isNetwork = err instanceof ApiError && err.status === 0;
-          if (!isNetwork) {
-            pendingSavesRef.current.delete(questionId);
-            return; // real validation error -- retrying won't help
-          }
-          const delay = RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)];
-          setConnectionBanner("Connection lost. Your answers will sync automatically once you're back online.");
-          const timeoutId = setTimeout(
-            () => persistMcqAnswer(questionId, selectedOptionId, attempt + 1, answerVersion), delay);
-          pendingSavesRef.current.set(questionId, { timeoutId, attempt: attempt + 1 });
-        });
-    },
-    [nextAnswerVersion]
-  );
-
-  // ---------- autosave (multi-select) with the same retry/backoff as MCQ ----------
-  const persistMultiSelectAnswer = useCallback(
-    (questionId, selectedOptionIds, attempt = 0, version = null) => {
-      const key = `multi_${questionId}`;
-      const entry = pendingSavesRef.current.get(key) || {};
-      if (entry.timeoutId) clearTimeout(entry.timeoutId);
-      const answerVersion = version ?? nextAnswerVersion(key);
-      Api.put(`/attempts/${attemptIdRef.current}/multi-answer`, {
-        question_id: questionId,
-        selected_option_ids: selectedOptionIds,
-        answer_version: answerVersion,
-        idempotency_key: newIdempotencyKey(),
-      })
-        .then(() => {
-          pendingSavesRef.current.delete(key);
-          setConnectionBanner((prev) => (pendingSavesRef.current.size === 0 ? null : prev));
-        })
-        .catch((err) => {
-          if (isExpiredAutoSubmitError(err)) {
-            pendingSavesRef.current.delete(key);
-            redirectAfterAutoSubmit(err.detail.attempt_id);
-            return;
-          }
-          const isNetwork = err instanceof ApiError && err.status === 0;
-          if (!isNetwork) {
-            pendingSavesRef.current.delete(key);
-            return; // real validation error -- retrying won't help
-          }
-          const delay = RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)];
-          setConnectionBanner("Connection lost. Your answers will sync automatically once you're back online.");
-          const timeoutId = setTimeout(
-            () => persistMultiSelectAnswer(questionId, selectedOptionIds, attempt + 1, answerVersion), delay);
-          pendingSavesRef.current.set(key, { timeoutId, attempt: attempt + 1 });
-        });
-    },
-    [nextAnswerVersion]
-  );
-
-  const persistCodeAnswer = useCallback(
-    (questionId, sourceCode, attempt = 0, version = null) => {
-      const key = `code_${questionId}`;
-      const entry = pendingSavesRef.current.get(key) || {};
-      if (entry.timeoutId) clearTimeout(entry.timeoutId);
-      // Versioning matters most here: a late retry landing after newer keystrokes
-      // would restore a stale snapshot of the candidate's source file.
-      const answerVersion = version ?? nextAnswerVersion(key);
-      Api.put(`/attempts/${attemptIdRef.current}/code-answer`, {
-        question_id: questionId,
-        source_code: sourceCode,
-        answer_version: answerVersion,
-        idempotency_key: newIdempotencyKey(),
-      })
-        .then(() => {
-          pendingSavesRef.current.delete(key);
-          setConnectionBanner((prev) => (pendingSavesRef.current.size === 0 ? null : prev));
-          setAnsweredMap((prev) => ({ ...prev, [questionId]: sourceCode.trim() ? true : null }));
-        })
-        .catch((err) => {
-          if (isExpiredAutoSubmitError(err)) {
-            pendingSavesRef.current.delete(key);
-            redirectAfterAutoSubmit(err.detail.attempt_id);
-            return;
-          }
-          const isNetwork = err instanceof ApiError && err.status === 0;
-          if (!isNetwork) {
-            pendingSavesRef.current.delete(key);
-            return;
-          }
-          const delay = RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)];
-          setConnectionBanner("Connection lost. Your answers will sync automatically once you're back online.");
-          const timeoutId = setTimeout(
-            () => persistCodeAnswer(questionId, sourceCode, attempt + 1, answerVersion), delay);
-          pendingSavesRef.current.set(key, { timeoutId, attempt: attempt + 1 });
-        });
-    },
-    [nextAnswerVersion]
-  );
-
-  // ---------- flush any pending debounced code save (used before navigating away from a question) ----------
+  // ---------- flush the debounced code save ----------
+  //
+  // The code editor debounces by ~1.2s, so at any moment the candidate's most
+  // recent keystrokes may exist only in the browser. Called before navigating
+  // away from a coding question and before submitting.
   function flushCodeSave() {
-    if (codeSaveTimeoutRef.current) {
-      clearTimeout(codeSaveTimeoutRef.current);
-      codeSaveTimeoutRef.current = null;
-      // Reads the ref, not the `currentQuestion` state, for the same reason
-      // attemptIdRef exists (see the comment at the top of this component).
-      // The exam timer's auto-submit runs inside an interval created in
-      // beginExam(), whose closure captured `currentQuestion` while it was
-      // still null -- so on a time-expiry submit the condition below was
-      // always false and this cleared the pending save *without sending it*,
-      // silently discarding everything the student had typed since the last
-      // 1.2s pause. Manual submit was fine; running out of time was not.
-      const question = currentQuestionRef.current;
-      if (question?.question_type === "coding") {
-        persistCodeAnswer(question.question_id, codeValueRef.current);
-      }
+    if (!codeSaveTimeoutRef.current) return;
+    clearTimeout(codeSaveTimeoutRef.current);
+    codeSaveTimeoutRef.current = null;
+    // Reads the ref, not the `currentQuestion` state, for the same reason
+    // attemptIdRef exists (see the comment at the top of this component). The
+    // exam timer's auto-submit runs inside an interval created in beginExam(),
+    // whose closure captured `currentQuestion` while it was still null -- so on
+    // a time-expiry submit the condition below was always false and this
+    // cleared the pending save *without sending it*, silently discarding
+    // everything typed since the last pause. Manual submit was fine; running
+    // out of time was not.
+    const question = currentQuestionRef.current;
+    if (question?.question_type === "coding") {
+      autosave.save("code", question.question_id, codeValueRef.current);
     }
   }
 
   // ---------- load a question by index ----------
+  //
+  // Every load takes a ticket. Question fetches are independent requests with
+  // no ordering guarantee, so clicking 1 → 2 → 3 quickly could resolve 3 before
+  // 2, and the late response for 2 then overwrote the screen: the navigator
+  // highlighted 3, the question text was 2's, and the answer handlers wrote 2's
+  // answer against the question the candidate thought they were looking at.
+  // Comparing the ticket on the way out means a superseded response is
+  // discarded rather than rendered.
+  const questionRequestRef = useRef(0);
   const loadQuestion = useCallback(
     async (index, ids = questionIds, attemptIdVal = attemptIdRef.current) => {
       const questionId = ids[index];
       if (!questionId) return;
+      const ticket = ++questionRequestRef.current;
       setQuestionLoading(true);
       setQuestionError("");
       setRunResult(null);
       try {
-        const q = await Api.get(`/attempts/${attemptIdVal}/question/${questionId}`);
+        const q = await Api.exam.get(`/attempts/${attemptIdVal}/question/${questionId}`);
+        if (ticket !== questionRequestRef.current) return; // a newer load won
+        // Continue the server's version sequence for this question instead of
+        // restarting at 1 -- the reason every save after a page reload used to
+        // be refused as stale. See lib/autosave.js.
+        const kind = q.question_type === "coding" ? "code"
+          : q.question_type === "multi_select" ? "multi" : "mcq";
+        autosave.seed(kind, q.question_id, q.answer_version);
         setCurrentQuestion(q);
         if (q.question_type === "coding") {
           codeValueRef.current = q.source_code || "";
           setCodeEditorKey((k) => k + 1);
         }
       } catch (err) {
+        if (ticket !== questionRequestRef.current) return;
         if (isExpiredAutoSubmitError(err)) {
           redirectAfterAutoSubmit(err.detail.attempt_id);
           return;
         }
         setQuestionError(err.message || "Couldn't load this question.");
       } finally {
-        setQuestionLoading(false);
+        if (ticket === questionRequestRef.current) setQuestionLoading(false);
       }
     },
-    [questionIds]
+    [questionIds, autosave]
   );
 
   function goToIndex(nextIndex) {
@@ -469,6 +405,13 @@ export default function Exam() {
       updateTimerDisplay();
       if (secondsRemainingRef.current <= 0) {
         stopTimer();
+        // One-way door. Everything below checks expiredRef before accepting a
+        // change, and nothing ever sets it back to false -- previously, when
+        // the submission's bounded retries ran out, `submitting` went back to
+        // false, the overlay disappeared, and the candidate could carry on
+        // answering an exam whose time had expired.
+        expiredRef.current = true;
+        setExpiredPendingSubmission(true);
         doSubmit(true);
       }
     }, 1000);
@@ -484,6 +427,10 @@ export default function Exam() {
     setPrecheckError("");
     try {
       const res = await Api.post(`/attempts/start/${examId}`);
+      // Valid until this attempt's deadline plus a grace period, so a three-hour
+      // exam is no longer ended by a two-hour session token expiring. Held in
+      // memory by lib/api.js and used for every in-exam request from here on.
+      setAttemptToken(res.attempt_token);
       setAttemptId(res.attempt_id);
       attemptIdRef.current = res.attempt_id;
       setExamTitle(res.exam_title);
@@ -494,12 +441,12 @@ export default function Exam() {
       // Recover previously-saved answers so the navigator repaints correctly
       // after a reload/reconnect.
       try {
-        const answers = await Api.get(`/attempts/${res.attempt_id}/answers`);
+        const answers = await Api.exam.get(`/attempts/${res.attempt_id}/answers`);
         setAnsweredMap(answers || {});
       } catch {
         // non-fatal
       }
-      setMarkedSet(loadMarked(examId));
+      setMarkedSet(loadMarked(res.attempt_id));
 
       setPhase("active");
       startTimer();
@@ -527,11 +474,18 @@ export default function Exam() {
   }
 
   async function resyncRemainingTime() {
-    // Idempotent: re-calling start-attempt on an already-started attempt
-    // just returns the current attempt's fresh remaining_seconds, letting
-    // the client timer re-sync with the server's clock periodically.
+    // A read-only status call, not another POST /attempts/start. Re-calling the
+    // endpoint that can also CREATE an attempt every 30 seconds worked, but
+    // this asks the narrower question and is the one the attempt token is
+    // scoped to.
     try {
-      const res = await Api.post(`/attempts/start/${examId}`);
+      const res = await Api.exam.get(`/attempts/${attemptIdRef.current}/status`);
+      // The server may have finalised this attempt while the tab was asleep or
+      // offline. Learning that from the server beats the local timer guessing.
+      if (res.status !== "in_progress") {
+        redirectAfterAutoSubmit(res.attempt_id);
+        return;
+      }
       secondsRemainingRef.current = res.remaining_seconds;
       updateTimerDisplay();
     } catch (err) {
@@ -544,32 +498,86 @@ export default function Exam() {
   }
 
   // ---------- submit ----------
+  //
+  // The snapshot is built ONCE, before the first attempt, and every retry
+  // re-sends the identical payload. Rebuilding it per retry would give each
+  // attempt fresh idempotency keys, so a retry of a submission that actually
+  // landed would look like a new one.
+  const finalizePayloadRef = useRef(null);
+  const [expiredPendingSubmission, setExpiredPendingSubmission] = useState(false);
+
   async function attemptSubmit(auto, retryAttempt = 0) {
     try {
-      const res = await Api.post(`/attempts/${attemptIdRef.current}/submit?auto=${auto ? "true" : "false"}`);
+      if (!finalizePayloadRef.current) {
+        finalizePayloadRef.current = { final_answers: autosave.snapshot() };
+      }
+      // Answers travel WITH the submission. Previously the last code save was
+      // fired and the submit sent immediately after without awaiting it -- on
+      // any connection where the submit won that race the server graded the
+      // previous version of the code and then rejected the save carrying the
+      // real answer, because the attempt was no longer active.
+      const res = await Api.exam.post(
+        `/attempts/${attemptIdRef.current}/finalize`, finalizePayloadRef.current,
+      );
       stopTimer();
       if (resyncIntervalRef.current) clearInterval(resyncIntervalRef.current);
       if (proctoringRef.current) proctoringRef.current.stop();
+      autosave.stop();
+      setAttemptToken(null);
       navigate(`/results/${res.attempt_id}`, { replace: true, state: { autoSubmitted: auto } });
     } catch (err) {
-      const isNetwork = err instanceof ApiError && err.status === 0;
-      if (isNetwork && retryAttempt < RETRY_DELAYS_MS.length) {
+      // The server already finalised this attempt -- a retry whose predecessor
+      // actually landed, or the expiry sweep beating us to it. Either way the
+      // exam is submitted; go to the result rather than reporting a failure.
+      if (isExpiredAutoSubmitError(err)) {
+        redirectAfterAutoSubmit(err.detail.attempt_id);
+        return;
+      }
+
+      const status = err instanceof ApiError ? err.status : null;
+      const retryable = status === 0 || status === 408 || status === 429 || status >= 500;
+
+      // Past the deadline, retrying is the ONLY acceptable behaviour: the
+      // attempt is over, the candidate cannot be allowed to keep working, and
+      // there is nobody to press a button. Keep going on a capped backoff
+      // rather than giving up after five tries.
+      if (expiredRef.current) {
+        const delay = RETRY_DELAYS_MS[Math.min(retryAttempt, RETRY_DELAYS_MS.length - 1)];
+        setConnectionBanner("Your time is up. Still trying to submit your exam — keep this page open.");
+        setTimeout(() => attemptSubmit(auto, retryAttempt + 1), delay);
+        return;
+      }
+
+      if (retryable && retryAttempt < RETRY_DELAYS_MS.length) {
         setConnectionBanner("Connection lost. Retrying submission…");
         setTimeout(() => attemptSubmit(auto, retryAttempt + 1), RETRY_DELAYS_MS[retryAttempt]);
         return;
       }
+
+      // A manual submit that genuinely failed: hand control back so they can
+      // try again, and throw away the snapshot so the next attempt rebuilds it
+      // from whatever they have changed in the meantime.
+      finalizePayloadRef.current = null;
       submittingRef.current = false;
       setSubmitting(false);
       setSubmitError(err.message || "Submission failed. Please try again.");
     }
   }
-  function doSubmit(auto) {
+
+  async function doSubmit(auto) {
     if (submittingRef.current) return;
     submittingRef.current = true;
-    flushCodeSave();
     setSubmitReason(auto ? "auto" : "manual");
     setSubmitting(true);
     setSubmitError("");
+
+    // Push out the debounced code save, then wait for everything outstanding.
+    // This await is the fix: submission used to start while saves were still in
+    // flight. waitForIdle resolves rather than hangs when a save cannot succeed
+    // -- the snapshot carries those answers to the server anyway, which is the
+    // last chance they have to be recorded.
+    flushCodeSave();
+    await autosave.waitForIdle({ timeoutMs: 8000 });
     attemptSubmit(auto);
   }
 
@@ -580,61 +588,107 @@ export default function Exam() {
       const next = new Set(prev);
       if (next.has(currentQuestion.question_id)) next.delete(currentQuestion.question_id);
       else next.add(currentQuestion.question_id);
-      persistMarked(examId, next);
+      persistMarked(attemptIdRef.current, next);
       return next;
     });
   }
 
+  /**
+   * Arrow keys inside a radio group, which is what a radio group is for.
+   *
+   * Home/End jump to the ends; Left/Up and Right/Down wrap. Selecting on arrow
+   * (rather than requiring a second Space) is the standard behaviour and is
+   * safe here because every change is autosaved and reversible.
+   */
+  function handleOptionKeys(event, index, options, choose) {
+    const keys = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 };
+    let next = null;
+    if (event.key in keys) next = (index + keys[event.key] + options.length) % options.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = options.length - 1;
+    if (next === null) return;
+    event.preventDefault();
+    choose(options[next].id);
+    // Move focus with the selection, or the visual focus ring and the checked
+    // option drift apart.
+    const group = event.currentTarget.parentElement;
+    group?.children?.[next]?.focus?.();
+  }
+
+  // ---------- answering ----------
+  //
+  // Every one of these refuses to record a change once the deadline has passed.
+  // The overlay used to be the only thing stopping a candidate answering after
+  // time expired, and the overlay came down when the submission's retries ran
+  // out. The guard belongs on the write, not on the paint.
+  function canAnswer() {
+    return Boolean(currentQuestion) && !expiredRef.current && !submittingRef.current;
+  }
+
   // ---------- MCQ select ----------
   function selectOption(optionId) {
-    if (!currentQuestion) return;
+    if (!canAnswer()) return;
     setCurrentQuestion((prev) => ({ ...prev, selected_option_id: optionId }));
     setAnsweredMap((prev) => ({ ...prev, [currentQuestion.question_id]: optionId }));
-    persistMcqAnswer(currentQuestion.question_id, optionId);
+    autosave.save("mcq", currentQuestion.question_id, optionId);
   }
   function clearResponse() {
-    if (!currentQuestion || currentQuestion.question_type !== "mcq") return;
+    if (!canAnswer() || currentQuestion.question_type !== "mcq") return;
     setCurrentQuestion((prev) => ({ ...prev, selected_option_id: null }));
     setAnsweredMap((prev) => ({ ...prev, [currentQuestion.question_id]: null }));
-    persistMcqAnswer(currentQuestion.question_id, null);
+    autosave.save("mcq", currentQuestion.question_id, null);
   }
 
   // ---------- multi-select toggle ----------
   function toggleMultiOption(optionId) {
-    if (!currentQuestion) return;
+    if (!canAnswer()) return;
     const current = currentQuestion.selected_option_ids || [];
     const next = current.includes(optionId) ? current.filter((id) => id !== optionId) : [...current, optionId];
     setCurrentQuestion((prev) => ({ ...prev, selected_option_ids: next }));
     setAnsweredMap((prev) => ({ ...prev, [currentQuestion.question_id]: next.length ? next : null }));
-    persistMultiSelectAnswer(currentQuestion.question_id, next);
+    autosave.save("multi", currentQuestion.question_id, next);
   }
   function clearMultiResponse() {
-    if (!currentQuestion || currentQuestion.question_type !== "multi_select") return;
+    if (!canAnswer() || currentQuestion.question_type !== "multi_select") return;
     setCurrentQuestion((prev) => ({ ...prev, selected_option_ids: [] }));
     setAnsweredMap((prev) => ({ ...prev, [currentQuestion.question_id]: null }));
-    persistMultiSelectAnswer(currentQuestion.question_id, []);
+    autosave.save("multi", currentQuestion.question_id, []);
   }
 
   // ---------- coding ----------
   function onCodeChange(newValue) {
+    if (!canAnswer()) return;
     codeValueRef.current = newValue;
     if (codeSaveTimeoutRef.current) clearTimeout(codeSaveTimeoutRef.current);
     codeSaveTimeoutRef.current = setTimeout(() => {
-      if (currentQuestion) persistCodeAnswer(currentQuestion.question_id, codeValueRef.current);
+      codeSaveTimeoutRef.current = null;
+      if (currentQuestionRef.current) {
+        autosave.save("code", currentQuestionRef.current.question_id, codeValueRef.current);
+      }
     }, CODE_SAVE_DEBOUNCE_MS);
   }
   function resetCode() {
-    if (!currentQuestion) return;
+    if (!canAnswer()) return;
+    // Confirm first: this replaces work the candidate may have spent the whole
+    // exam on, and the editor has no undo across a remount.
+    const current = (codeValueRef.current || "").trim();
+    const starter = (currentQuestion.starter_code || "").trim();
+    if (current && current !== starter) {
+      const ok = window.confirm(
+        "Reset your code to the starter template? Everything you have written for this question will be discarded."
+      );
+      if (!ok) return;
+    }
     codeValueRef.current = currentQuestion.starter_code || "";
     setCodeEditorKey((k) => k + 1);
-    persistCodeAnswer(currentQuestion.question_id, codeValueRef.current);
+    autosave.save("code", currentQuestion.question_id, codeValueRef.current);
   }
   async function runSample() {
     if (!currentQuestion) return;
     setRunning(true);
     setRunResult(null);
     try {
-      const res = await Api.post(`/attempts/${attemptIdRef.current}/code-answer/run`, {
+      const res = await Api.exam.post(`/attempts/${attemptIdRef.current}/code-answer/run`, {
         question_id: currentQuestion.question_id,
         source_code: codeValueRef.current,
       });
@@ -1252,7 +1306,11 @@ export default function Exam() {
       stopTimer();
       if (resyncIntervalRef.current) clearInterval(resyncIntervalRef.current);
       if (codeSaveTimeoutRef.current) clearTimeout(codeSaveTimeoutRef.current);
-      pendingSavesRef.current.forEach((entry) => entry.timeoutId && clearTimeout(entry.timeoutId));
+      autosave.stop();
+      // The attempt token is worth nothing once this page is gone, and a token
+      // for a live exam is exactly what should not linger in a module variable
+      // on a shared examination-hall machine.
+      setAttemptToken(null);
       if (proctoringRef.current) proctoringRef.current.stop();
       // Stops the screen-share stream's tracks too (see lockdown.js's stop()).
       if (lockdownRef.current) lockdownRef.current.stop();
@@ -1307,7 +1365,14 @@ export default function Exam() {
     // and "the person at the camera right now is that profile" are different
     // claims, and only the second one is what proctoring is meant to enforce.
     const faceVerifiedOk = examMeta?.proctoring_enabled === false || !identityStatus || !identityStatus.exam_ready || faceMatchStatus === "ok";
-    const canBegin = cameraMicStatus === "ok" && screenShareActive && fullscreenActive && identityOk && faceVerifiedOk;
+    // Only what this exam asks for. Requiring all four unconditionally meant a
+    // candidate could not start an unproctored quiz without sharing their
+    // screen -- and the page told them the exam was not proctored while doing
+    // it. A requirement the exam has switched off is treated as already met.
+    const cameraOk = !(requires.camera || requires.microphone) || cameraMicStatus === "ok";
+    const screenOk = !requires.screen_share || screenShareActive;
+    const fullscreenOk = !requires.fullscreen || fullscreenActive;
+    const canBegin = cameraOk && screenOk && fullscreenOk && identityOk && faceVerifiedOk;
     const isChromiumBased = /Chrome\/|Edg\//.test(navigator.userAgent) && !/Firefox|OPR\//.test(navigator.userAgent);
 
     const durationLabel = examMeta ? `${examMeta.duration_minutes} min` : null;
@@ -1339,6 +1404,23 @@ export default function Exam() {
             <OverviewFact icon="check" label="Passing criteria" value={examMeta ? `${examMeta.pass_percentage}% or higher` : "-"} />
             <OverviewFact icon="wifi" label="Exam window" value={windowLabel} small />
           </div>
+
+          {/* The examiner's OWN instructions for this exam.
+              exam.instructions has a column, an edit field, and is carried all
+              the way through /exams/available -- and this page showed only the
+              generic platform rules below, so anything an examiner wrote for
+              their candidates was stored and never delivered. Shown first, and
+              visually distinct, because it is the part that is specific to the
+              paper in front of them. */}
+          {examMeta?.instructions && (
+            <div className="mb-4 rounded-xl border border-primary/25 bg-primary/5 p-4 text-left">
+              <div className="text-xs font-semibold text-ink mb-1.5 inline-flex items-center gap-1.5">
+                <Icon name="alert" width={13} height={13} className="text-primary" />
+                From your examiner
+              </div>
+              <p className="text-sm text-ink leading-relaxed whitespace-pre-wrap">{examMeta.instructions}</p>
+            </div>
+          )}
 
           <div className="mb-6 rounded-xl border border-border bg-page/60 p-4 text-left grid sm:grid-cols-2 gap-4">
             <div>
@@ -1460,9 +1542,10 @@ export default function Exam() {
               )}
             </SystemCheckRow>
 
+            {(requires.camera || requires.microphone) && (
             <SystemCheckRow
               icon="camera"
-              label="Camera & microphone"
+              label={requires.microphone ? "Camera & microphone" : "Camera"}
               description="Used to verify it's you throughout the exam. Required to continue."
               status={cameraMicStatus}
               statusText={
@@ -1499,6 +1582,7 @@ export default function Exam() {
                 <p className="text-xs text-red-500 leading-relaxed">{cameraMicError}</p>
               )}
             </SystemCheckRow>
+            )}
 
             <SystemCheckRow
               icon="monitor"
@@ -1515,6 +1599,10 @@ export default function Exam() {
               }
             />
 
+            {/* Each row appears only if this exam asks for it. Showing an
+                unskippable "share your entire screen" step on an unproctored
+                quiz is an intrusion the exam never called for. */}
+            {requires.screen_share && (
             <SystemCheckRow
               icon="monitor"
               label="Screen sharing"
@@ -1530,12 +1618,14 @@ export default function Exam() {
             >
               {screenShareError && <p className="text-xs text-red-500 leading-relaxed">{screenShareError}</p>}
             </SystemCheckRow>
+            )}
 
+            {requires.fullscreen && (
             <SystemCheckRow
               icon="maximize"
               label="Fullscreen"
               description={
-                screenShareActive
+                !requires.screen_share || screenShareActive
                   ? "Required to start the exam."
                   : "Share your screen first -- entering fullscreen before that can knock you back out of it."
               }
@@ -1545,7 +1635,7 @@ export default function Exam() {
                 <button
                   type="button"
                   onClick={requestFullscreenNow}
-                  disabled={!screenShareActive}
+                  disabled={requires.screen_share && !screenShareActive}
                   className={`${btnGhost.replace("px-5 py-3", "px-4 py-2")} disabled:opacity-50`}
                 >
                   <Icon name="maximize" width={14} height={14} />
@@ -1555,6 +1645,7 @@ export default function Exam() {
             >
               {fullscreenError && <p className="text-xs text-red-500 leading-relaxed">{fullscreenError}</p>}
             </SystemCheckRow>
+            )}
           </div>
 
           <button
@@ -1612,7 +1703,13 @@ export default function Exam() {
           onViewResult={() => navigate(`/results/${attemptIdRef.current}`, { replace: true })}
         />
       )}
-      {!overlayActive && submitting && <SubmittingOverlay auto={submitReason === "auto"} />}
+      {/* `expiredPendingSubmission` keeps this up even if `submitting` were
+          somehow cleared. Past the deadline the overlay must never come down
+          on its own -- that is what let a candidate carry on answering once
+          the submission's retries were exhausted. */}
+      {!overlayActive && (submitting || expiredPendingSubmission) && (
+        <SubmittingOverlay auto={submitReason === "auto"} stillRetrying={Boolean(connectionBanner) && expiredPendingSubmission} />
+      )}
       <div
         {...(contentInert ? { inert: "" } : {})}
         className="min-h-screen flex flex-col bg-page text-ink"
@@ -1744,11 +1841,16 @@ export default function Exam() {
               )}
             </div>
           )}
+          <SaveStatus summary={saveSummary} onRetry={() => autosave.retryAll()} />
           <span className={`inline-flex items-center gap-1.5 font-mono font-bold text-base sm:text-lg ${timerDanger ? "text-red-500 exam-timer-danger" : "text-ink"}`}>
             <Icon name="clock" width={17} height={17} />
             {timerText}
           </span>
-          <button onClick={() => setShowSubmitConfirm(true)} className={btnPrimary.replace("px-6 py-3.5", "px-4 py-2.5")}>
+          <button
+            onClick={() => setShowSubmitConfirm(true)}
+            disabled={expiredPendingSubmission || submitting}
+            className={`${btnPrimary.replace("px-6 py-3.5", "px-4 py-2.5")} disabled:opacity-50 disabled:cursor-not-allowed`}
+          >
             Submit Exam
           </button>
         </div>
@@ -1782,7 +1884,26 @@ export default function Exam() {
         <section className="order-1 lg:order-2 rounded-2xl border border-border bg-card p-5 sm:p-6 min-h-[420px] flex flex-col">
           {questionLoading && <QuestionSkeleton />}
           {!questionLoading && questionError && (
-            <div className="m-auto text-center text-sm text-red-500 font-medium">{questionError}</div>
+            /* A message and nothing else left the candidate stuck on a blank
+               panel mid-exam with their clock running. Both ways out are here:
+               try this question again, or go back to one that loaded. */
+            <div className="m-auto text-center" role="alert">
+              <p className="text-sm text-red-500 font-medium mb-3">
+                Couldn't load question {currentIndex + 1}. {questionError}
+              </p>
+              <div className="flex items-center justify-center gap-2">
+                <button type="button" onClick={() => loadQuestion(currentIndex)}
+                        className={`${btnPrimary.replace("px-6 py-3.5", "px-4 py-2")} text-sm`}>
+                  Try again
+                </button>
+                {currentIndex > 0 && (
+                  <button type="button" onClick={() => goToIndex(currentIndex - 1)}
+                          className={`${btnGhost} px-4 py-2 text-sm`}>
+                    Back to question {currentIndex}
+                  </button>
+                )}
+              </div>
+            </div>
           )}
           {!questionLoading && !questionError && currentQuestion && (
             <>
@@ -1799,12 +1920,26 @@ export default function Exam() {
               </div>
 
               {currentQuestion.question_type === "mcq" ? (
-                <div className="space-y-2.5 flex-1">
+                /* role="radiogroup" + role="radio", not plain buttons.
+                   As buttons a screen reader announced four unrelated controls
+                   with no indication that they were alternatives, that one was
+                   chosen, or how many there were -- and arrow keys did nothing.
+                   The visual design is unchanged; only the semantics were
+                   missing. */
+                <div className="space-y-2.5 flex-1" role="radiogroup"
+                     aria-label={`Answer choices for question ${currentIndex + 1}`}>
                   {currentQuestion.options.map((opt, i) => {
                     const selected = currentQuestion.selected_option_id === opt.id;
                     return (
                       <button
                         key={opt.id}
+                        role="radio"
+                        aria-checked={selected}
+                        // Only the selected option (or the first, when nothing
+                        // is chosen) is in the tab order -- the arrow keys move
+                        // within the group, which is how a radio group behaves.
+                        tabIndex={selected || (currentQuestion.selected_option_id == null && i === 0) ? 0 : -1}
+                        onKeyDown={(e) => handleOptionKeys(e, i, currentQuestion.options, selectOption)}
                         onClick={() => selectOption(opt.id)}
                         className={`w-full text-left flex items-center gap-3 rounded-xl border px-4 py-3.5 text-sm transition-colors ${
                           selected ? "border-primary bg-primary/5 font-semibold text-ink" : "border-border hover:border-primary/50 text-ink"
@@ -1925,7 +2060,11 @@ export default function Exam() {
 
       {/* mobile submit */}
       <div className="lg:hidden sticky bottom-0 z-30 border-t border-border bg-surface px-4 py-3">
-        <button onClick={() => setShowSubmitConfirm(true)} className={`${btnPrimary} w-full justify-center`}>
+        <button
+          onClick={() => setShowSubmitConfirm(true)}
+          disabled={expiredPendingSubmission || submitting}
+          className={`${btnPrimary} w-full justify-center disabled:opacity-50 disabled:cursor-not-allowed`}
+        >
           Submit Exam
         </button>
       </div>
@@ -1935,6 +2074,7 @@ export default function Exam() {
           answeredCount={Object.values(answeredMap).filter((v) => v !== null && v !== undefined).length}
           totalCount={questionIds.length}
           flaggedCount={markedSet.size}
+          saveSummary={saveSummary}
           submitting={submitting}
           error={submitError}
           onCancel={() => setShowSubmitConfirm(false)}
@@ -1943,6 +2083,51 @@ export default function Exam() {
       )}
       </div>
     </>
+  );
+}
+
+/**
+ * "Is my work saved?" — answered continuously, next to the clock.
+ *
+ * The single most important thing a candidate cannot otherwise know. Before
+ * this, a save that failed produced no visible difference from one that
+ * succeeded: the option stayed selected either way, because the selection is
+ * local state. Someone could sit an entire exam watching their answers appear
+ * to register while none of them reached the server.
+ *
+ * Announced politely (aria-live="polite") rather than assertively -- this
+ * updates on every keystroke-debounced save, and an assertive region would
+ * interrupt a screen-reader user mid-question every few seconds.
+ */
+function SaveStatus({ summary, onRetry }) {
+  const { pending = 0, failed = 0, lastSavedAt } = summary || {};
+
+  if (failed > 0) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-red-500" role="status" aria-live="polite">
+        <Icon name="alert" width={14} height={14} />
+        <span className="hidden sm:inline">{failed} not saved</span>
+        <button onClick={onRetry} className="underline underline-offset-2 hover:no-underline">Retry</button>
+      </span>
+    );
+  }
+  if (pending > 0) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-500" role="status" aria-live="polite">
+        <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" aria-hidden="true" />
+        <span className="hidden sm:inline">Saving{pending > 1 ? ` ${pending}` : ""}…</span>
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-success" role="status" aria-live="polite">
+      <Icon name="check" width={14} height={14} />
+      <span className="hidden sm:inline">
+        {lastSavedAt
+          ? `Saved ${lastSavedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`
+          : "All answers saved"}
+      </span>
+    </span>
   );
 }
 
@@ -2167,9 +2352,11 @@ function CodingPanel({ question, editorKey, initialValue, onChange, onRun, onRes
  * is calm and green; leaving questions blank is the one fact worth pulling the
  * eye, and colouring every number would flatten that back out.
  */
-function SubmitConfirmModal({ answeredCount, totalCount, flaggedCount = 0, submitting, error, onCancel, onConfirm }) {
+function SubmitConfirmModal({ answeredCount, totalCount, flaggedCount = 0, saveSummary,
+                             submitting, error, onCancel, onConfirm }) {
   const unanswered = Math.max(totalCount - answeredCount, 0);
   const allDone = unanswered === 0;
+  const unsynced = (saveSummary?.pending || 0) + (saveSummary?.failed || 0);
 
   useEffect(() => {
     // Escape cancels, and focus is trapped to the dialog's own buttons by
@@ -2228,6 +2415,19 @@ function SubmitConfirmModal({ answeredCount, totalCount, flaggedCount = 0, submi
           </div>
         </div>
 
+        {/* Told before submitting, not discovered afterwards. These answers do
+            go to the server with the submission (see doSubmit / snapshot), so
+            this is a "wait a moment" rather than a warning about loss. */}
+        {unsynced > 0 && (
+          <div className="mx-7 mb-5 flex items-start gap-2.5 rounded-xl border border-amber-500/25 bg-amber-500/5 px-4 py-3">
+            <span className="text-amber-500 mt-0.5 shrink-0"><Icon name="alert" width={15} height={15} /></span>
+            <p className="text-sm text-ink leading-relaxed">
+              {unsynced === 1 ? "1 answer is" : `${unsynced} answers are`} still syncing. They'll be
+              sent with your submission — submitting now is safe, but staying connected is safer.
+            </p>
+          </div>
+        )}
+
         {unanswered > 0 && (
           <div className="mx-7 mb-5 flex items-start gap-2.5 rounded-xl border border-amber-500/25 bg-amber-500/5 px-4 py-3">
             <span className="text-amber-500 mt-0.5 shrink-0"><Icon name="alert" width={15} height={15} /></span>
@@ -2284,14 +2484,14 @@ function SubmitConfirmModal({ answeredCount, totalCount, flaggedCount = 0, submi
  *
  * The backdrop is intentionally near-opaque rather than a light scrim: a
  * translucent overlay would still let a student read the question paper while
- * the exam was "paused".
+ * the exam was locked (the timer keeps running -- see the heading below).
  */
 /** Full-screen, non-interactive lock shown the instant a submit (manual or
  * timer-expiry) is in flight. Nothing behind it (see `contentInert` in the
  * main render) can be clicked or typed into while this is up -- the exam is
  * over the moment this appears, whether or not the network round-trip to
  * prove it has finished yet. */
-function SubmittingOverlay({ auto }) {
+function SubmittingOverlay({ auto, stillRetrying = false }) {
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-page/95 backdrop-blur-xl px-5" role="status" aria-live="polite">
       <div className="w-full max-w-sm rounded-2xl border border-border bg-card p-8 text-center shadow-xl animate-fade-in">
@@ -2302,9 +2502,11 @@ function SubmittingOverlay({ auto }) {
           {auto ? "Time's up — submitting your exam" : "Submitting your exam"}
         </h2>
         <p className="text-sm text-muted leading-relaxed">
-          {auto
-            ? "Your allotted time expired, so your exam is being submitted automatically. Answered questions are saved and unanswered ones are recorded as unattempted."
-            : "Please wait -- your answers are being saved and your exam is being submitted. This only takes a moment."}
+          {stillRetrying
+            ? "Your connection dropped. Your answers are held here and we're still trying to send them — keep this page open. Nothing is lost while this screen is up."
+            : auto
+              ? "Your allotted time expired, so your exam is being submitted automatically. Answered questions are saved and unanswered ones are recorded as unattempted."
+              : "Please wait — your answers are being saved and your exam is being submitted. This only takes a moment."}
         </p>
       </div>
     </div>
@@ -2376,8 +2578,13 @@ function LockdownOverlay({ terminated, reason, strikes, limit, onResume, onViewR
           </>
         ) : (
           <>
+            {/* "Exam paused" was not true: the timer keeps running while this
+                overlay is up, so a candidate who read it as a pause and took a
+                moment to sort out their screen share lost that time believing
+                they had not. Saying what is actually happening is worth more
+                than the reassurance. */}
             <h2 id="lockdown-title" className="text-xl font-extrabold tracking-tight mb-2">
-              Exam paused
+              Exam locked — your timer is still running
             </h2>
             <p className="text-sm text-muted leading-relaxed mb-4">{reason}</p>
 

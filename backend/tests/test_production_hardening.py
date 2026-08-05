@@ -7,7 +7,7 @@ headers, a load balancer that can't tell a broken instance from a healthy
 one, and correctly-signed-but-malformed tokens crashing the auth dependency.
 """
 import pytest
-from jose import jwt
+import jwt
 
 from app.core.config import PLACEHOLDER_SECRET_KEY, Settings, settings
 from app.core.security import create_access_token

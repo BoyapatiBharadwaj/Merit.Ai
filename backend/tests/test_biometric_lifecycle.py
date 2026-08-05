@@ -22,7 +22,7 @@ from app.services import biometric_service
 
 def _student(db, email="bio@example.com"):
     role = db.query(Role).filter(Role.name == RoleName.STUDENT.value).first()
-    user = User(email=email, hashed_password=hash_password("Passw0rd!"), role_id=role.id)
+    user = User(email=email, hashed_password=hash_password("Ur5aMinor!Lab"), role_id=role.id)
     user.set_name("Bio", "Student")
     db.add(user)
     db.commit()
@@ -190,7 +190,7 @@ def test_an_already_erased_profile_is_not_purged_again(db_session, seed_roles, t
 def test_a_student_can_see_and_erase_their_own_biometrics(client, seed_roles, db_session, tmp_path):
     registered = client.post("/api/v1/auth/register/student", json={
         "first_name": "Self", "last_name": "Serve", "email": "self@example.com",
-        "password": "Passw0rd123",
+        "password": "Ur5aMinor!Lab",
     })
     token = registered.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
@@ -212,10 +212,10 @@ def test_a_student_can_see_and_erase_their_own_biometrics(client, seed_roles, db
 def test_a_student_cannot_erase_someone_elses_biometrics(client, seed_roles, db_session):
     victim = client.post("/api/v1/auth/register/student", json={
         "first_name": "Vic", "last_name": "Tim", "email": "victim@example.com",
-        "password": "Passw0rd123"})
+        "password": "Ur5aMinor!Lab"})
     attacker = client.post("/api/v1/auth/register/student", json={
         "first_name": "At", "last_name": "Tacker", "email": "attacker@example.com",
-        "password": "Passw0rd123"})
+        "password": "Ur5aMinor!Lab"})
 
     victim_user_id = victim.json()["user_id"]
     headers = {"Authorization": f"Bearer {attacker.json()['access_token']}"}
@@ -226,7 +226,7 @@ def test_a_student_cannot_erase_someone_elses_biometrics(client, seed_roles, db_
 def test_an_admin_can_erase_on_a_students_behalf(client, seed_roles, admin_token, db_session, tmp_path):
     registered = client.post("/api/v1/auth/register/student", json={
         "first_name": "By", "last_name": "Admin", "email": "byadmin@example.com",
-        "password": "Passw0rd123"})
+        "password": "Ur5aMinor!Lab"})
     user_id = registered.json()["user_id"]
     student = db_session.query(Student).filter(Student.user_id == user_id).first()
     _with_face(db_session, student, tmp_path)

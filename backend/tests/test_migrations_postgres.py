@@ -142,6 +142,51 @@ def migrated_url(postgres_server):
     return url
 
 
+def test_0022_backfills_the_password_epoch_without_signing_everyone_out(postgres_server):
+    """The subtle half of 0022, and the one that would hurt on deploy day.
+
+    password_changed_at is stamped into every token and any token older than it
+    is refused. Backfilling existing rows with now() would therefore set the
+    epoch LATER than every token currently in circulation and sign out every
+    candidate -- including ones mid-exam -- the moment the migration ran.
+    created_at is both true (the password was set when the account was made) and
+    safely in the past.
+    """
+    url = postgres_server("meritai_mig_0022")
+    assert _alembic(url, "upgrade", "0021").returncode == 0
+
+    engine = sa.create_engine(url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(sa.text("INSERT INTO roles (name) VALUES ('student')"))
+            conn.execute(sa.text(
+                "INSERT INTO users (first_name, last_name, full_name, email, hashed_password, "
+                "role_id, is_active, created_at) "
+                "SELECT 'Old', 'Account', 'Old Account', 'old@example.com', 'x', id, true, "
+                "  now() - interval '30 days' FROM roles WHERE name = 'student'"
+            ))
+
+        assert _alembic(url, "upgrade", "0022").returncode == 0
+
+        with engine.connect() as conn:
+            created_at, changed_at = conn.execute(sa.text(
+                "SELECT created_at, password_changed_at FROM users WHERE email = 'old@example.com'"
+            )).one()
+            verified = conn.execute(sa.text(
+                "SELECT email_verified_at FROM users WHERE email = 'old@example.com'"
+            )).scalar()
+
+        assert changed_at == created_at, (
+            "the epoch was not backfilled from created_at -- deploying this would invalidate "
+            "every token in flight"
+        )
+        # And nobody is retroactively declared verified: NULL is the honest
+        # answer for an account created before anyone was asked.
+        assert verified is None
+    finally:
+        engine.dispose()
+
+
 def test_the_whole_chain_applies_to_a_clean_database(migrated_url):
     """The check that would have caught 0016's DuplicateObject before deploy."""
     engine = sa.create_engine(migrated_url)

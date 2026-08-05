@@ -47,7 +47,13 @@ export default function Navbar() {
           <Logo />
         </Link>
 
-        <div className="hidden md:flex items-center gap-1">
+        {/* lg, not md.
+            At md (768px) this row rendered a logo, five links, a theme switch
+            and two buttons with no overflow, wrap or condensing strategy -- on
+            a portrait tablet they simply collided. Moving the breakpoint up
+            means the burger menu covers 768-1023px, which is where the content
+            no longer fits. */}
+        <div className="hidden lg:flex items-center gap-1">
           {NAV_LINKS.map((link) => (
             <Link
               key={link.to}
@@ -67,18 +73,18 @@ export default function Navbar() {
           ))}
         </div>
 
-        <div className="hidden md:flex items-center gap-3 shrink-0">
+        <div className="hidden lg:flex items-center gap-3 shrink-0">
           <ThemeToggle />
           <span className="w-px h-6 bg-border" aria-hidden="true" />
           <Link to="/login" className={btnGhost.replace("px-5 py-3", "px-4 py-2")}>
             Log in
           </Link>
           <Link to="/register" className={btnPrimary.replace("px-5 py-3", "px-4 py-2")}>
-            Get Started Free
+            Candidate Sign Up
           </Link>
         </div>
 
-        <div className="flex md:hidden items-center gap-2 shrink-0">
+        <div className="flex lg:hidden items-center gap-2 shrink-0">
           <ThemeToggle />
           <button
             type="button"
@@ -86,7 +92,9 @@ export default function Navbar() {
             aria-expanded={menuOpen}
             aria-controls="primary-mobile-menu"
             onClick={() => setMenuOpen((v) => !v)}
-            className="inline-flex items-center justify-center w-9 h-9 rounded-lg border border-border text-ink hover:bg-page transition-colors"
+            // 44x44, not 36x36. Below ~44px a touch target is measurably harder to
+            // hit, and this is the control a candidate on a phone needs first.
+            className="inline-flex items-center justify-center w-11 h-11 rounded-lg border border-border text-ink hover:bg-page transition-colors"
           >
             <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               {menuOpen ? <path d="M18 6 6 18M6 6l12 12" /> : <path d="M3 6h18M3 12h18M3 18h18" />}
@@ -96,7 +104,7 @@ export default function Navbar() {
       </nav>
 
       {menuOpen && (
-        <div id="primary-mobile-menu" className="md:hidden border-t border-border bg-surface px-5 py-5 flex flex-col gap-1 animate-slide-up">
+        <div id="primary-mobile-menu" className="lg:hidden border-t border-border bg-surface px-5 py-5 flex flex-col gap-1 animate-slide-up">
           {NAV_LINKS.map((link) => (
             <Link
               key={link.to}

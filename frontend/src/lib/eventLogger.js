@@ -23,7 +23,18 @@ const MAX_BATCH_SIZE = 8;
 // events are dropped in favor of keeping recent ones, since violations
 // matter far more for "what's happening now" than for a complete audit trail
 // the client can be trusted to deliver.
-const MAX_QUEUE_SIZE = 40;
+// Raised, and no longer the only line of defence.
+//
+// At 40, a disconnection of a couple of minutes silently discarded the OLDEST
+// violations -- which on a proctoring platform is the wrong end to drop. The
+// events at the start of an incident are the ones that establish what happened;
+// keeping only the most recent is keeping the aftermath and throwing away the
+// cause. Events are now mirrored to localStorage as well, so the cap bounds
+// memory rather than bounding the audit trail.
+const MAX_QUEUE_SIZE = 500;
+// Where the queue is mirrored, keyed per attempt so two tabs or a stale entry
+// from a previous exam cannot bleed into this one.
+const STORAGE_PREFIX = "aep_pending_events_";
 const BASE_URL = "/api/v1";
 
 export function createEventLogger() {
@@ -32,6 +43,57 @@ export function createEventLogger() {
   let flushTimer = null;
   let flushing = false;
   let stopped = false;
+
+  const storageKey = () => `${STORAGE_PREFIX}${attemptId}`;
+
+  /**
+   * Mirror the queue to localStorage.
+   *
+   * The queue lived only in memory, so a tab crash, an accidental reload or a
+   * closed laptop lost every violation not yet flushed -- exactly the moments
+   * during which violations are most likely to be piling up. localStorage
+   * survives all three, and `restore` below picks them up on the next load.
+   *
+   * Screenshots are dropped from the mirrored copy: they are base64 JPEGs and
+   * would blow the ~5MB origin quota within a handful of events, taking the
+   * rest of the queue with them. The event, its type and its timestamp survive;
+   * the image is the part that can be lost without losing the record.
+   */
+  function persistQueue() {
+    if (!attemptId) return;
+    try {
+      localStorage.setItem(storageKey(), JSON.stringify(
+        queue.map(({ screenshot_base64: _drop, ...rest }) => rest),
+      ));
+    } catch {
+      // A full or unavailable localStorage must never break proctoring.
+    }
+  }
+
+  /** Re-adopt anything a previous page load left unsent. */
+  function restoreQueue() {
+    if (!attemptId) return;
+    try {
+      const raw = localStorage.getItem(storageKey());
+      if (!raw) return;
+      const pending = JSON.parse(raw);
+      if (Array.isArray(pending) && pending.length) {
+        queue = [...pending, ...queue].slice(-MAX_QUEUE_SIZE);
+        scheduleFlush();
+      }
+    } catch {
+      // Corrupt entry -- drop it rather than refusing to start.
+    }
+  }
+
+  function clearPersisted() {
+    if (!attemptId) return;
+    try {
+      localStorage.removeItem(storageKey());
+    } catch {
+      // ignore
+    }
+  }
 
   function scheduleFlush() {
     if (flushTimer || stopped) return;
@@ -53,6 +115,7 @@ export function createEventLogger() {
       screenshot_base64: screenshotBase64 || null,
     });
     if (queue.length > MAX_QUEUE_SIZE) queue.splice(0, queue.length - MAX_QUEUE_SIZE);
+    persistQueue();
     if (queue.length >= MAX_BATCH_SIZE) flush();
     else scheduleFlush();
   }
@@ -77,12 +140,16 @@ export function createEventLogger() {
         body: JSON.stringify({ events: batch }),
       });
       if (!res.ok) throw new Error(`batch flush failed (${res.status})`);
+      // Acknowledged by the server -- only now is it safe to forget them.
+      persistQueue();
+      if (queue.length === 0) clearPersisted();
     } catch {
       // Best-effort: put the failed batch back ahead of anything logged
       // since, so the next flush (timer, next log(), or unload) retries it --
       // capped the same way log() caps the live queue.
       queue = [...batch, ...queue];
       if (queue.length > MAX_QUEUE_SIZE) queue.splice(0, queue.length - MAX_QUEUE_SIZE);
+      persistQueue();
     } finally {
       flushing = false;
     }
@@ -125,6 +192,9 @@ export function createEventLogger() {
 
   function init({ attemptIdVal }) {
     attemptId = attemptIdVal;
+    // Adopt anything a previous page load (a crash, a reload, a closed laptop)
+    // left unsent for THIS attempt before accepting anything new.
+    restoreQueue();
     window.addEventListener("pagehide", flushOnUnload);
     document.addEventListener("visibilitychange", handleVisibilityChange);
   }

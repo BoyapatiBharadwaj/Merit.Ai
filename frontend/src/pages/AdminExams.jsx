@@ -41,19 +41,30 @@ export default function AdminExams() {
   }, [searchInput]);
 
   useEffect(() => {
+    // A slow OLD search must not overwrite a newer one -- see AdminExaminers
+    // for the full description of what that looked like to an admin.
+    let cancelled = false;
     setRows(null);
+    setLoadError("");
     setPage(1);
     const params = new URLSearchParams();
     if (tab !== "all") params.set("status", tab);
     if (search) params.set("search", search);
     const qs = params.toString();
     Api.get(`/admin/exams${qs ? `?${qs}` : ""}`)
-      .then(setRows)
-      .catch((err) => setLoadError(err instanceof ApiError ? err.message : "Couldn't load exams."));
+      .then((data) => { if (!cancelled) setRows(data); })
+      .catch((err) => {
+        if (!cancelled) setLoadError(err instanceof ApiError ? err.message : "Couldn't load exams.");
+      });
+    return () => { cancelled = true; };
   }, [tab, search]);
 
   if (!isLoggedIn() || getRole() !== "admin") return <Navigate to="/login" replace />;
 
+  // Client-side, deliberately: /admin/exams is one row per exam an institution
+  // has ever created, which is bounded by staff activity rather than by
+  // candidate numbers -- unlike candidates and violations, which grow with
+  // every sitting and are paged by the server.
   const { pageRows, pageCount, safePage } = paginate(rows || [], page, PAGE_SIZE);
 
   return (

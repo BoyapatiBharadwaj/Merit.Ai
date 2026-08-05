@@ -3,14 +3,12 @@ uvicorn[standard]==0.30.1
 sqlalchemy==2.0.30
 psycopg2-binary==2.9.9
 alembic==1.13.1
-# KNOWN ISSUE, not yet actioned -- deliberately left pinned rather than bumped
-# blind. 3.3.0 carries CVE-2024-33664 (a JWE decompression bomb reachable from
-# jwt.decode on an attacker-supplied bearer token) and CVE-2024-33663
-# (algorithm confusion; needs asymmetric keys, so not reachable on this
-# HS256-only configuration). python-jose is barely maintained; the durable fix
-# is migrating app/core/security.py to PyJWT, which is a small, well-contained
-# change but needs its own test pass. Tracked in the audit report.
-python-jose[cryptography]==3.3.0
+# Migrated from python-jose, which was pinned at 3.3.0 carrying CVE-2024-33664
+# (a JWE decompression bomb reachable from jwt.decode on an attacker-supplied
+# bearer token) and is barely maintained. PyJWT is the actively-maintained
+# implementation, has no JWE surface at all, and is a drop-in for the HS256
+# encode/decode this application does -- see app/core/security.py.
+PyJWT==2.9.0
 passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 # 0.0.9 was vulnerable to CVE-2024-53981: a malformed multipart boundary makes

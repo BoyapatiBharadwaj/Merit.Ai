@@ -6,6 +6,7 @@ import Icon from "../components/Icon.jsx";
 import { btnPrimary } from "../lib/ui.js";
 import { Api, ApiError } from "../lib/api.js";
 import { setSession, isLoggedIn } from "../lib/auth.js";
+import { TERMS_VERSION } from "./Terms.jsx";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -31,15 +32,34 @@ export default function Register() {
   // there are only two states and one of them is "we have sent a code".
   const [codeSent, setCodeSent] = useState(false);
   const [code, setCode] = useState("");
-  const [expiresIn, setExpiresIn] = useState(10);
-  const [cooldown, setCooldown] = useState(0);
   const [otpUnavailable, setOtpUnavailable] = useState(false);
+
+  // Everything about the code comes from the server's own response rather than
+  // being guessed here. The screen used to hard-code a six-digit placeholder, a
+  // ten-minute expiry and a 60-second resend cooldown, none of which tracked the
+  // settings they were describing -- so raising OTP_LENGTH would have left the
+  // form telling candidates to enter six digits for an eight-digit code.
+  const [codeShape, setCodeShape] = useState({ length: 6, expiresIn: 10, resendAfter: 60 });
+  const [cooldown, setCooldown] = useState(0);
+
+  // The rules the SERVER enforces. Previously this screen listed an uppercase
+  // letter, a number and a special character while the backend checked only
+  // length -- instructions describing a policy nothing implemented.
+  const [policy, setPolicy] = useState(null);
 
   useEffect(() => {
     if (cooldown <= 0) return undefined;
     const timer = setTimeout(() => setCooldown((s) => s - 1), 1000);
     return () => clearTimeout(timer);
   }, [cooldown]);
+
+  useEffect(() => {
+    let cancelled = false;
+    Api.get("/auth/password-policy")
+      .then((res) => { if (!cancelled) setPolicy(res); })
+      .catch(() => { /* the server still enforces it; this only affects the hint */ });
+    return () => { cancelled = true; };
+  }, []);
 
   // Signup is now a single step, so an already-signed-in visitor is simply
   // sent onward -- there is no longer a second wizard stage this could yank
@@ -58,7 +78,12 @@ export default function Register() {
     if (!values.lastName.trim()) next.lastName = "Last name is required.";
     if (!values.email.trim()) next.email = "Email is required.";
     else if (!EMAIL_RE.test(values.email.trim())) next.email = "Enter a valid email address.";
-    if (values.password.length < 8) next.password = "Use at least 8 characters.";
+    else if (values.email.trim().length > 150) next.email = "That email address is too long.";
+    // Mirrors the server's floor rather than a number picked here. The server
+    // does the real checking (blocklist, name/email derivation) and its message
+    // is shown verbatim if it refuses -- this is only the immediate hint.
+    const minLength = policy?.min_length ?? 10;
+    if (values.password.length < minLength) next.password = `Use at least ${minLength} characters.`;
     if (values.confirmPassword !== values.password) next.confirmPassword = "Passwords don't match.";
     return next;
   }
@@ -103,14 +128,29 @@ export default function Register() {
       return;
     }
 
+    // A LOCAL copy, not the state variable.
+    //
+    // The bug this replaces: the 503 branch below called setOtpUnavailable(true)
+    // and the very next statement read `otpUnavailable` to decide which endpoint
+    // to call. React state updates are asynchronous, so that read still saw
+    // `false` -- the fallback called the verified endpoint again, failed again,
+    // and the candidate had to submit a second time for the fallback to take
+    // effect. Whether the fallback works cannot depend on a re-render that has
+    // not happened yet.
+    let useUnverifiedSignup = otpUnavailable;
+
     setLoading(true);
     try {
       // Phase 1: ask for a code, if we haven't already.
-      if (!codeSent && !otpUnavailable) {
+      if (!codeSent && !useUnverifiedSignup) {
         try {
           const res = await Api.post("/auth/otp/signup/request", { email: form.email.trim() });
-          setExpiresIn(res.expires_in_minutes ?? 10);
-          setCooldown(60);
+          setCodeShape({
+            length: res.code_length ?? 6,
+            expiresIn: res.expires_in_minutes ?? 10,
+            resendAfter: res.resend_after_seconds ?? 60,
+          });
+          setCooldown(res.resend_after_seconds ?? 60);
           setCodeSent(true);
           return;
         } catch (err) {
@@ -118,12 +158,23 @@ export default function Register() {
           // unverified signup rather than blocking the person entirely: the
           // server is the authority on whether email works, and a candidate
           // should not be locked out of an exam platform by its SMTP settings.
+          //
+          // If the server REQUIRES verification it refuses that fallback with a
+          // 403, which surfaces as a normal error -- the client asking nicely
+          // does not decide whether verification is optional.
           if (err instanceof ApiError && err.status === 503) {
+            useUnverifiedSignup = true;
             setOtpUnavailable(true);
           } else {
             throw err;
           }
         }
+      }
+
+      if (!useUnverifiedSignup && code.trim().length !== codeShape.length) {
+        setErrors((prev) => ({ ...prev, code: `Enter the ${codeShape.length}-digit code we emailed you.` }));
+        setTouched((t) => ({ ...t, code: true }));
+        return;
       }
 
       // Phase 2: create the account. The verified endpoint checks the code
@@ -134,8 +185,15 @@ export default function Register() {
         email: form.email.trim(),
         password: form.password,
         roll_number: form.studentId.trim() || null,
+        // Sent, not merely checked in the browser. Both checkboxes were
+        // enforced only in React, so a direct API call registered without
+        // agreeing to anything, and nothing recorded the agreement of the
+        // people who did tick them.
+        accepted_terms: form.agreeTerms,
+        accepted_proctoring: form.agreeProctoring,
+        terms_version: TERMS_VERSION,
       };
-      const data = otpUnavailable
+      const data = useUnverifiedSignup
         ? await Api.registerStudent(payload)
         : await Api.post("/auth/register/student/verified", { ...payload, code: code.trim() });
       setSession(data);
@@ -158,11 +216,30 @@ export default function Register() {
     setFormError("");
     try {
       const res = await Api.post("/auth/otp/signup/request", { email: form.email.trim() });
-      setExpiresIn(res.expires_in_minutes ?? 10);
-      setCooldown(60);
+      setCodeShape({
+        length: res.code_length ?? codeShape.length,
+        expiresIn: res.expires_in_minutes ?? codeShape.expiresIn,
+        resendAfter: res.resend_after_seconds ?? codeShape.resendAfter,
+      });
+      setCooldown(res.resend_after_seconds ?? codeShape.resendAfter);
+      setCode("");
     } catch (err) {
       setFormError(describeError(err));
     }
+  }
+
+  /** Back to the email step, discarding everything tied to the old address. */
+  function changeEmail() {
+    // A code is bound to ONE address. Leaving the email editable while a code
+    // was outstanding meant a candidate could change it and then submit the old
+    // address's code against the new one -- a confusing rejection for something
+    // that looked like it should work. The field is disabled while a code is
+    // live, and this is the deliberate way back.
+    setCodeSent(false);
+    setCode("");
+    setCooldown(0);
+    setFormError("");
+    setErrors((prev) => ({ ...prev, code: undefined }));
   }
 
   return (
@@ -238,6 +315,12 @@ export default function Register() {
           onBlur={handleBlur("email")}
           error={touched.email ? errors.email : undefined}
           valid={touched.email && !errors.email && form.email.trim() !== ""}
+          maxLength={150}
+          // Locked while a code is outstanding: the code belongs to this
+          // address, and editing the field would leave the candidate submitting
+          // the old address's code against a new one. "Change email" below
+          // resets the whole verification state deliberately.
+          disabled={codeSent}
         />
         <TextField
           id="studentId"
@@ -261,6 +344,12 @@ export default function Register() {
           onBlur={handleBlur("password")}
           error={touched.password ? errors.password : undefined}
           showStrength
+          // The rules as the SERVER states them, fetched from
+          // /auth/password-policy. This used to be a hard-coded list promising
+          // uppercase, a number and a special character, while the backend
+          // enforced eight characters and nothing else -- so the form asked for
+          // one thing and accepted another.
+          hint={policy?.rules?.join(" · ")}
         />
         <PasswordField
           id="confirmPassword"
@@ -287,8 +376,12 @@ export default function Register() {
             />
             <span>
               I agree to the{" "}
+              <Link to="/terms" target="_blank" className="font-semibold text-primary hover:underline">
+                Terms of Service
+              </Link>{" "}
+              and the{" "}
               <Link to="/privacy" target="_blank" className="font-semibold text-primary hover:underline">
-                Terms of Service and Privacy Policy
+                Privacy Policy
               </Link>
               .
             </span>
@@ -315,7 +408,8 @@ export default function Register() {
             <div className="flex items-start gap-2.5 mb-3">
               <span className="text-primary mt-0.5 shrink-0"><Icon name="mail" width={16} height={16} /></span>
               <p className="text-sm text-ink leading-relaxed">
-                We've sent a 6-digit code to <strong>{form.email.trim()}</strong>. It expires in {expiresIn} minutes.
+                We've sent a {codeShape.length}-digit code to <strong>{form.email.trim()}</strong>.
+                It expires in {codeShape.expiresIn} minutes.
               </p>
             </div>
             <TextField
@@ -323,11 +417,23 @@ export default function Register() {
               label="Verification code"
               icon="shield"
               value={code}
-              onChange={(e) => setCode(e.target.value)}
+              // Strip non-digits as they are typed and cap at the server's own
+              // length. The field previously accepted any characters and any
+              // length, so a pasted code with a stray space, or one digit too
+              // many, produced a Pydantic validation message rather than
+              // anything the candidate could act on. Slicing rather than
+              // rejecting also makes pasting the whole code work.
+              onChange={(e) => {
+                setCode(e.target.value.replace(/\D/g, "").slice(0, codeShape.length));
+                if (errors.code) setErrors((prev) => ({ ...prev, code: undefined }));
+              }}
               inputMode="numeric"
+              pattern="[0-9]*"
+              maxLength={codeShape.length}
               autoComplete="one-time-code"
               autoFocus
-              placeholder="123456"
+              placeholder={"0".repeat(codeShape.length)}
+              error={touched.code ? errors.code : undefined}
               className="mb-0"
             />
             <div className="flex items-center justify-between gap-3 mt-3">
@@ -335,7 +441,7 @@ export default function Register() {
                       className="text-xs font-semibold text-primary disabled:text-muted disabled:cursor-not-allowed">
                 {cooldown > 0 ? `Resend in ${cooldown}s` : "Resend code"}
               </button>
-              <button type="button" onClick={() => { setCodeSent(false); setCode(""); }}
+              <button type="button" onClick={changeEmail}
                       className="text-xs font-semibold text-muted hover:text-ink">
                 Change email
               </button>

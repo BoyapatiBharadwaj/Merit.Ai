@@ -16,6 +16,18 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production")
 os.environ.setdefault("CORS_ORIGINS", "http://testserver")
 os.environ.setdefault("AI_SERVICE_URL", "")
 os.environ.setdefault("UPLOAD_DIR", tempfile.mkdtemp(prefix="exam_proctor_test_uploads_"))
+# The suite has no SMTP, so it IS the "cannot send email" deployment this
+# setting exists for -- requiring verification here would mean no test could
+# create a student, which would say nothing about verification and break
+# everything else. The gate itself is covered directly in
+# tests/test_auth_hardening.py, which turns it on and asserts the refusal.
+os.environ.setdefault("REQUIRE_EMAIL_VERIFICATION", "false")
+# Same reasoning: the suite's ~30 registrations exist to set up other tests, and
+# threading two consent booleans through every one of them would obscure what
+# each is actually about. The gate itself is covered directly in
+# tests/test_auth_hardening.py, which turns it on and asserts both the refusal
+# and that the acceptance is persisted with its version.
+os.environ.setdefault("REQUIRE_CONSENT_ON_SIGNUP", "false")
 
 import pytest
 from fastapi.testclient import TestClient

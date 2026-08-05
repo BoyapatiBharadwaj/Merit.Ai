@@ -20,10 +20,20 @@ export default function Login() {
   const [touched, setTouched] = useState({});
   const [formError, setFormError] = useState("");
   const [loading, setLoading] = useState(false);
-  // Defaults to true so a person who never notices the checkbox keeps today's
-  // behavior (a session that survives closing the browser) rather than being
-  // silently logged out sooner than before.
-  const [remember, setRemember] = useState(true);
+  // Defaults to OFF.
+  //
+  // It defaulted to true, with the reasoning that a person who never notices the
+  // checkbox keeps today's behaviour rather than being logged out sooner. That
+  // reasoning weighs the wrong risk for this product: most candidates sign in on
+  // a shared college or examination-lab machine, and the default decided that
+  // their token should persist there after they close the browser. The person
+  // who wants it persisted can say so; the person who does not know the checkbox
+  // exists should not be opted into leaving a session behind on a machine
+  // somebody else is about to use.
+  //
+  // A code comment elsewhere already said persistence should be opt-in. The
+  // checkbox simply did not match it.
+  const [remember, setRemember] = useState(false);
 
   if (isLoggedIn()) return <Navigate to="/dashboard" replace />;
 
@@ -144,14 +154,19 @@ export default function Login() {
             exam platform that may well be opened on a lab or library machine
             between candidates, so staying signed in has to be something a
             person opts into, not something that just happens. */}
-        <label className="flex items-center gap-2.5 mb-6 text-sm text-ink cursor-pointer select-none">
+        <label className="flex items-start gap-2.5 mb-6 text-sm text-ink cursor-pointer select-none">
           <input
             type="checkbox"
             checked={remember}
             onChange={(e) => setRemember(e.target.checked)}
-            className="w-4 h-4 rounded border-border text-primary focus:ring-primary/30 focus:ring-offset-0"
+            className="mt-0.5 w-4 h-4 rounded border-border text-primary focus:ring-primary/30 focus:ring-offset-0 shrink-0"
           />
-          Remember me
+          <span>
+            Keep me signed in
+            <span className="block text-xs text-muted">
+              Leave this off on a shared or lab computer.
+            </span>
+          </span>
         </label>
 
         {/* py-4 rather than the shared btnPrimary's default py-3 -- a
@@ -191,7 +206,14 @@ export default function Login() {
             bottom of the card. */}
         <p className="mt-5 flex items-center justify-center gap-1.5 text-xs text-muted">
           <Icon name="lock" width={11} height={11} />
-          Secure login • Your credentials are encrypted
+          {/* Was "Secure login • Your credentials are encrypted", which claimed
+              something the code does not do. The password is HASHED at rest,
+              which is a different (and stronger) property than encryption, and
+              whether it is encrypted in transit depends entirely on the
+              deployment having TLS configured -- the bundled proxy serves plain
+              HTTP unless someone sets it up. Claiming "secure" on a page served
+              over HTTP would be the least trustworthy sentence on the site. */}
+          Your password is hashed and never stored in plain text
         </p>
       </form>
     </AuthLayout>

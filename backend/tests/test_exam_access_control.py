@@ -224,21 +224,76 @@ def test_revoked_access_stops_an_already_started_attempt(client, seed_roles, adm
                        headers=student).status_code == 404
 
 
-def test_being_excluded_from_a_restricted_exam_stops_a_live_attempt(client, seed_roles, admin_token):
+def test_a_live_attempt_survives_the_exam_becoming_restricted(client, seed_roles, admin_token):
+    """This test previously asserted the opposite, and the opposite was a bug.
+
+    An exam with no participant rows is open to the whole organization; the
+    FIRST row flips it into allow-list mode. So adding one person to a live exam
+    did not merely add them -- it excluded everyone else, instantly. A candidate
+    already writing lost questions, autosave and submission mid-sitting, with no
+    warning and nothing to tell them what had happened.
+
+    The examiner's action is "also let Priya sit this". Its effect must not be
+    "end everyone else's exam". Anyone already writing is now carried across
+    when the list is first populated.
+    """
     world = _two_organizations(client, admin_token)
-    excluded = auth_headers(_register_student_and_login(
-        client, email="excluded@example.com", organization_id=world["acme_org"]))
+    writing = auth_headers(_register_student_and_login(
+        client, email="writing@example.com", organization_id=world["acme_org"]))
     _register_student_and_login(client, email="invited@example.com",
                                 organization_id=world["acme_org"])
-    start = client.post(f"/api/v1/attempts/start/{world['acme_exam']}", headers=excluded)
-    attempt_id = start.json()["attempt_id"]
+    attempt_id = client.post(f"/api/v1/attempts/start/{world['acme_exam']}",
+                             headers=writing).json()["attempt_id"]
 
     client.post(f"/api/v1/organizations/exams/{world['acme_exam']}/participants",
-               json={"emails": ["invited@example.com"]},
-               headers=world["acme_headers"])
+                json={"emails": ["invited@example.com"]},
+                headers=world["acme_headers"])
 
     assert client.get(f"/api/v1/attempts/{attempt_id}/answers",
-                      headers=excluded).status_code == 404
+                      headers=writing).status_code == 200, \
+        "a candidate mid-exam was cut off by someone else being added to the list"
+    assert client.post(f"/api/v1/attempts/{attempt_id}/submit",
+                       headers=writing).status_code == 200
+
+
+def test_a_candidate_who_has_not_started_is_still_excluded(client, seed_roles, admin_token):
+    """The security property the allow-list exists for, unchanged: grandfathering
+    covers people already writing, not everyone in the organization."""
+    world = _two_organizations(client, admin_token)
+    outsider = auth_headers(_register_student_and_login(
+        client, email="not-invited@example.com", organization_id=world["acme_org"]))
+    _register_student_and_login(client, email="on-the-list@example.com",
+                                organization_id=world["acme_org"])
+
+    client.post(f"/api/v1/organizations/exams/{world['acme_exam']}/participants",
+                json={"emails": ["on-the-list@example.com"]},
+                headers=world["acme_headers"])
+
+    assert client.post(f"/api/v1/attempts/start/{world['acme_exam']}",
+                       headers=outsider).status_code == 404
+
+
+def test_a_candidate_who_has_sat_the_exam_cannot_be_removed(client, seed_roles, admin_token):
+    """Removing them would cut off an attempt in progress, or make a completed
+    result unreachable to the person who earned it. Neither is what "remove from
+    list" means."""
+    world = _two_organizations(client, admin_token)
+    sitting = auth_headers(_register_student_and_login(
+        client, email="sitting@example.com", organization_id=world["acme_org"]))
+    client.post(f"/api/v1/attempts/start/{world['acme_exam']}", headers=sitting)
+
+    client.post(f"/api/v1/organizations/exams/{world['acme_exam']}/participants",
+                json={"emails": ["someone-else@example.com"]},
+                headers=world["acme_headers"])
+    access = client.get(f"/api/v1/organizations/exams/{world['acme_exam']}/access",
+                        headers=world["acme_headers"]).json()
+    # The grandfathering added them alongside the examiner's own entry.
+    entry = next(p for p in access["participants"] if p["email"] == "sitting@example.com")
+
+    removal = client.delete(
+        f"/api/v1/organizations/exams/{world['acme_exam']}/participants/{entry['id']}",
+        headers=world["acme_headers"])
+    assert removal.status_code == 409
 
 
 def test_starting_an_exam_never_reveals_whether_it_exists(client, seed_roles, admin_token):

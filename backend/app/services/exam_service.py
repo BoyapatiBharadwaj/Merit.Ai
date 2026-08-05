@@ -92,7 +92,26 @@ def create_exam(db: Session, examiner_id: int, payload: dict, background: Backgr
 
 def add_section(db: Session, examiner_id: int, exam_id: int, payload: dict):
     exam = _get_editable_exam(db, examiner_id, exam_id)
+    # Append to the end rather than trusting whatever the client sent.
+    #
+    # Every section arrived with order_index 0, because the create form had no
+    # field for it and the schema defaulted it. Section.questions is ordered by
+    # order_index, so with every section at 0 the tie was broken by whatever the
+    # database returned -- the display order of an exam's sections was
+    # effectively arbitrary, and could differ between two page loads.
+    payload = {**payload, "order_index": exam_repository.next_section_order(db, exam.id)}
     return exam_repository.add_section(db, exam.id, payload)
+
+
+def reorder_sections(db: Session, examiner_id: int, exam_id: int, section_ids: list[int]):
+    """Set the section order explicitly. Draft-only, like every structural edit."""
+    exam = _get_editable_exam(db, examiner_id, exam_id)
+    valid_ids = {section.id for section in exam.sections}
+    if set(section_ids) != valid_ids:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "The reordered list must contain exactly this exam's sections.")
+    exam_repository.reorder_sections(db, exam.id, section_ids)
+    return exam_repository.get_exam(db, exam.id)
 
 
 def update_section(db: Session, examiner_id: int, section_id: int, title: str):
@@ -114,7 +133,8 @@ def update_section(db: Session, examiner_id: int, section_id: int, title: str):
     return section
 
 
-def add_question(db: Session, examiner_id: int, section_id: int, text: str, marks: int, order_index: int,
+def add_question(db: Session, examiner_id: int, section_id: int, text: str, marks: int,
+                  order_index: int | None = None,
                   question_type: str = "mcq", options: list[dict] | None = None,
                   language: str | None = None, starter_code: str | None = None,
                   test_cases: list[dict] | None = None, time_limit_seconds: int = 6,
@@ -123,6 +143,13 @@ def add_question(db: Session, examiner_id: int, section_id: int, text: str, mark
     if not section:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Section not found.")
     _get_editable_exam(db, examiner_id, section.exam_id)
+
+    # Server-assigned when the caller does not supply one, which was every
+    # caller: the builder and the bulk importer both sent 0 for every question,
+    # so questions inside a section had no meaningful order at all until
+    # somebody happened to drag one.
+    if order_index is None:
+        order_index = exam_repository.next_question_order(db, section_id)
 
     if question_type in ("mcq", "multi_select"):
         options = options or []
@@ -133,9 +160,13 @@ def add_question(db: Session, examiner_id: int, section_id: int, text: str, mark
         else:
             if correct_count < 1:
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, "Mark at least one option as correct.")
-        question = exam_repository.add_question(db, section_id, text, marks, order_index, question_type=question_type, explanation=explanation)
-        for option in options:
-            exam_repository.add_option(db, question.id, option["text"], option["is_correct"])
+        # Question and options in one transaction -- see add_question. The loop
+        # that used to live here committed each option separately, so a failure
+        # part-way through left an MCQ whose correct answer might not exist.
+        question = exam_repository.add_question(
+            db, section_id, text, marks, order_index, question_type=question_type,
+            explanation=explanation, options=options,
+        )
     else:
         if language not in code_runner_service.SUPPORTED_LANGUAGES:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unsupported language. Choose one of: {', '.join(code_runner_service.SUPPORTED_LANGUAGES)}.")
@@ -194,6 +225,88 @@ def update_question(db: Session, examiner_id: int, question_id: int, text: str, 
         # showing them again, but still sitting in the table.
         exam_repository.replace_options(db, question.id, [])
     return exam_repository.get_question(db, question.id)
+
+
+def add_questions_bulk(db: Session, examiner_id: int, section_id: int, questions: list[dict]) -> dict:
+    """Import a batch of questions, all or nothing.
+
+    The importer used to POST one request per question from the browser. Any
+    failure part-way through -- one malformed row, a dropped connection at
+    question 40 of 60 -- left the exam holding whatever had already succeeded,
+    with no record of where it stopped. The examiner's options were to hunt for
+    the boundary by eye or delete everything and start again, and a paper that
+    is silently missing its last twenty questions is the kind of thing nobody
+    notices until candidates are sitting it.
+
+    One request, one transaction. Every question is validated first, so a bad
+    row is reported with its position and nothing is written; then all of them
+    are inserted together.
+    """
+    section = exam_repository.get_section(db, section_id)
+    if not section:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Section not found.")
+    _get_editable_exam(db, examiner_id, section.exam_id)
+
+    if not questions:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No questions to import.")
+
+    # Validate everything before writing anything, and report EVERY problem
+    # rather than only the first -- an examiner fixing a sixty-question import
+    # one error per attempt is a worse experience than the partial writes.
+    problems = []
+    for position, item in enumerate(questions, start=1):
+        reason = _describe_question_problem(item)
+        if reason:
+            problems.append(f"Question {position}: {reason}")
+    if problems:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "code": "bulk_import_invalid",
+            "message": f"{len(problems)} question(s) could not be imported. Nothing was saved.",
+            "problems": problems[:50],
+        })
+
+    start_order = exam_repository.next_question_order(db, section_id)
+    try:
+        created = []
+        for offset, item in enumerate(questions):
+            question = exam_repository.add_question(
+                db, section_id, item["text"], item["marks"], start_order + offset,
+                question_type=item.get("question_type", "mcq"),
+                explanation=item.get("explanation"),
+                options=item.get("options") or [],
+                commit=False,
+            )
+            created.append(question)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return {"imported": len(created), "section_id": section_id}
+
+
+def _describe_question_problem(item: dict) -> str | None:
+    """Why this row cannot be imported, or None if it is fine."""
+    if not (item.get("text") or "").strip():
+        return "the question text is empty."
+    if not isinstance(item.get("marks"), int) or item["marks"] < 1:
+        return "marks must be a whole number of at least 1."
+
+    question_type = item.get("question_type", "mcq")
+    if question_type not in ("mcq", "multi_select"):
+        return "bulk import supports multiple-choice questions only."
+
+    options = item.get("options") or []
+    if len(options) < 2:
+        return "at least two options are needed."
+    if any(not (option.get("text") or "").strip() for option in options):
+        return "every option needs text."
+
+    correct = sum(1 for option in options if option.get("is_correct"))
+    if question_type == "mcq" and correct != 1:
+        return f"exactly one option must be correct (found {correct})."
+    if question_type == "multi_select" and correct < 1:
+        return "at least one option must be correct."
+    return None
 
 
 def delete_question(db: Session, examiner_id: int, question_id: int):
@@ -276,6 +389,63 @@ def publish_exam(db: Session, examiner_id: int, exam_id: int, background: Backgr
 
     notify_exam_address(db, published, background=background, reason="published")
     return published
+
+
+def _get_owned_exam(db: Session, examiner_id: int, exam_id: int):
+    """Owner check without the DRAFT requirement -- for lifecycle transitions,
+    which by definition act on exams that are past draft."""
+    exam = exam_repository.get_exam(db, exam_id)
+    if not exam or exam.examiner_id != examiner_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Exam not found.")
+    return exam
+
+
+def close_exam(db: Session, examiner_id: int, exam_id: int, *, force: bool = False):
+    """Stop accepting new attempts, keeping everything already sat.
+
+    ExamStatus.CLOSED existed in the database from the beginning with no
+    endpoint and no button, so a published exam stayed visible to candidates
+    forever -- the only way to take one down was to leave it and hope the
+    end_time was set. An examiner who forgot one had no way to correct it.
+
+    Refuses by default while anyone is still writing. Closing an exam out from
+    under a live candidate is the participant-list bug in a different costume,
+    and it should take a deliberate second action rather than happening because
+    the examiner did not know somebody was still in the room. `force=True`
+    closes anyway; attempts already underway are finalised by their own
+    deadline as usual, so nobody's work is discarded either way.
+    """
+    exam = _get_owned_exam(db, examiner_id, exam_id)
+    if exam.status == ExamStatus.DRAFT:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "This exam is still a draft, so there is nothing to close.")
+    if exam.status == ExamStatus.CLOSED:
+        return exam
+
+    live = [a for a in exam.attempts
+            if a.status == AttemptStatus.IN_PROGRESS and a.archived_at is None]
+    if live and not force:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"{len(live)} candidate{'s are' if len(live) != 1 else ' is'} still sitting this exam. "
+            "Closing now stops anyone new from starting; those already writing keep their time. "
+            "Confirm to close anyway.",
+        )
+    return exam_repository.set_exam_status(db, exam, ExamStatus.CLOSED)
+
+
+def reopen_exam(db: Session, examiner_id: int, exam_id: int):
+    """Put a closed exam back on the candidate list.
+
+    Only from CLOSED, and only back to PUBLISHED -- never to DRAFT. Returning a
+    sat exam to draft would unlock its questions for editing while results
+    referencing those exact questions already exist, which would silently change
+    what a graded candidate was asked.
+    """
+    exam = _get_owned_exam(db, examiner_id, exam_id)
+    if exam.status != ExamStatus.CLOSED:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Only a closed exam can be reopened.")
+    return exam_repository.set_exam_status(db, exam, ExamStatus.PUBLISHED)
 
 
 def update_exam_details(db: Session, examiner_id: int, exam_id: int, payload: dict,
@@ -431,6 +601,17 @@ def serialize_exam_for_candidate(exam, attempt, result, now: datetime | None = N
         "status": exam.status.value,
         "randomize_questions": exam.randomize_questions,
         "proctoring_enabled": exam.proctoring_enabled,
+        # What this exam actually asks for, resolved server-side. The page used
+        # to demand camera, microphone, screen share and fullscreen from every
+        # candidate regardless, then say the exam was not proctored.
+        "requires": {
+            "camera": exam.requires("camera"),
+            "microphone": exam.requires("microphone"),
+            "screen_share": exam.requires("screen_share"),
+            "fullscreen": exam.requires("fullscreen"),
+        },
+        "results_released": exam.results_released,
+        "release_results_at": exam.release_results_at,
         "start_time": exam.start_time,
         "end_time": exam.end_time,
         "question_count": question_count,

@@ -94,18 +94,31 @@ export default function AdminDashboard() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      try {
-        const [a, s, requests] = await Promise.all([
-          Api.get("/analytics/platform"),
-          Api.get("/admin/summary"),
-          Api.get("/access-requests"),
-        ]);
-        if (cancelled) return;
-        setAnalytics(a);
-        setSummary(s);
-        setAccessRequests(requests);
-      } catch (err) {
-        if (!cancelled) setLoadError(err instanceof ApiError ? err.message : "Couldn't load the admin dashboard.");
+      // allSettled, not all.
+      //
+      // Promise.all rejects on the FIRST failure and discards the results that
+      // did arrive, so one unavailable widget blanked the entire dashboard --
+      // an admin whose access-requests endpoint was briefly failing lost their
+      // platform stats and their summary too, and the page said only that
+      // something went wrong. Each panel now succeeds or fails on its own.
+      const [a, s, requests] = await Promise.allSettled([
+        Api.get("/analytics/platform"),
+        Api.get("/admin/summary"),
+        Api.get("/access-requests"),
+      ]);
+      if (cancelled) return;
+      if (a.status === "fulfilled") setAnalytics(a.value);
+      if (s.status === "fulfilled") setSummary(s.value);
+      if (requests.status === "fulfilled") setAccessRequests(requests.value);
+
+      const failures = [a, s, requests].filter((r) => r.status === "rejected");
+      if (failures.length) {
+        const reason = failures[0].reason;
+        setLoadError(
+          `${failures.length} of 3 panels could not be loaded (${
+            reason instanceof ApiError ? reason.message : "unexpected error"
+          }). Everything else below is current.`,
+        );
       }
     })();
     return () => {

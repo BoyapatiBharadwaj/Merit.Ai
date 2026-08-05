@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import DashboardHeader from "../components/DashboardHeader.jsx";
 import Icon from "../components/Icon.jsx";
@@ -48,34 +48,65 @@ export default function AdminViolations() {
   const [decision, setDecision] = useState("");
   const [searchInput, setSearchInput] = useState("");
   const [page, setPage] = useState(1);
+  // The server's figures, not derived from a list the client holds.
+  const [total, setTotal] = useState(0);
+  const [pageCount, setPageCount] = useState(1);
   const [viewingEvidenceId, setViewingEvidenceId] = useState(null);
 
+  // A request ticket, so a slow OLD request cannot overwrite a newer one.
+  //
+  // The filters changed but never cancelled: typing "ann" then "annie"
+  // fired two requests, and if the first was slower its results replaced the
+  // second's. The admin was left looking at results for a query they had
+  // already moved past, with the newer term still in the box and nothing to
+  // indicate the list was stale.
+  const requestRef = useRef(0);
+
   async function load() {
+    const ticket = ++requestRef.current;
     try {
       const params = new URLSearchParams();
       if (severity) params.set("severity", severity);
       if (decision) params.set("decision", decision);
-      const qs = params.toString();
-      setRows(await Api.get(`/admin/violations${qs ? `?${qs}` : ""}`));
+      if (search) params.set("search", search);
+      params.set("page", String(page));
+      params.set("page_size", String(PAGE_SIZE));
+      const data = await Api.get(`/admin/violations?${params.toString()}`);
+      if (ticket !== requestRef.current) return;
+      setRows(data.items);
+      setTotal(data.total);
+      setPageCount(Math.max(1, data.total_pages));
     } catch (err) {
       setLoadError(err instanceof ApiError ? err.message : "Couldn't load violations.");
     }
   }
 
+  // Debounced, so typing does not fire a request per keystroke.
+  const [search, setSearch] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setSearch(searchInput.trim()), 300);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [severity, decision, search]);
+
   useEffect(() => {
     setRows(null);
-    setPage(1);
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [severity, decision]);
+  }, [severity, decision, search, page]);
 
   if (!isLoggedIn() || getRole() !== "admin") return <Navigate to="/login" replace />;
 
-  const search = searchInput.trim().toLowerCase();
-  const filtered = (rows || []).filter((v) =>
-    !search || v.student_name.toLowerCase().includes(search) || v.exam_title.toLowerCase().includes(search) || v.examiner_name.toLowerCase().includes(search),
-  );
-  const { pageRows, pageCount, safePage } = paginate(filtered, page, PAGE_SIZE);
+  // No client-side filter. It searched only the rows already loaded, so with a
+  // paged list it would have searched the current page and reported "no
+  // results" for a candidate sitting on page four -- worse than no search box.
+  const filtered = rows || [];
+  // The server decides the page; `rows` IS the page.
+  const pageRows = rows || [];
+  const safePage = page;
 
   async function handleDecisionChange(eventId, next) {
     const previous = rows;
@@ -108,7 +139,7 @@ export default function AdminViolations() {
           <div className="relative flex-1 min-w-[220px]">
             <Icon name="user" width={16} height={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
             <input type="search" placeholder="Search by candidate, exam, or examiner…" value={searchInput}
-                   onChange={(e) => { setSearchInput(e.target.value); setPage(1); }} className={`${fieldInput} pl-10`} />
+                   onChange={(e) => setSearchInput(e.target.value)} className={`${fieldInput} pl-10`} />
           </div>
           <select value={severity} onChange={(e) => setSeverity(e.target.value)} className={`${fieldInput} sm:w-36`}>
             <option value="">All severity</option>
@@ -177,7 +208,7 @@ export default function AdminViolations() {
                 ))}
               </tbody>
             </table>
-            <Pagination page={safePage} pageCount={pageCount} onChange={setPage} totalCount={filtered.length} pageSize={PAGE_SIZE} />
+            <Pagination page={safePage} pageCount={pageCount} onChange={setPage} totalCount={total} pageSize={PAGE_SIZE} />
           </div>
         )}
       </main>

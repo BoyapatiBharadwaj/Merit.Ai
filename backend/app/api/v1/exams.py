@@ -10,7 +10,8 @@ from app.models.user import User
 from app.repositories import attempt_repository, exam_repository, user_repository
 from app.schemas.exam import ExamCreate, ExamDetailOut, ExamDetailsUpdate, ExamOut, ExamScheduleUpdate
 from app.schemas.question import (
-    QuestionCreate, QuestionOut, QuestionReorderRequest, SectionCreate, SectionOut, SectionUpdate,
+    BulkQuestionImport, QuestionCreate, QuestionOut, QuestionReorderRequest, SectionCreate,
+    SectionOut, SectionReorderRequest, SectionUpdate,
 )
 from app.services import attempt_service, exam_service, organization_service
 
@@ -189,3 +190,54 @@ def publish_exam(exam_id: int, background: BackgroundTasks, db: Session = Depend
                  user: User = Depends(require_examiner)):
     examiner = user_repository.get_examiner_by_user_id(db, user.id)
     return exam_service.publish_exam(db, examiner.id, exam_id, background=background)
+
+# ------------------------------------------------------------------------------
+# Exam lifecycle
+#
+# ExamStatus.CLOSED existed in the database from the start with no endpoint and
+# no button, so a published exam stayed on every candidate's list forever and an
+# examiner who wanted one taken down had no way to do it.
+# ------------------------------------------------------------------------------
+
+@router.post("/{exam_id}/close", response_model=ExamOut)
+def close_exam(exam_id: int, force: bool = False, db: Session = Depends(get_db),
+               user: User = Depends(require_examiner)):
+    """Stop new attempts. Refuses with 409 while candidates are still writing
+    unless `force=true` -- see exam_service.close_exam."""
+    examiner = user_repository.get_examiner_by_user_id(db, user.id)
+    return exam_service.close_exam(db, examiner.id, exam_id, force=force)
+
+
+@router.post("/{exam_id}/reopen", response_model=ExamOut)
+def reopen_exam(exam_id: int, db: Session = Depends(get_db), user: User = Depends(require_examiner)):
+    """Put a closed exam back on the candidate list. Never returns it to draft
+    -- that would unlock questions already referenced by graded results."""
+    examiner = user_repository.get_examiner_by_user_id(db, user.id)
+    return exam_service.reopen_exam(db, examiner.id, exam_id)
+
+
+@router.put("/{exam_id}/sections/reorder", response_model=ExamDetailOut)
+def reorder_sections(exam_id: int, payload: SectionReorderRequest, db: Session = Depends(get_db),
+                     user: User = Depends(require_examiner)):
+    """Explicit section order. Previously every section was created with
+    order_index 0, so the display order was whatever the database happened to
+    return and could change between page loads."""
+    examiner = user_repository.get_examiner_by_user_id(db, user.id)
+    return exam_service.reorder_sections(db, examiner.id, exam_id, payload.section_ids)
+
+
+@router.post("/sections/{section_id}/questions/bulk", status_code=201)
+def bulk_add_questions(section_id: int, payload: BulkQuestionImport, db: Session = Depends(get_db),
+                       user: User = Depends(require_examiner)):
+    """Import a batch of questions in ONE transaction.
+
+    The importer used to send one request per question from the browser, so a
+    failure at question 40 of 60 left the exam holding the first 39 with no
+    record of where it stopped. Every row is validated before anything is
+    written, and every problem is reported at once rather than one per attempt.
+    """
+    examiner = user_repository.get_examiner_by_user_id(db, user.id)
+    return exam_service.add_questions_bulk(
+        db, examiner.id, section_id,
+        [item.model_dump() for item in payload.questions],
+    )

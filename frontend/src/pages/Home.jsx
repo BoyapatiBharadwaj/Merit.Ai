@@ -45,7 +45,7 @@ const STATS = [
  */
 const HIGHLIGHTS = [
   {
-    title: "Enforced Lockdown",
+    title: "Server-Enforced Monitoring",
     desc: "Fullscreen required, tab-switches counted, three strikes auto-submits — decided server-side, never by the browser.",
     icon: "maximize",
   },
@@ -120,7 +120,10 @@ const AUDIENCES = [
       "Real-time attempt monitoring",
       "Violation & performance reports",
     ],
-    cta: { label: "Create an Exam", to: "/request-access" },
+    // Was "Create an Exam" pointing at /request-access, which submits an
+    // application form. A visitor clicking it expected a builder and got a
+    // waiting list.
+    cta: { label: "Request Institution Access", to: "/request-access" },
     note: "See Pricing for how institution accounts work.",
   },
 ];
@@ -158,7 +161,14 @@ const cardBase =
  * so the hero should actually depict it.
  */
 function BrowserMockup() {
-  const signals = ["Identity verified", "Fullscreen locked", "Gaze on screen", "Clipboard blocked"];
+  // "Fullscreen locked" claimed something a browser cannot do. A web page can
+// REQUEST fullscreen and detect leaving it; it cannot prevent the operating
+// system minimising the window, switching applications, recording the screen,
+// or a second device sitting next to the candidate. lockdown.js documents those
+// limits accurately; the marketing copy did not, and overstating enforcement to
+// an institution buying an exam platform is the kind of claim that gets found
+// out during an incident.
+const signals = ["Identity verified", "Fullscreen active", "Gaze on screen", "Focus monitored"];
 
   return (
     <div className="relative w-full max-w-md mx-auto lg:mx-0" aria-hidden="true">
@@ -267,23 +277,34 @@ function HeroSection() {
           </h1>
 
           <p className="text-lg text-muted leading-relaxed max-w-xl mb-8">
-            Merit.Ai locks the exam window, verifies every candidate's identity against their ID, and watches the
-            session with continuous AI proctoring — then scores it automatically, backed by a complete, timestamped
-            violation log.
+            Merit.Ai requires fullscreen, verifies every candidate's identity against their ID, and watches the
+            session with continuous AI proctoring — detecting focus loss, screen-share interruptions and unusual
+            activity, pausing the exam on a breach, and recording server-authoritative strikes in a complete,
+            timestamped log.
           </p>
 
           <div className="flex flex-wrap items-center gap-4 mb-8">
-            <Link to="/register" className={btnPrimary}>
-              Get Started Free
+            {/* Two audiences, two destinations. One "Get Started Free" button
+                pointing at /register sent institutions to student signup --
+                they would create a candidate account, find no way to build an
+                exam, and conclude the product did not do what the page above
+                said it did. */}
+            <Link to="/request-access" className={btnPrimary}>
+              Request Institution Access
               <Icon name="arrow" width={16} height={16} />
             </Link>
-            <Link to="/features" className={btnGhost}>
-              Explore Features
+            <Link to="/register" className={btnGhost}>
+              Create Candidate Account
+            </Link>
+            {/* Candidates could only discover their browser or camera was a
+                problem at the moment they tried to start a real exam. */}
+            <Link to="/system-check" className="text-sm font-semibold text-primary hover:underline">
+              Test your device
             </Link>
           </div>
 
           <p className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted">
-            {["Runs in the browser", "No candidate downloads", "Free to start"].map((claim) => (
+            {["Runs in the browser", "No candidate downloads", "Candidate accounts are free"].map((claim) => (
               <span key={claim} className="inline-flex items-center gap-1.5">
                 <Icon name="check" width={13} height={13} className="text-success" />
                 {claim}
@@ -400,7 +421,7 @@ function AudiencesSection() {
         Candidates sign up in a minute. Institutions get a verified examiner account, set up by our team.
       </SectionHeader>
 
-      <ul className="list-none grid md:grid-cols-2 gap-5 max-w-4xl">
+      <ul className="list-none grid md:grid-cols-2 gap-5 max-w-4xl mx-auto">
         {AUDIENCES.map((a, i) => (
           <li
             key={a.title}
@@ -453,19 +474,20 @@ function FinalCta() {
         <div className="relative max-w-2xl mx-auto">
           <span className="inline-flex items-center gap-2 rounded-full border border-white/25 bg-white/10 px-3.5 py-1.5 text-xs font-semibold mb-6">
             <Icon name="shield-check" width={13} height={13} />
-            Free to start
+            Free for candidates
           </span>
 
           <h2 className="text-3xl sm:text-4xl font-extrabold tracking-tight mb-4 text-balance">
             Ready to run your next exam with confidence?
           </h2>
           <p className="text-white/80 text-base sm:text-lg mb-8">
-            Create an account, build your question bank, and publish a fully proctored exam — in one sitting.
+            Request access for your institution, build your question bank, and publish a fully proctored exam.
+            Candidates sign up free.
           </p>
 
           <div className="flex flex-col sm:flex-row flex-wrap justify-center gap-3 sm:gap-4 mb-8">
-            <Link to="/register" className={btnPrimaryOnDark}>
-              Get Started Free
+            <Link to="/request-access" className={btnPrimaryOnDark}>
+              Request Institution Access
               <Icon name="arrow" width={16} height={16} />
             </Link>
             <Link to="/pricing" className={btnGhostOnDark}>
@@ -474,7 +496,13 @@ function FinalCta() {
           </div>
 
           <ul className="list-none flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs text-white/75 pt-6 border-t border-white/15">
-            {["No credit card required", "Nothing for candidates to install", "Works in any modern browser"].map((item) => (
+            {/* "Works in any modern browser" was false: Exam.jsx itself recommends
+                Chrome or Edge, because screen sharing, fullscreen behaviour,
+                battery and network information are not equally available in
+                Firefox and Safari. Telling a candidate their browser is fine
+                and then failing their system check on exam day is worse than
+                saying so here. */}
+            {["No credit card required", "Nothing for candidates to install", "Best on Chrome or Edge desktop"].map((item) => (
               <li key={item} className="inline-flex items-center gap-1.5">
                 <Icon name="check" width={13} height={13} />
                 {item}

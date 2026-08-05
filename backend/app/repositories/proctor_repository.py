@@ -1,7 +1,7 @@
 """
 Data access for ProctorEvent and FaceProfile tables.
 """
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from app.models.proctor_event import ProctorEvent
 from app.models.face_profile import FaceProfile
 
@@ -120,3 +120,31 @@ def save_face_profile(db: Session, student_id: int, image_path: str, encoding_js
     db.commit()
     db.refresh(profile)
     return profile
+
+
+def paginated_events_for_exam(db: Session, exam_id: int, *, offset: int, limit: int,
+                              severity: str = "") -> tuple[list[ProctorEvent], int]:
+    """One page of an exam's violations, newest first, plus the total.
+
+    A hall of 500 candidates producing a dozen events each is 6,000 rows. The
+    whole set was returned and sliced in the browser, so the review page cost
+    the same whether the reviewer looked at 25 rows or all of them -- and it is
+    the page most likely to be refreshed repeatedly during a live sitting.
+    """
+    from app.models.attempt import StudentExamAttempt
+    from app.models.student import Student
+
+    query = (
+        db.query(ProctorEvent)
+        .join(StudentExamAttempt, StudentExamAttempt.id == ProctorEvent.attempt_id)
+        .options(joinedload(ProctorEvent.attempt)
+                 .joinedload(StudentExamAttempt.student)
+                 .joinedload(Student.user))
+        .filter(StudentExamAttempt.exam_id == exam_id)
+    )
+    if severity.strip():
+        query = query.filter(ProctorEvent.severity == severity.strip())
+
+    total = query.order_by(None).count()
+    rows = query.order_by(ProctorEvent.created_at.desc()).offset(offset).limit(limit).all()
+    return rows, total

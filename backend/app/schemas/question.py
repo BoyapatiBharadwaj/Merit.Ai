@@ -24,7 +24,12 @@ class TestCaseIn(BaseModel):
 class QuestionCreate(BaseModel):
     text: str = Field(min_length=1, max_length=5000)
     marks: int = Field(default=1, ge=1, le=100)
-    order_index: int = Field(default=0, ge=0)
+    # None means "append to the end", which is what every caller actually wants.
+    # It defaulted to 0, and both the builder and the importer sent that default
+    # for every question -- so a section's questions all shared order_index 0 and
+    # their display order was whatever the database returned, unstable between
+    # page loads. Explicit positions still work; the reorder endpoint sets them.
+    order_index: int | None = Field(default=None, ge=0)
     question_type: str = Field(default="mcq", pattern="^(mcq|multi_select|coding)$")
 
     # MCQ / multi_select
@@ -77,7 +82,6 @@ class QuestionOut(BaseModel):
 
 class SectionCreate(BaseModel):
     title: str = Field(min_length=1, max_length=150)
-    order_index: int = Field(default=0, ge=0)
 
 
 class SectionUpdate(BaseModel):
@@ -101,3 +105,35 @@ class SectionOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+class SectionReorderRequest(BaseModel):
+    """Ordered list of every section ID in an exam -- position becomes the new
+    order_index, exactly like QuestionReorderRequest one level up."""
+    section_ids: list[int] = Field(min_length=1)
+
+
+class BulkQuestionItem(BaseModel):
+    """One row of a bulk import.
+
+    Deliberately narrower than QuestionCreate: import handles multiple-choice
+    only, because a coding question needs a language, starter code and test
+    cases that no paste-a-list format carries usefully. Rejecting those here,
+    with a reason, beats accepting them and producing questions no candidate can
+    answer.
+    """
+    text: str = Field(min_length=1, max_length=5000)
+    marks: int = Field(default=1, ge=1, le=100)
+    question_type: str = Field(default="mcq", pattern="^(mcq|multi_select)$")
+    options: list[OptionCreate] = Field(min_length=2)
+    explanation: str | None = Field(default=None, max_length=5000)
+
+
+class BulkQuestionImport(BaseModel):
+    """A whole import in one request.
+
+    The importer used to send one HTTP request per question, so a failure at
+    question 40 of 60 left the first 39 written and no indication of where it
+    stopped. Capped at 500 so a single request cannot be used to build an
+    arbitrarily large transaction.
+    """
+    questions: list[BulkQuestionItem] = Field(min_length=1, max_length=500)

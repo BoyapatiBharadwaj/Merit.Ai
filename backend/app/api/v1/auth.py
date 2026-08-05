@@ -5,6 +5,7 @@ accounts, and login for all roles.
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
+from app.core import passwords
 from app.core.config import settings
 from app.core.security import create_access_token
 from app.core.rate_limit import rate_limit
@@ -12,8 +13,8 @@ from app.database.session import get_db
 from app.models.otp import OtpPurpose
 from app.schemas.auth import (
     CreateExaminerRequest, LoginRequest, OtpRequest, OtpRequestAccepted,
-    PasswordResetConfirmRequest, RegisterStudentRequest, RegisterStudentWithOtpRequest,
-    TokenResponse,
+    PasswordPolicyOut, PasswordResetConfirmRequest, RegisterStudentRequest,
+    RegisterStudentWithOtpRequest, TokenResponse,
 )
 from app.models.activity_log import ActivityType
 from app.services import activity_service, auth_service, email_service, otp_service
@@ -25,7 +26,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 def _token_response(user: User) -> TokenResponse:
     return TokenResponse(
-        access_token=create_access_token(subject=str(user.id), role=user.role.name),
+        access_token=create_access_token(subject=str(user.id), role=user.role.name, user=user),
         role=user.role.name,
         full_name=user.full_name,
         first_name=user.first_name,
@@ -34,11 +35,46 @@ def _token_response(user: User) -> TokenResponse:
     )
 
 
+@router.get("/password-policy", response_model=PasswordPolicyOut)
+def password_policy():
+    """What the server enforces, so the signup form can show exactly that.
+
+    The registration screen used to list an uppercase letter, a number and a
+    special character while the server checked only length -- instructions that
+    described a policy nothing implemented. Serving the rules removes the second
+    copy that had drifted.
+    """
+    return PasswordPolicyOut(min_length=settings.PASSWORD_MIN_LENGTH, rules=passwords.describe())
+
+
 @router.post("/register/student", response_model=TokenResponse, status_code=201,
              dependencies=[Depends(rate_limit("register"))])
 def register_student(payload: RegisterStudentRequest, request: Request, db: Session = Depends(get_db)):
+    """Registration WITHOUT email verification.
+
+    Refused when REQUIRE_EMAIL_VERIFICATION is on, which is the default.
+
+    This endpoint and the verified one below were both public, which made the
+    whole OTP flow optional in practice: the frontend walked a candidate through
+    requesting and entering a code, and anyone who skipped the frontend could
+    POST here and get an account with no code at all. The verification was real
+    but nothing required it, so it protected only the people who were not trying
+    to avoid it.
+
+    Kept rather than deleted for deployments that genuinely cannot send mail --
+    an offline lab, an institution whose SMTP is not yet approved. Turning it
+    back on is one setting, and it is now a deliberate act with a name.
+    """
+    if settings.REQUIRE_EMAIL_VERIFICATION:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Email verification is required on this server. Request a verification code and "
+            "register with it.",
+        )
     user, _ = auth_service.register_student(
-        db, payload.first_name, payload.last_name, payload.email, payload.password, payload.roll_number
+        db, payload.first_name, payload.last_name, payload.email, payload.password, payload.roll_number,
+        accepted_terms=payload.accepted_terms, accepted_proctoring=payload.accepted_proctoring,
+        terms_version=payload.terms_version,
     )
     activity_service.record(db, activity_type=ActivityType.SIGNED_UP, subject=user, request=request,
                             description="Created their account")
@@ -108,6 +144,8 @@ def request_signup_code(payload: OtpRequest, background: BackgroundTasks, db: Se
     return OtpRequestAccepted(
         message="If that address can receive mail, a verification code is on its way.",
         expires_in_minutes=settings.OTP_TTL_MINUTES,
+        code_length=settings.OTP_LENGTH,
+        resend_after_seconds=settings.OTP_RESEND_COOLDOWN_SECONDS,
     )
 
 
@@ -116,15 +154,30 @@ def request_signup_code(payload: OtpRequest, background: BackgroundTasks, db: Se
 def register_student_verified(payload: RegisterStudentWithOtpRequest, request: Request, db: Session = Depends(get_db)):
     """Student self-registration with the emailed code checked first.
 
-    Order matters: the code is verified BEFORE the account is created, so a
-    failed registration (duplicate email, say) cannot burn a valid code, and a
-    valid code cannot be spent without an account resulting from it.
+    The code is consumed and the account created in ONE transaction. This
+    docstring used to claim a failed registration could not burn a valid code;
+    it was wrong. verify_code committed the consumption, registration ran
+    afterwards, and a duplicate email or student ID left the candidate with no
+    account and a code that could never be used again -- for a mistake they
+    could have corrected in seconds. Now either both happen or neither does.
     """
     _require_email_capability()
-    otp_service.verify_code(db, email=payload.email, purpose=OtpPurpose.SIGNUP, code=payload.code)
-    user, _ = auth_service.register_student(
-        db, payload.first_name, payload.last_name, payload.email, payload.password, payload.roll_number
-    )
+    try:
+        otp_service.verify_code(db, email=payload.email, purpose=OtpPurpose.SIGNUP,
+                                code=payload.code, commit=False)
+        user, _ = auth_service.register_student(
+            db, payload.first_name, payload.last_name, payload.email, payload.password,
+            payload.roll_number, email_verified=True, commit=False,
+            accepted_terms=payload.accepted_terms, accepted_proctoring=payload.accepted_proctoring,
+            terms_version=payload.terms_version,
+        )
+        db.commit()
+        db.refresh(user)
+    except Exception:
+        # Rolls back the consumption along with everything else, so the code is
+        # still there when the candidate fixes their student ID and retries.
+        db.rollback()
+        raise
     activity_service.record(db, activity_type=ActivityType.SIGNED_UP, subject=user, request=request,
                             description="Created their account (email verified by code)")
     return _token_response(user)
@@ -144,6 +197,8 @@ def request_password_reset(payload: OtpRequest, background: BackgroundTasks, db:
     return OtpRequestAccepted(
         message="If an account exists for that address, a reset code is on its way.",
         expires_in_minutes=settings.OTP_TTL_MINUTES,
+        code_length=settings.OTP_LENGTH,
+        resend_after_seconds=settings.OTP_RESEND_COOLDOWN_SECONDS,
     )
 
 

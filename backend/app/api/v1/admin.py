@@ -8,12 +8,14 @@ the API that sees across tenants at once. Every other read path in this app
 organization or one examiner on purpose; this router is where an admin's
 platform-wide view lives instead of being bolted onto those scoped routers.
 """
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_admin
+from app.models.activity_log import ActivityType
 from app.models.user import User
 from app.database.session import get_db
+from app.schemas.pagination import Page, PageParams, build_page
 from app.schemas.admin import ExaminerUpdateRequest
 from app.services import activity_service, admin_service, organization_service
 
@@ -47,11 +49,18 @@ def list_exams(status: str | None = None, search: str | None = None,
 # Examiners
 # ---------------------------------------------------------------------------
 
-@router.get("/examiners")
-def list_examiners(search: str | None = None, organization_id: int | None = None,
-                    status: str | None = Query(default=None, pattern="^(active|disabled)$"),
-                    db: Session = Depends(get_db), _=Depends(require_admin)):
-    return admin_service.examiners_overview(db, search=search, organization_id=organization_id, status=status)
+@router.get("/examiners", response_model=Page[dict])
+def list_examiners(params: PageParams = Depends(), search: str | None = None,
+                   organization_id: int | None = None,
+                   status: str | None = Query(default=None, pattern="^(active|disabled)$"),
+                   db: Session = Depends(get_db), _=Depends(require_admin)):
+    """One page of examiners. See app/schemas/pagination.py for why these lists
+    are paginated at all -- the whole table used to be sent and sliced in the
+    browser."""
+    rows, total = admin_service.examiners_overview(
+        db, search=search, organization_id=organization_id, status=status,
+        offset=params.offset, limit=params.page_size)
+    return build_page(rows, total, params)
 
 
 @router.get("/examiners/{examiner_id}")
@@ -66,9 +75,28 @@ def get_examiner_exams(examiner_id: int, status: str | None = None,
 
 
 @router.patch("/examiners/{examiner_id}")
-def update_examiner(examiner_id: int, payload: ExaminerUpdateRequest,
-                    db: Session = Depends(get_db), _=Depends(require_admin)):
-    return admin_service.update_examiner(db, examiner_id, **payload.model_dump(exclude_unset=True))
+def update_examiner(examiner_id: int, payload: ExaminerUpdateRequest, request: Request,
+                    db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    """Edit an examiner, and record what actually changed.
+
+    The audit trail covered account creation, password resets and deletions but
+    not edits -- so "who moved this examiner into our organization, and when?"
+    was unanswerable, which is exactly the question an unexpected tenancy change
+    provokes. The BEFORE values come back from the service rather than being
+    read here, so what is recorded is what changed rather than what was asked
+    for.
+    """
+    result = admin_service.update_examiner(db, examiner_id, **payload.model_dump(exclude_unset=True))
+    before = result.pop("previous", {})
+    if before.get("organization_id") != result.get("organization_id"):
+        activity_service.record(
+            db, activity_type=ActivityType.EXAMINER_UPDATED,
+            subject=admin_service.examiner_user(db, examiner_id), actor=admin, request=request,
+            description=(f"Organization changed from "
+                         f"{before.get('organization_name') or 'none'} to "
+                         f"{result.get('organization_name') or 'none'}"),
+        )
+    return result
 
 
 @router.delete("/examiners/{examiner_id}", status_code=204)
@@ -80,10 +108,14 @@ def delete_examiner(examiner_id: int, db: Session = Depends(get_db), _=Depends(r
 # Candidates
 # ---------------------------------------------------------------------------
 
-@router.get("/candidates")
-def list_candidates(search: str | None = None, organization_id: int | None = None,
+@router.get("/candidates", response_model=Page[dict])
+def list_candidates(params: PageParams = Depends(), search: str | None = None,
+                    organization_id: int | None = None,
                     db: Session = Depends(get_db), _=Depends(require_admin)):
-    return admin_service.candidates_overview(db, search=search, organization_id=organization_id)
+    rows, total = admin_service.candidates_overview(
+        db, search=search, organization_id=organization_id,
+        offset=params.offset, limit=params.page_size)
+    return build_page(rows, total, params)
 
 
 @router.get("/candidates/{student_id}")
@@ -118,13 +150,22 @@ def get_live_sessions(db: Session = Depends(get_db), _=Depends(require_admin)):
     return admin_service.live_sessions(db)
 
 
-@router.get("/violations")
-def get_violations(severity: str | None = None, decision: str | None = None,
-                   exam_id: int | None = None, examiner_id: int | None = None,
+@router.get("/violations", response_model=Page[dict])
+def get_violations(params: PageParams = Depends(), severity: str | None = None,
+                   decision: str | None = None, exam_id: int | None = None,
+                   examiner_id: int | None = None, search: str | None = None,
                    db: Session = Depends(get_db), _=Depends(require_admin)):
-    return admin_service.violations_overview(
+    """One page of violations across the platform.
+
+    The worst of the unbounded lists: violations accumulate per candidate per
+    exam and never stop, so this grew without limit and was returned in full to
+    render fifteen rows.
+    """
+    rows, total = admin_service.violations_overview(
         db, severity=severity, decision=decision, exam_id=exam_id, examiner_id=examiner_id,
+        search=search, offset=params.offset, limit=params.page_size,
     )
+    return build_page(rows, total, params)
 
 
 # ------------------------------------------------------------------------------

@@ -8,7 +8,10 @@
     "build": "npm run vendor:mediapipe && vite build",
     "preview": "vite preview",
     "vendor:mediapipe": "node scripts/vendor-mediapipe.mjs",
-    "fetch:model": "node scripts/fetch-face-model.mjs"
+    "fetch:model": "node scripts/fetch-face-model.mjs",
+    "lint": "eslint src",
+    "lint:fix": "eslint src --fix",
+    "check": "node scripts/check-imports.mjs"
   },
   "dependencies": {
     "@fontsource/inter": "5.0.20",
@@ -20,10 +23,15 @@
     "react-router-dom": "6.26.2"
   },
   "devDependencies": {
+    "@eslint/js": "^9.9.0",
     "@vitejs/plugin-react": "4.3.1",
-    "vite": "5.4.8",
-    "tailwindcss": "3.4.13",
+    "autoprefixer": "10.4.20",
+    "eslint": "^9.9.0",
+    "eslint-plugin-react": "^7.35.0",
+    "eslint-plugin-react-hooks": "^4.6.2",
+    "globals": "^15.9.0",
     "postcss": "8.4.47",
-    "autoprefixer": "10.4.20"
+    "tailwindcss": "3.4.13",
+    "vite": "5.4.8"
   }
 }

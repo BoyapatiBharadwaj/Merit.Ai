@@ -18,7 +18,7 @@ def create(db: Session, *, email: str, purpose: OtpPurpose, code_hash: str,
     return row
 
 
-def get_latest(db: Session, *, email: str, purpose: OtpPurpose) -> OtpCode | None:
+def get_latest(db: Session, *, email: str, purpose: OtpPurpose, lock: bool = False) -> OtpCode | None:
     """The most recently issued code for this address and purpose.
 
     Only the newest one is ever considered. Issuing a new code therefore
@@ -26,20 +26,45 @@ def get_latest(db: Session, *, email: str, purpose: OtpPurpose) -> OtpCode | Non
     audit trail intact while making sure exactly one code is live at a time --
     a user who requests a second code and then types the first must be rejected,
     not quietly let through.
+
+    `lock=True` takes SELECT ... FOR UPDATE, so two requests submitting the same
+    code cannot both find it unconsumed and both proceed to create an account.
+    Used by the signup flow, which consumes the code and creates the account in
+    one transaction.
     """
-    return (
+    query = (
         db.query(OtpCode)
         .filter(OtpCode.email == email, OtpCode.purpose == purpose)
         .order_by(OtpCode.created_at.desc(), OtpCode.id.desc())
-        .first()
     )
+    if lock and _supports_row_locks(db):
+        query = query.with_for_update()
+    return query.first()
+
+
+# SQLite has no row locks and does not need them here: it serialises write
+# transactions, so the read-check-write cannot interleave. Naming the dialects
+# that do support it keeps that difference explicit rather than relying on
+# SQLAlchemy silently dropping the clause.
+_ROW_LOCKING_DIALECTS = frozenset({"postgresql", "mysql", "mariadb", "oracle", "mssql"})
+
+
+def _supports_row_locks(db: Session) -> bool:
+    try:
+        return db.get_bind().dialect.name in _ROW_LOCKING_DIALECTS
+    except Exception:  # pragma: no cover - a session with no bind cannot lock
+        return False
 
 
 def mark_consumed(db: Session, row: OtpCode, *, when: datetime, commit: bool = True) -> OtpCode:
+    """`commit=False` leaves the consumption pending so the caller can commit it
+    together with whatever the code authorised -- see otp_service.verify_code."""
     row.consumed_at = when
     if commit:
         db.commit()
         db.refresh(row)
+    else:
+        db.flush()
     return row
 
 

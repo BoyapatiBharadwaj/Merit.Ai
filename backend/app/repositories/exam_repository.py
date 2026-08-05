@@ -1,6 +1,6 @@
 """Data access for Exam, Section, Question, Option tables."""
 from datetime import datetime, timezone
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.enums import ExamStatus
@@ -30,7 +30,14 @@ def list_all_exams(db: Session) -> list[Exam]:
 
 
 def publish_exam(db: Session, exam: Exam) -> Exam:
-    exam.status = ExamStatus.PUBLISHED
+    return set_exam_status(db, exam, ExamStatus.PUBLISHED)
+
+
+def set_exam_status(db: Session, exam: Exam, status: ExamStatus) -> Exam:
+    """The single writer of Exam.status. Which transitions are legal is the
+    service's business (see exam_service.close_exam / reopen_exam); this only
+    persists the decision."""
+    exam.status = status
     db.commit()
     db.refresh(exam)
     return exam
@@ -59,6 +66,32 @@ def delete_exam(db: Session, exam: Exam) -> None:
     db.commit()
 
 
+def next_section_order(db: Session, exam_id: int) -> int:
+    """One past the highest existing order_index for this exam.
+
+    Sections were all created with order_index 0 because the create form had no
+    field for it, so Exam.sections -- which orders by that column -- produced an
+    arbitrary, unstable order. Assigning server-side means the examiner never
+    has to think about it and cannot get it wrong.
+    """
+    highest = db.query(func.max(Section.order_index)).filter(Section.exam_id == exam_id).scalar()
+    return 0 if highest is None else highest + 1
+
+
+def next_question_order(db: Session, section_id: int) -> int:
+    """Same, for questions within a section."""
+    highest = db.query(func.max(Question.order_index)).filter(Question.section_id == section_id).scalar()
+    return 0 if highest is None else highest + 1
+
+
+def reorder_sections(db: Session, exam_id: int, section_ids: list[int]) -> None:
+    sections = {s.id: s for s in db.query(Section).filter(Section.exam_id == exam_id).all()}
+    for index, section_id in enumerate(section_ids):
+        if section_id in sections:
+            sections[section_id].order_index = index
+    db.commit()
+
+
 def add_section(db: Session, exam_id: int, data: dict) -> Section:
     section = Section(exam_id=exam_id, **data)
     db.add(section)
@@ -71,20 +104,37 @@ def get_section(db: Session, section_id: int) -> Section | None:
     return db.query(Section).filter(Section.id == section_id).first()
 
 
-def add_question(db: Session, section_id: int, text: str, marks: int, order_index: int, **coding_fields) -> Question:
-    question = Question(section_id=section_id, text=text, marks=marks, order_index=order_index, **coding_fields)
+def add_question(db: Session, section_id: int, text: str, marks: int, order_index: int,
+                 *, options: list[dict] | None = None, commit: bool = True, **coding_fields) -> Question:
+    """Insert a question and its options as ONE transaction.
+
+    They used to be separate commits: the question was committed, then each
+    option was committed individually in a loop in the service layer. A failure
+    part-way -- a database blip, a validation error raised between iterations --
+    left a committed question with some of its options, which for an MCQ means a
+    question whose correct answer may simply not exist. Nothing in the UI would
+    show it as broken; a candidate would just find a question they could not
+    answer correctly.
+    """
+    question = Question(section_id=section_id, text=text, marks=marks, order_index=order_index,
+                        **coding_fields)
     db.add(question)
-    db.commit()
-    db.refresh(question)
+    try:
+        db.flush()  # assigns question.id without ending the transaction
+        for option in options or []:
+            db.add(Option(question_id=question.id, text=option["text"],
+                          is_correct=option["is_correct"]))
+        if commit:
+            db.commit()
+        else:
+            db.flush()
+    except Exception:
+        if commit:
+            db.rollback()
+        raise
+    if commit:
+        db.refresh(question)
     return question
-
-
-def add_option(db: Session, question_id: int, text: str, is_correct: bool) -> Option:
-    option = Option(question_id=question_id, text=text, is_correct=is_correct)
-    db.add(option)
-    db.commit()
-    db.refresh(option)
-    return option
 
 
 def reorder_questions(db: Session, section_id: int, question_ids: list[int]) -> None:

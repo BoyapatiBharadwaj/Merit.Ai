@@ -34,10 +34,12 @@ One scope limit that remains:
     single-source credential-stuffing this exists to stop; a TTL-evicting
     store is the right answer if that ever becomes a real concern here.
 """
+import ipaddress
 import logging
 import threading
 import time
 from collections import defaultdict, deque
+from functools import lru_cache
 
 from fastapi import HTTPException, Request, status
 
@@ -51,11 +53,58 @@ _buckets: dict[tuple[str, str], deque] = defaultdict(deque)
 
 
 def _client_ip(request: Request) -> str:
-    # request.client.host is the actual TCP peer uvicorn accepted the
-    # connection from -- unlike an X-Forwarded-For header, it costs an
-    # attacker a real new source to rotate, not just a different header
-    # value, which is what makes it meaningful as a rate-limit key.
-    return request.client.host if request.client else "unknown"
+    """The caller's address: the TCP peer, or the forwarded one if a trusted
+    proxy put it there.
+
+    The comment that used to live here argued that request.client.host is the
+    right key because rotating it costs an attacker a real new source rather
+    than a different header value. That reasoning is correct and the code was
+    still wrong in deployment, because behind the bundled nginx the TCP peer is
+    the PROXY -- one address for every candidate in the building. Ten wrong
+    passwords from one person exhausted the login budget for the entire exam
+    hall, and the symptom would have been "the login page is broken" during a
+    live sitting.
+
+    Reading X-Forwarded-For unconditionally would have been worse: any client
+    can set that header, so it would hand out a fresh budget per request to
+    exactly the attacker the limit exists to stop. Both halves are needed --
+    believe the header, but only from a peer inside TRUSTED_PROXY_IPS.
+    """
+    peer = request.client.host if request.client else None
+    if not peer:
+        return "unknown"
+
+    if not _is_trusted_proxy(peer):
+        return peer
+
+    # Rightmost-untrusted, not leftmost. X-Forwarded-For is a client-to-proxy
+    # chain and only the entries our own proxies appended can be believed; a
+    # client that sends its own header simply prepends to it, so taking [0]
+    # would take the attacker's chosen value. Walking from the right and
+    # stopping at the first address not in the trusted set yields the address
+    # our outermost proxy actually saw.
+    forwarded = request.headers.get("x-forwarded-for", "")
+    for candidate in reversed([part.strip() for part in forwarded.split(",") if part.strip()]):
+        if not _is_trusted_proxy(candidate):
+            return candidate
+
+    # Every hop was a trusted proxy, or the header was absent. Fall back to the
+    # peer rather than inventing an identity.
+    return peer
+
+
+@lru_cache(maxsize=1024)
+def _is_trusted_proxy(address: str) -> bool:
+    """Cached because this runs on every rate-limited request and the answer for
+    a given address cannot change without a restart."""
+    networks = settings.trusted_proxies
+    if not networks:
+        return False
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    return any(parsed in network for network in networks)
 
 
 def rate_limit(bucket: str, max_requests: int | None = None, window_seconds: int | None = None):
@@ -175,6 +224,9 @@ def _reset_all() -> None:
     """
     with _lock:
         _buckets.clear()
+    # The trusted-proxy answer is memoised per address, and a test that changes
+    # TRUSTED_PROXY_IPS would otherwise keep getting the previous verdict.
+    _is_trusted_proxy.cache_clear()
     # Redis keys as well, when it is in play -- otherwise a test that exhausts a
     # limit leaves it exhausted for every test after it.
     client = shared_state.get_client()

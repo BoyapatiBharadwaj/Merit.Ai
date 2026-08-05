@@ -57,8 +57,12 @@ def _register_student_and_login(client, email="student@example.com", enrol=True,
     # linked automatically by auth_service.register_student.
     if enrol:
         enrol_email(email, organization_id)
+    # Consent is sent because a real client sends it: the checkboxes used to be
+    # enforced only in React and never reached the server, so any direct caller
+    # -- including this helper -- registered without agreeing to anything.
     response = client.post("/api/v1/auth/register/student", json={
         "first_name": "Test", "last_name": "Student", "email": email, "password": "Sup3rSecret!",
+        "accepted_terms": True, "accepted_proctoring": True, "terms_version": "2026-08-05",
     })
     assert response.status_code == 201
     return response.json()["access_token"]

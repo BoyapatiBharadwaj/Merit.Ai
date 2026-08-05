@@ -50,7 +50,7 @@ def test_examiners_overview_lists_counts_and_supports_filters(client, seed_roles
     _register_student_and_login(client, email="overview-student@example.com")
     student_id = _student_id(db_session, "overview-student@example.com")
 
-    rows = client.get("/api/v1/admin/examiners", headers=auth_headers(admin_token)).json()
+    rows = client.get("/api/v1/admin/examiners", headers=auth_headers(admin_token)).json()["items"]
     mine = next(r for r in rows if r["email"] == "overview-examiner@example.com")
     assert mine["active_exams"] == 1
     assert mine["upcoming_exams"] == 0
@@ -59,15 +59,15 @@ def test_examiners_overview_lists_counts_and_supports_filters(client, seed_roles
     assert mine["is_active"] is True
 
     by_search = client.get("/api/v1/admin/examiners", params={"search": "overview-examiner"},
-                           headers=auth_headers(admin_token)).json()
+                           headers=auth_headers(admin_token)).json()["items"]
     assert [r["email"] for r in by_search] == ["overview-examiner@example.com"]
 
     # Deactivate via the existing user-management endpoint, then filter by status.
     examiner_user_id = db_session.query(User).filter(User.email == "overview-examiner@example.com").first().id
     client.post(f"/api/v1/users/{examiner_user_id}/deactivate", headers=auth_headers(admin_token))
-    disabled = client.get("/api/v1/admin/examiners", params={"status": "disabled"}, headers=auth_headers(admin_token)).json()
+    disabled = client.get("/api/v1/admin/examiners", params={"status": "disabled"}, headers=auth_headers(admin_token)).json()["items"]
     assert "overview-examiner@example.com" in [r["email"] for r in disabled]
-    active_only = client.get("/api/v1/admin/examiners", params={"status": "active"}, headers=auth_headers(admin_token)).json()
+    active_only = client.get("/api/v1/admin/examiners", params={"status": "active"}, headers=auth_headers(admin_token)).json()["items"]
     assert "overview-examiner@example.com" not in [r["email"] for r in active_only]
 
     assert exam_id and student_id  # sanity: both fixtures actually ran
@@ -78,7 +78,7 @@ def test_examiner_detail_and_exam_list(client, seed_roles, admin_token):
     headers = auth_headers(examiner_token)
     exam_id = _build_published_exam(client, headers)
 
-    examiners = client.get("/api/v1/admin/examiners", headers=auth_headers(admin_token)).json()
+    examiners = client.get("/api/v1/admin/examiners", headers=auth_headers(admin_token)).json()["items"]
     examiner_id = next(r["id"] for r in examiners if r["email"] == "detail-examiner@example.com")
 
     detail = client.get(f"/api/v1/admin/examiners/{examiner_id}", headers=auth_headers(admin_token))
@@ -103,7 +103,7 @@ def test_examiner_detail_and_exam_list(client, seed_roles, admin_token):
 
 def test_update_examiner_edits_name_and_organization(client, seed_roles, admin_token):
     examiner_token = _create_examiner_and_login(client, admin_token, email="editme@example.com")
-    examiners = client.get("/api/v1/admin/examiners", headers=auth_headers(admin_token)).json()
+    examiners = client.get("/api/v1/admin/examiners", headers=auth_headers(admin_token)).json()["items"]
     examiner_id = next(r["id"] for r in examiners if r["email"] == "editme@example.com")
 
     response = client.patch(f"/api/v1/admin/examiners/{examiner_id}",
@@ -123,7 +123,7 @@ def test_delete_examiner_blocked_when_real_attempts_exist_but_allowed_otherwise(
     start = client.post(f"/api/v1/attempts/start/{exam_id}", headers=auth_headers(student_token))
     assert start.status_code == 200, start.text
 
-    examiners = client.get("/api/v1/admin/examiners", headers=auth_headers(admin_token)).json()
+    examiners = client.get("/api/v1/admin/examiners", headers=auth_headers(admin_token)).json()["items"]
     examiner_a_id = next(r["id"] for r in examiners if r["email"] == "delete-blocked@example.com")
     blocked = client.delete(f"/api/v1/admin/examiners/{examiner_a_id}", headers=auth_headers(admin_token))
     assert blocked.status_code == 400
@@ -131,11 +131,11 @@ def test_delete_examiner_blocked_when_real_attempts_exist_but_allowed_otherwise(
 
     # Examiner B: only ever created a draft, no attempts anywhere -- delete succeeds.
     _create_examiner_and_login(client, admin_token, email="delete-allowed@example.com")
-    examiners = client.get("/api/v1/admin/examiners", headers=auth_headers(admin_token)).json()
+    examiners = client.get("/api/v1/admin/examiners", headers=auth_headers(admin_token)).json()["items"]
     examiner_b_id = next(r["id"] for r in examiners if r["email"] == "delete-allowed@example.com")
     allowed = client.delete(f"/api/v1/admin/examiners/{examiner_b_id}", headers=auth_headers(admin_token))
     assert allowed.status_code == 204
-    remaining = client.get("/api/v1/admin/examiners", headers=auth_headers(admin_token)).json()
+    remaining = client.get("/api/v1/admin/examiners", headers=auth_headers(admin_token)).json()["items"]
     assert "delete-allowed@example.com" not in [r["email"] for r in remaining]
 
 
@@ -221,7 +221,7 @@ def test_candidates_overview_and_detail(client, seed_roles, admin_token, db_sess
     _log_violation(client, auth_headers(student_token), attempt_id, "tab_switch")
     client.post(f"/api/v1/attempts/{attempt_id}/submit", headers=auth_headers(student_token))
 
-    overview = client.get("/api/v1/admin/candidates", headers=auth_headers(admin_token)).json()
+    overview = client.get("/api/v1/admin/candidates", headers=auth_headers(admin_token)).json()["items"]
     row = next(r for r in overview if r["email"] == "candidate-view@example.com")
     assert row["exams_taken"] == 1
     assert row["completed_exams"] == 1
@@ -266,7 +266,7 @@ def test_violations_overview_and_admin_decision_update(client, seed_roles, admin
     attempt_id = start.json()["attempt_id"]
     _log_violation(client, auth_headers(student_token), attempt_id, "phone_detected")
 
-    all_violations = client.get("/api/v1/admin/violations", headers=auth_headers(admin_token)).json()
+    all_violations = client.get("/api/v1/admin/violations", headers=auth_headers(admin_token)).json()["items"]
     assert len(all_violations) == 1
     event = all_violations[0]
     assert event["admin_decision"] == "pending"
@@ -283,10 +283,10 @@ def test_violations_overview_and_admin_decision_update(client, seed_roles, admin
     assert updated.json()["admin_decision"] == "confirmed"
 
     only_confirmed = client.get("/api/v1/admin/violations", params={"decision": "confirmed"},
-                                headers=auth_headers(admin_token)).json()
+                                headers=auth_headers(admin_token)).json()["items"]
     assert len(only_confirmed) == 1
     only_dismissed = client.get("/api/v1/admin/violations", params={"decision": "dismissed"},
-                                headers=auth_headers(admin_token)).json()
+                                headers=auth_headers(admin_token)).json()["items"]
     assert only_dismissed == []
 
     bad_decision = client.patch(f"/api/v1/proctoring/events/{event['id']}/decision", json={"decision": "not-a-real-value"},
@@ -372,15 +372,19 @@ def test_dashboard_summary_counts_match_the_drilldown_endpoints(client, seed_rol
     assert summary.status_code == 200, summary.text
     body = summary.json()
 
+    # Compared against each list's `total`, not the length of a page.
+    # These endpoints are paginated now, so len(items) is the page size and
+    # would only agree with the summary by coincidence -- while still looking
+    # like a real cross-check.
     examiners = client.get("/api/v1/admin/examiners", headers=auth_headers(admin_token)).json()
     candidates = client.get("/api/v1/admin/candidates", headers=auth_headers(admin_token)).json()
     live = client.get("/api/v1/admin/live-sessions", headers=auth_headers(admin_token)).json()
     violations = client.get("/api/v1/admin/violations", headers=auth_headers(admin_token)).json()
 
-    assert body["total_examiners"] == len(examiners)
-    assert body["total_candidates"] == len(candidates)
+    assert body["total_examiners"] == examiners["total"]
+    assert body["total_candidates"] == candidates["total"]
     assert body["live_sessions"] == len(live) == 1  # attempt above is still in progress
-    assert body["violations_logged"] == len(violations)
+    assert body["violations_logged"] == violations["total"]
     assert body["active_exams"] >= 1  # the exam built above is published + active
 
 
@@ -412,3 +416,73 @@ def test_platform_wide_exams_list_filters_by_status_and_search(client, seed_role
     no_match = client.get("/api/v1/admin/exams", params={"search": "no-such-exam-xyz"},
                           headers=auth_headers(admin_token)).json()
     assert exam_id not in [r["id"] for r in no_match]
+
+
+# --- pagination and the N+1s --------------------------------------------------
+
+def test_admin_lists_come_back_one_page_at_a_time(client, seed_roles, admin_token):
+    """These returned whole tables and the browser sliced them, so viewing ten
+    rows cost the transfer and parse of every candidate the institution had."""
+    for index in range(7):
+        _register_student_and_login(client, email=f"page{index}@example.com")
+
+    first = client.get("/api/v1/admin/candidates?page=1&page_size=3",
+                       headers=auth_headers(admin_token))
+    assert first.status_code == 200, first.text
+    body = first.json()
+    assert len(body["items"]) == 3
+    assert body["total"] == 7
+    assert body["total_pages"] == 3
+
+    # Every candidate appears exactly once across the pages.
+    seen = []
+    for page in (1, 2, 3):
+        seen += [row["id"] for row in
+                 client.get(f"/api/v1/admin/candidates?page={page}&page_size=3",
+                            headers=auth_headers(admin_token)).json()["items"]]
+    assert len(seen) == len(set(seen)) == 7
+
+
+def test_the_client_cannot_request_an_unbounded_admin_page(client, seed_roles, admin_token):
+    for path in ("candidates", "examiners", "violations"):
+        assert client.get(f"/api/v1/admin/{path}?page_size=100000",
+                          headers=auth_headers(admin_token)).status_code == 422
+
+
+def test_an_admin_search_wildcard_is_escaped(client, seed_roles, admin_token):
+    """`%` and `_` are LIKE wildcards, so an unescaped search box lets any input
+    become a pattern -- "%" matched every row."""
+    _register_student_and_login(client, email="literal-admin@example.com")
+    wildcard = client.get("/api/v1/admin/candidates?search=%25",
+                          headers=auth_headers(admin_token)).json()
+    assert wildcard["total"] == 0, "a bare % matched every candidate"
+
+
+def test_the_examiner_list_does_not_query_per_row(client, seed_roles, admin_token, db_session):
+    """examiners_overview called candidate_ids_for_examiner inside its loop --
+    two queries per examiner, so a page of a hundred staff meant two hundred
+    round trips to render one table, degrading linearly with exactly the thing
+    an admin dashboard exists to show more of."""
+    from sqlalchemy import event
+
+    for index in range(5):
+        _create_examiner_and_login(client, admin_token, email=f"many{index}@example.com")
+
+    statements = []
+    engine = db_session.get_bind()
+
+    def _count(conn, cursor, statement, *args):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _count)
+    try:
+        response = client.get("/api/v1/admin/examiners?page_size=100",
+                              headers=auth_headers(admin_token))
+    finally:
+        event.remove(engine, "before_cursor_execute", _count)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["total"] == 5
+    # Comfortably under "two per examiner plus overhead". The point is that the
+    # count does not scale with the number of rows returned.
+    assert len(statements) < 20, f"{len(statements)} statements for 5 examiners -- still N+1"

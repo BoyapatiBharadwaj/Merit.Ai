@@ -230,7 +230,7 @@ export function createLockdown() {
 
     if (!attemptId) return;
     try {
-      const res = await Api.post("/proctoring/lockdown/strike", {
+      const res = await Api.exam.post("/proctoring/lockdown/strike", {
         attempt_id: attemptId,
         event_type: eventType,
         description,
@@ -491,7 +491,7 @@ export function createLockdown() {
       logEvent(eventType, description, null);
       return;
     }
-    Api.post("/proctoring/events", { attempt_id: attemptId, event_type: eventType, description }).catch(() => {
+    Api.exam.post("/proctoring/events", { attempt_id: attemptId, event_type: eventType, description }).catch(() => {
       /* best-effort logging; never cascade */
     });
   }
@@ -507,7 +507,7 @@ export function createLockdown() {
   async function fetchAuthoritativeStatus() {
     if (!attemptId) return { ok: false };
     try {
-      const res = await Api.get(`/proctoring/lockdown/status/${attemptId}`);
+      const res = await Api.exam.get(`/proctoring/lockdown/status/${attemptId}`);
       strikes = res.strikes ?? 0;
       strikeLimit = res.limit ?? strikeLimit;
       if (onStrikeUpdate) onStrikeUpdate({ strikes, limit: strikeLimit, remaining: res.remaining ?? strikeLimit });

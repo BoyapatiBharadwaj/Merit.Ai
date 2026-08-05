@@ -2,6 +2,8 @@
 Exam and Section tables. An Exam belongs to one Examiner and contains
 one or more Sections, which group Questions.
 """
+from datetime import datetime, timezone
+
 from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime, Boolean, func
 from sqlalchemy.orm import relationship
 
@@ -46,6 +48,32 @@ class Exam(Base):
     # effect on correctness -- only on-screen order.
     randomize_options = Column(Boolean, default=True, nullable=False)
     proctoring_enabled = Column(Boolean, default=True, nullable=False)
+
+    # Individual requirements, rather than one boolean deciding everything.
+    #
+    # proctoring_enabled gated the AI signals, but the exam page demanded
+    # camera, microphone, screen sharing AND fullscreen regardless -- and then
+    # told the candidate "this exam is not proctored". So an unproctored quiz
+    # still required someone to hand over their webcam and share their screen
+    # for no purpose anyone could name, which is both a privacy intrusion and a
+    # reason for a candidate to distrust everything else the page says.
+    #
+    # NULL means "follow proctoring_enabled", so every existing exam keeps its
+    # current behaviour and an examiner only sets these when they want something
+    # different. require_* below resolve that.
+    require_camera = Column(Boolean, nullable=True)
+    require_microphone = Column(Boolean, nullable=True)
+    require_screen_share = Column(Boolean, nullable=True)
+    require_fullscreen = Column(Boolean, nullable=True)
+
+    # When candidates may see their marks, and how much of the paper.
+    #
+    # The results API returned correct options, correct-answer text and
+    # explanations the moment an attempt was submitted -- so the first candidate
+    # to finish held the complete answer key while everyone else was still
+    # writing, and could simply send it to them.
+    release_results_at = Column(DateTime(timezone=True), nullable=True)
+    show_answers_on_release = Column(Boolean, default=True, nullable=False)
     start_time = Column(DateTime(timezone=True), nullable=True)
     end_time = Column(DateTime(timezone=True), nullable=True)
 
@@ -64,6 +92,27 @@ class Exam(Base):
     # on the row rather than in memory so a restart mid-window doesn't resend.
     reminder_sent_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    def requires(self, capability: str) -> bool:
+        """Whether this exam needs camera / microphone / screen_share / fullscreen.
+
+        One place that resolves the per-exam override against the old boolean,
+        so the exam page, the pre-flight check and the server cannot disagree
+        about what a candidate is being asked for.
+        """
+        override = getattr(self, f"require_{capability}", None)
+        return self.proctoring_enabled if override is None else bool(override)
+
+    @property
+    def results_released(self) -> bool:
+        """Whether marks may be shown yet. No release time means immediately,
+        which is the existing behaviour for every exam already created."""
+        if self.release_results_at is None:
+            return True
+        moment = self.release_results_at
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) >= moment
 
     examiner = relationship("Examiner", back_populates="exams")
     organization = relationship("Organization")

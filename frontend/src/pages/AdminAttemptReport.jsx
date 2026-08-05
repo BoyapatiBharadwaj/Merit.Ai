@@ -229,8 +229,17 @@ export default function AdminAttemptReport() {
 
         {/* AI-generated proctoring summary */}
         <div className="rounded-2xl border border-primary/20 bg-primary/5 p-5 mb-6">
-          <h2 className="text-sm font-bold uppercase tracking-wide text-primary mb-2">AI-Generated Proctoring Summary</h2>
+          {/* Was "AI-Generated Proctoring Summary". The backend builds this
+              from a fixed template over event counts and severities -- there is
+              no model involved. Calling it AI-generated overstated what it is
+              and, worse, lent it an authority a template does not have on a page
+              where an administrator may be deciding whether someone cheated. */}
+          <h2 className="text-sm font-bold uppercase tracking-wide text-primary mb-2">Automated Proctoring Summary</h2>
           <p className="text-sm text-ink leading-relaxed">{report.proctoring_summary}</p>
+          <p className="text-xs text-muted mt-2">
+            Generated from the recorded events by a fixed rule, not by a model. It summarises what was
+            flagged; whether any of it was misconduct is a judgement for a reviewer.
+          </p>
         </div>
 
         {/* Violation timeline */}

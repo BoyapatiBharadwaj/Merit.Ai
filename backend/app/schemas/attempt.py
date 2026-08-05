@@ -10,6 +10,27 @@ class StartAttemptResponse(BaseModel):
     remaining_seconds: int
     proctoring_enabled: bool
     question_ids_in_order: list[int]
+    # Valid until this attempt's deadline plus a grace period, and accepted
+    # only on this attempt's own endpoints -- so a three-hour exam cannot be
+    # ended by a two-hour session token expiring. See
+    # security.create_attempt_token.
+    attempt_token: str
+
+
+class AttemptStatusOut(BaseModel):
+    """Authoritative attempt state, for the client's periodic re-sync.
+
+    The exam page used to re-sync its timer by calling POST /attempts/start
+    again and reading remaining_seconds off the response. That worked, but it
+    meant the most frequent call in a live exam was the one endpoint that can
+    also CREATE an attempt, and it returned the full question order every time
+    to read one integer. This is the read-only version.
+    """
+    attempt_id: int
+    status: str
+    remaining_seconds: int
+    submitted_at: datetime | None = None
+    server_time: datetime
 
 
 class _AutosaveEnvelope(BaseModel):
@@ -61,6 +82,37 @@ class CodeAnswerRequest(_AutosaveEnvelope):
 class CodeRunRequest(BaseModel):
     question_id: int
     source_code: str = ""
+
+
+class FinalAnswerItem(_AutosaveEnvelope):
+    """One answer in the snapshot sent with a submission.
+
+    All three value fields are optional and mutually exclusive in practice --
+    which one is read is decided by the question's own type on the server, not
+    by which one the client happened to fill in, so a coding answer cannot be
+    smuggled into an MCQ question. `None` means "no value for this question in
+    this snapshot" and leaves whatever is already stored untouched, so a client
+    that only tracks the questions the candidate actually touched does not blank
+    out the rest.
+    """
+    question_id: int
+    selected_option_id: int | None = None
+    selected_option_ids: list[int] | None = None
+    source_code: str | None = None
+
+
+class FinalizeAttemptRequest(BaseModel):
+    """POST /attempts/{id}/finalize.
+
+    `final_answers` is the candidate's own current state, sent WITH the
+    submission rather than raced against it -- see
+    attempt_service.finalize_attempt for why that ordering was losing answers.
+
+    There is deliberately no `auto` field. Whether this counts as a timeout or a
+    deliberate submission is read from the server's clock; it used to be a query
+    parameter, which let the candidate label their own submission either way.
+    """
+    final_answers: list[FinalAnswerItem] = Field(default_factory=list, max_length=1000)
 
 
 class AttemptQuestionView(BaseModel):
@@ -123,6 +175,8 @@ class AttemptReportOut(BaseModel):
     percentage: float
     pass_percentage: int
     passed: bool | None
+    answers_released: bool = True
+    release_results_at: datetime | None = None
     correct_count: int
     incorrect_count: int
     unattempted_count: int

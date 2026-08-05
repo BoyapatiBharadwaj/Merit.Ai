@@ -2,7 +2,9 @@
 Tracks a student's attempt at an exam, their per-question answers,
 and the final computed result.
 """
-from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime, Float, UniqueConstraint, func
+from sqlalchemy import (
+    Column, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text,
+)
 from sqlalchemy.orm import relationship
 
 from app.database.session import Base
@@ -11,7 +13,23 @@ from app.models.enums import AttemptStatus, db_enum
 
 class StudentExamAttempt(Base):
     __tablename__ = "student_exam_attempts"
-    __table_args__ = (UniqueConstraint("student_id", "exam_id", name="uq_student_exam"),)
+    # Partial unique index, not a plain UniqueConstraint.
+    #
+    # The rule is "one LIVE attempt per student per exam", not "one attempt
+    # ever". A plain constraint forced reset_student_attempt to DELETE the old
+    # attempt to make room for the retake -- taking its answers, result,
+    # examiner comments, violations and every proctoring event with it by
+    # cascade, and leaving a reason string as the only record that a candidate
+    # had once sat this exam. That is precisely the evidence a disputed exam
+    # needs, destroyed by the action most likely to precede a dispute.
+    #
+    # Scoping uniqueness to archived_at IS NULL lets the old attempt stay in
+    # place, intact and readable, while the retake takes its place.
+    __table_args__ = (
+        Index("uq_active_student_exam", "student_id", "exam_id", unique=True,
+              postgresql_where=text("archived_at IS NULL"),
+              sqlite_where=text("archived_at IS NULL")),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     student_id = Column(Integer, ForeignKey("students.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -35,6 +53,17 @@ class StudentExamAttempt(Base):
     # attempt_service.set_attempt_comment for who may write which one.
     examiner_comment = Column(Text, nullable=True)
     admin_comment = Column(Text, nullable=True)
+
+    # Set when an examiner grants a retake. The attempt stops counting as this
+    # student's attempt at this exam -- it disappears from their results, from
+    # the examiner's attempt list, and from analytics -- but the row and
+    # everything hanging off it survive, so a dispute months later can still be
+    # answered. NULL for every ordinary attempt.
+    archived_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    # Which reset archived it, so the audit trail and the evidence point at each
+    # other rather than the trail merely mentioning an id that no longer exists.
+    archived_by_reset_id = Column(Integer, ForeignKey("attempt_resets.id", ondelete="SET NULL"),
+                                  nullable=True)
 
     student = relationship("Student", back_populates="attempts")
     exam = relationship("Exam", back_populates="attempts")

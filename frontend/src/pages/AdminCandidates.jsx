@@ -22,6 +22,9 @@ export default function AdminCandidates() {
   const [search, setSearch] = useState("");
   const [organizationId, setOrganizationId] = useState("");
   const [page, setPage] = useState(1);
+  // The server's figures, not derived from a list the client holds.
+  const [total, setTotal] = useState(0);
+  const [pageCount, setPageCount] = useState(1);
 
   useEffect(() => {
     Api.get("/admin/organizations").then(setOrganizations).catch(() => {});
@@ -33,20 +36,34 @@ export default function AdminCandidates() {
   }, [searchInput]);
 
   useEffect(() => {
+    // A request ticket, so a slow OLD search cannot overwrite a newer one.
+    //
+    // The search box debounced but never cancelled: typing "ann" then "annie"
+    // fired two requests, and if the first was slower its results replaced the
+    // second's. The admin saw candidates matching a query they had already
+    // moved past, with the newer term still in the box -- and no way to tell
+    // the list was stale.
+    let cancelled = false;
     setRows(null);
-    setPage(1);
+    setLoadError("");
     const params = new URLSearchParams();
     if (search) params.set("search", search);
     if (organizationId) params.set("organization_id", organizationId);
-    const qs = params.toString();
-    Api.get(`/admin/candidates${qs ? `?${qs}` : ""}`)
-      .then(setRows)
-      .catch((err) => setLoadError(err instanceof ApiError ? err.message : "Couldn't load candidates."));
-  }, [search, organizationId]);
+    params.set("page", String(page));
+    params.set("page_size", String(PAGE_SIZE));
+    Api.get(`/admin/candidates?${params.toString()}`)
+      .then((data) => { if (!cancelled) { setRows(data.items); setTotal(data.total); setPageCount(data.total_pages); } })
+      .catch((err) => {
+        if (!cancelled) setLoadError(err instanceof ApiError ? err.message : "Couldn't load candidates.");
+      });
+    return () => { cancelled = true; };
+  }, [search, organizationId, page]);
 
   if (!isLoggedIn() || getRole() !== "admin") return <Navigate to="/login" replace />;
 
-  const { pageRows, pageCount, safePage } = paginate(rows || [], page, PAGE_SIZE);
+  // The server decides the page; `rows` IS the page.
+  const pageRows = rows || [];
+  const safePage = page;
 
   return (
     <div className="min-h-screen bg-page text-ink">
@@ -120,7 +137,7 @@ export default function AdminCandidates() {
                 ))}
               </tbody>
             </table>
-            <Pagination page={safePage} pageCount={pageCount} onChange={setPage} totalCount={rows.length} pageSize={PAGE_SIZE} />
+            <Pagination page={safePage} pageCount={pageCount} onChange={setPage} totalCount={total} pageSize={PAGE_SIZE} />
           </div>
         )}
       </main>

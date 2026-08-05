@@ -1,4 +1,6 @@
 """Data access for User, Role, Student, Examiner tables."""
+from datetime import datetime, timezone
+
 from sqlalchemy.orm import Session
 from app.models.user import User, Role
 from app.models.student import Student
@@ -36,9 +38,21 @@ def list_admin_emails(db: Session) -> list[str]:
     return [email for (email,) in rows if email]
 
 
-def create_user(db: Session, first_name: str, last_name: str, email: str, hashed_password: str, role_id: int, commit: bool = True) -> User:
-    user = User(email=email, hashed_password=hashed_password, role_id=role_id)
+def create_user(db: Session, first_name: str, last_name: str, email: str, hashed_password: str,
+                role_id: int, commit: bool = True, email_verified: bool = False) -> User:
+    now = datetime.now(timezone.utc)
+    user = User(email=(email or "").strip().lower(), hashed_password=hashed_password, role_id=role_id)
     user.set_name(first_name, last_name)
+    # Stamped at creation, not left NULL. A NULL epoch is treated as "no epoch"
+    # by the token check, so an account whose password had never been changed
+    # would have unrevocable tokens until the first change -- which is precisely
+    # the window a freshly compromised new account is in.
+    user.password_changed_at = now
+    # Only ever set by a caller that actually checked a code (see
+    # auth_service.register_student). Defaulting to False means a new
+    # registration path added later is unverified until someone says otherwise,
+    # which is the safe direction for this flag to fail in.
+    user.email_verified_at = now if email_verified else None
     db.add(user)
     db.flush()
     if commit:
@@ -65,6 +79,13 @@ def create_examiner_profile(db: Session, user_id: int, organization_name: str | 
         db.commit()
         db.refresh(examiner)
     return examiner
+
+
+def get_student_by_roll_number(db: Session, roll_number: str) -> Student | None:
+    """Used to reject a duplicate student ID with a 409 that names the field,
+    rather than letting the unique constraint raise an IntegrityError that the
+    global handler turns into an opaque 503."""
+    return db.query(Student).filter(Student.roll_number == roll_number).first()
 
 
 def get_student_by_user_id(db: Session, user_id: int) -> Student | None:

@@ -1,5 +1,6 @@
-import { Suspense, lazy } from "react";
-import { Routes, Route } from "react-router-dom";
+import { Suspense, lazy, useEffect } from "react";
+import { Routes, Route, useLocation } from "react-router-dom";
+import { PAGE_META, setPageMeta } from "./lib/seo.js";
 import ErrorBoundary from "./components/ErrorBoundary.jsx";
 import RouteFallback from "./components/RouteFallback.jsx";
 
@@ -29,7 +30,10 @@ import Placeholder from "./pages/Placeholder.jsx";
 const ForgotPassword = lazy(() => import("./pages/ForgotPassword.jsx"));
 const Register = lazy(() => import("./pages/Register.jsx"));
 const RequestAccess = lazy(() => import("./pages/RequestAccess.jsx"));
+const ExaminerDashboard = lazy(() => import("./pages/ExaminerDashboard.jsx"));
 const Privacy = lazy(() => import("./pages/Privacy.jsx"));
+const Terms = lazy(() => import("./pages/Terms.jsx"));
+const SystemCheck = lazy(() => import("./pages/SystemCheck.jsx"));
 const Features = lazy(() => import("./pages/Features.jsx"));
 const Pricing = lazy(() => import("./pages/Pricing.jsx"));
 const About = lazy(() => import("./pages/About.jsx"));
@@ -59,6 +63,32 @@ const AdminAttemptReport = lazy(() => import("./pages/AdminAttemptReport.jsx"));
 const AdminLiveSessions = lazy(() => import("./pages/AdminLiveSessions.jsx"));
 const AdminViolations = lazy(() => import("./pages/AdminViolations.jsx"));
 
+/**
+ * Sets the page's metadata whenever the route changes.
+ *
+ * Every route used to render with index.html's single title and description, so
+ * /features, /pricing, /about and /contact shared one search snippet and one
+ * link preview. Anything not in the table is a page behind a login and is
+ * marked noindex -- a leaked exam or result URL should never be indexable.
+ */
+function RouteMeta() {
+  const { pathname } = useLocation();
+  useEffect(() => {
+    const meta = PAGE_META[pathname];
+    if (meta) {
+      setPageMeta({ ...meta, path: pathname });
+    } else {
+      setPageMeta({
+        title: "Merit.Ai",
+        description: "AI-proctored online examinations.",
+        path: pathname,
+        noindex: true,
+      });
+    }
+  }, [pathname]);
+  return null;
+}
+
 export default function App() {
   return (
     // The boundary wraps the router rather than sitting inside it, so it also
@@ -66,6 +96,7 @@ export default function App() {
     // connections this app is explicitly built to tolerate, and one that would
     // otherwise render a blank white page with nothing in the UI to explain it.
     <ErrorBoundary>
+      <RouteMeta />
       <Suspense fallback={<RouteFallback />}>
         <Routes>
           <Route path="/" element={<Home />} />
@@ -76,6 +107,12 @@ export default function App() {
               reviews, and is where the marketing site's examiner CTA points. */}
           <Route path="/request-access" element={<RequestAccess />} />
           <Route path="/privacy" element={<Privacy />} />
+          {/* The consent checkbox said "Terms of Service" and linked to /privacy,
+              which opens by stating it is not one. */}
+          <Route path="/terms" element={<Terms />} />
+          {/* No login: a candidate needs to test their device BEFORE exam day,
+              which is precisely when they may not yet have an account. */}
+          <Route path="/system-check" element={<SystemCheck />} />
 
           {/* Marketing pages linked from the nav -- each a full page rather than
               an anchor scroll, so they're directly linkable/bookmarkable. */}
@@ -85,6 +122,11 @@ export default function App() {
           <Route path="/faq" element={<FAQ />} />
           <Route path="/contact" element={<Contact />} />
           <Route path="/dashboard" element={<Dashboard />} />
+          {/* The examiner portal is routed rather than tab-state inside one
+              component, so refresh and browser Back behave and every view has a
+              URL an examiner can bookmark or share. */}
+          <Route path="/examiner" element={<ExaminerDashboard />} />
+          <Route path="/examiner/exams/:examId" element={<ExaminerDashboard />} />
           <Route path="/profile" element={<Profile />} />
           <Route path="/exam/:examId" element={<Exam />} />
           <Route path="/results/:attemptId" element={<Results />} />

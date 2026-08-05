@@ -83,6 +83,17 @@ class ExamDetailsUpdate(BaseModel):
     randomize_questions: bool = True
     randomize_options: bool = True
     proctoring_enabled: bool = True
+    # Per-exam requirements. None means "follow proctoring_enabled", so an exam
+    # created before these existed behaves exactly as it did.
+    require_camera: bool | None = None
+    require_microphone: bool | None = None
+    require_screen_share: bool | None = None
+    require_fullscreen: bool | None = None
+    # When candidates may see their marks. None = immediately, the old
+    # behaviour. Until then the answer key is redacted -- see
+    # attempt_service.build_full_report.
+    release_results_at: datetime | None = None
+    show_answers_on_release: bool = True
     notify_email: EmailStr | None = None
 
 

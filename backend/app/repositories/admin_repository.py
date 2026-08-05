@@ -20,27 +20,111 @@ from app.models.student import Student
 from app.models.user import User
 
 
+def escape_like(value: str) -> str:
+    """Neutralise LIKE wildcards in an admin search box.
+
+    `%` and `_` are wildcards, so unescaped input becomes a pattern: searching
+    for "100%" matched every row, and "%_%_%_%" is a cheap way to make the
+    database scan hard. The backslash is escaped first, or escaping the other
+    two would corrupt it.
+    """
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _name_or_email_filter(query, search: str):
+    like = f"%{escape_like(search.strip())}%"
+    return query.filter(or_(User.full_name.ilike(like, escape="\\"),
+                            User.email.ilike(like, escape="\\")))
+
+
 def list_examiners(db: Session, search: str | None = None, organization_id: int | None = None,
-                    active: bool | None = None) -> list[Examiner]:
-    query = db.query(Examiner).join(User, Examiner.user_id == User.id)
+                    active: bool | None = None, offset: int | None = None,
+                    limit: int | None = None) -> tuple[list[Examiner], int]:
+    """One page of examiners, plus the total.
+
+    Returned the whole table before, with the browser slicing it for display --
+    so an institution with a thousand staff transferred a thousand rows to show
+    ten, on every filter change.
+    """
+    query = (db.query(Examiner)
+             .join(User, Examiner.user_id == User.id)
+             .options(joinedload(Examiner.user)))
     if search:
-        like = f"%{search.strip()}%"
-        query = query.filter(or_(User.full_name.ilike(like), User.email.ilike(like)))
+        query = _name_or_email_filter(query, search)
     if organization_id is not None:
         query = query.filter(Examiner.organization_id == organization_id)
     if active is not None:
         query = query.filter(User.is_active == active)
-    return query.order_by(User.full_name).all()
+
+    total = query.order_by(None).count()
+    query = query.order_by(User.full_name)
+    if offset is not None:
+        query = query.offset(offset)
+    if limit is not None:
+        query = query.limit(limit)
+    return query.all(), total
 
 
-def list_candidates(db: Session, search: str | None = None, organization_id: int | None = None) -> list[Student]:
-    query = db.query(Student).join(User, Student.user_id == User.id)
+def list_candidates(db: Session, search: str | None = None, organization_id: int | None = None,
+                    offset: int | None = None, limit: int | None = None) -> tuple[list[Student], int]:
+    query = (db.query(Student)
+             .join(User, Student.user_id == User.id)
+             .options(joinedload(Student.user)))
     if search:
-        like = f"%{search.strip()}%"
-        query = query.filter(or_(User.full_name.ilike(like), User.email.ilike(like)))
+        query = _name_or_email_filter(query, search)
     if organization_id is not None:
         query = query.filter(Student.organization_id == organization_id)
-    return query.order_by(User.full_name).all()
+
+    total = query.order_by(None).count()
+    query = query.order_by(User.full_name)
+    if offset is not None:
+        query = query.offset(offset)
+    if limit is not None:
+        query = query.limit(limit)
+    return query.all(), total
+
+
+def candidate_counts_for_examiners(db: Session, examiners: list) -> dict[int, int]:
+    """Candidate counts for MANY examiners, in two queries.
+
+    examiners_overview called candidate_ids_for_examiner inside its loop, which
+    issued two queries per examiner -- a page of a hundred staff meant two
+    hundred round trips to render one table, degrading linearly with exactly the
+    thing an admin dashboard exists to show more of.
+
+    Counts are computed from the same two sources as the per-examiner version:
+    students enrolled in the examiner's organization, plus students invited
+    directly to one of their exams.
+    """
+    if not examiners:
+        return {}
+
+    org_ids = {e.organization_id for e in examiners if e.organization_id}
+    per_org: dict[int, int] = {}
+    if org_ids:
+        rows = (db.query(Student.organization_id, func.count(Student.id))
+                .filter(Student.organization_id.in_(org_ids))
+                .group_by(Student.organization_id).all())
+        per_org = {org_id: count for org_id, count in rows}
+
+    examiner_ids = [e.id for e in examiners]
+    # DISTINCT because one student can be invited to several of an examiner's
+    # exams, and counting them per invitation would inflate the figure.
+    invite_rows = (db.query(Exam.examiner_id,
+                            func.count(func.distinct(ExamParticipant.student_id)))
+                   .join(ExamParticipant, ExamParticipant.exam_id == Exam.id)
+                   .filter(Exam.examiner_id.in_(examiner_ids),
+                           ExamParticipant.student_id.isnot(None))
+                   .group_by(Exam.examiner_id).all())
+    per_examiner_invites = {examiner_id: count for examiner_id, count in invite_rows}
+
+    # Sum rather than union: a student both enrolled AND separately invited
+    # would be counted twice here, where the per-examiner set version counted
+    # them once. Slight overcount in an uncommon case, in exchange for two
+    # queries instead of two hundred -- and the exact figure is available on the
+    # examiner's own detail page, which loads one examiner.
+    return {e.id: per_org.get(e.organization_id, 0) + per_examiner_invites.get(e.id, 0)
+            for e in examiners}
 
 
 def list_exams_for_examiners(db: Session, examiner_ids: list[int]) -> list[Exam]:
@@ -121,7 +205,15 @@ def violation_counts_for_attempts(db: Session, attempt_ids: list[int]) -> dict[i
 
 
 def list_all_violations(db: Session, severity: str | None = None, decision: str | None = None,
-                         exam_id: int | None = None, examiner_id: int | None = None) -> list[ProctorEvent]:
+                         exam_id: int | None = None, examiner_id: int | None = None,
+                         search: str | None = None,
+                         offset: int | None = None, limit: int | None = None) -> tuple[list[ProctorEvent], int]:
+    """One page of violations across the platform, plus the total.
+
+    The unbounded version of this is the worst of the admin lists: violations
+    accumulate per candidate per exam forever, so it grows without limit and was
+    returned in full to render fifteen rows.
+    """
     query = (
         db.query(ProctorEvent)
         .join(StudentExamAttempt, ProctorEvent.attempt_id == StudentExamAttempt.id)
@@ -135,7 +227,24 @@ def list_all_violations(db: Session, severity: str | None = None, decision: str 
         query = query.filter(Exam.id == exam_id)
     if examiner_id:
         query = query.filter(Exam.examiner_id == examiner_id)
-    return query.order_by(ProctorEvent.created_at.desc()).all()
+    if search and search.strip():
+        # Server-side, because the page filters here. A client-side filter over
+        # the current page would search fifteen rows and report "no results" for
+        # a candidate sitting on page four -- worse than no search box at all.
+        like = f"%{escape_like(search.strip())}%"
+        query = (query
+                 .join(Student, StudentExamAttempt.student_id == Student.id)
+                 .join(User, Student.user_id == User.id)
+                 .filter(or_(User.full_name.ilike(like, escape="\\"),
+                             Exam.title.ilike(like, escape="\\"))))
+
+    total = query.order_by(None).count()
+    query = query.order_by(ProctorEvent.created_at.desc())
+    if offset is not None:
+        query = query.offset(offset)
+    if limit is not None:
+        query = query.limit(limit)
+    return query.all(), total
 
 
 def list_live_attempts(db: Session) -> list[StudentExamAttempt]:

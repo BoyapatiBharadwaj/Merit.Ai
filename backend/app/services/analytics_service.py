@@ -3,14 +3,32 @@ from sqlalchemy.orm import Session
 
 from app.repositories import analytics_repository
 
-SCORE_BUCKETS = [(0, 20), (21, 40), (41, 60), (61, 80), (81, 100)]
+# Half-open bands: [lower, upper), with the last one closed so 100% has a home.
+#
+# These were (0,20), (21,40), (41,60), (61,80), (81,100), matched with
+# `lo <= pct <= hi`. Percentages are floats -- ExamResult.percentage is
+# `round(scored / total * 100, 2)` -- so every value in the gaps between bands
+# matched nothing and was silently dropped from the chart. 20.5, 40.5, 60.5 and
+# 80.5 are not exotic: 20.5 is 41 of 200 marks, and any exam whose total is not
+# a factor of 100 produces them constantly. A candidate would simply not appear
+# in the distribution, and the columns would not add up to the number of
+# candidates -- with nothing to indicate why.
+SCORE_BUCKETS = [(0, 20), (20, 40), (40, 60), (60, 80), (80, 100)]
+
+
+def _bucket_label(lower: float, upper: float, is_last: bool) -> str:
+    return f"{lower}-{upper}%" if is_last else f"{lower}-<{upper}%"
 
 
 def _bucket_scores(percentages: list[float]) -> list[dict]:
-    buckets = [{"range": f"{lo}-{hi}%", "count": 0} for lo, hi in SCORE_BUCKETS]
+    last = len(SCORE_BUCKETS) - 1
+    buckets = [{"range": _bucket_label(lo, hi, index == last), "count": 0}
+               for index, (lo, hi) in enumerate(SCORE_BUCKETS)]
     for pct in percentages:
         for index, (lo, hi) in enumerate(SCORE_BUCKETS):
-            if lo <= pct <= hi:
+            # The final band includes its upper bound; the rest do not, so no
+            # value can fall between two bands and no value can be counted twice.
+            if lo <= pct < hi or (index == last and pct == hi):
                 buckets[index]["count"] += 1
                 break
     return buckets

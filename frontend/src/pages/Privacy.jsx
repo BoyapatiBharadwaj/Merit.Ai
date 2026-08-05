@@ -20,12 +20,23 @@ const COLLECTS = [
   {
     icon: "camera",
     title: "A registered face photo",
-    body: "Captured once from your webcam during account setup and stored as a numeric face signature, not the raw photo, for comparing against your face during future exams.",
+    // CORRECTED. This said "stored as a numeric face signature, not the raw
+    // photo" -- and proctor_service.register_face writes a JPEG to
+    // FACES_DIR and stores its path on FaceProfile.image_path, with an
+    // authenticated endpoint that serves it back. The page was telling
+    // candidates their photograph was discarded when it was kept. On a
+    // platform whose whole proposition is transparency about biometric
+    // collection, that is the worst possible sentence to have been wrong.
+    body: "Captured once from your webcam during account setup. BOTH the photograph and a numeric face signature derived from it are stored: the signature is what future exams compare against, and the photo is kept so an examiner or administrator can confirm a disputed identity check by eye. You can view your own photo from your Profile page, and delete your biometric data from there at any time.",
   },
   {
     icon: "doc",
     title: "Your ID card image and the name read off it",
-    body: "Captured once to confirm your registered name matches a government or institution-issued ID. Used only for that one comparison.",
+    // CORRECTED. "Used only for that one comparison" was not true: the image
+    // is written to ID_CARDS_DIR, its path stored on Student.id_card_image_path,
+    // and served afterwards to you, to administrators, and to examiners
+    // connected to you.
+    body: "Captured once to confirm your registered name matches a government or institution-issued ID. The image is stored, not discarded after the check -- you, administrators, and examiners running your exams can view it, so a failed or disputed match can be resolved by a person rather than by the OCR alone.",
   },
   {
     icon: "eye",
@@ -61,9 +72,11 @@ export default function Privacy() {
         <h1 className="text-3xl font-extrabold tracking-tight mb-4">What Merit.Ai collects, and why</h1>
         <p className="text-muted leading-relaxed mb-10">
           Proctoring only works if it can see and verify you, so this platform does collect real biometric and session
-          data during identity verification and proctored exams. This page describes exactly what, in plain language.
-          It is not a substitute for a full Terms of Service -- an institution deploying this platform for real exams
-          should have both reviewed by counsel before candidates' data is at stake.
+          data during identity verification and proctored exams. This page describes exactly what, in plain language,
+          including what is stored rather than discarded. It is not a substitute for a full{" "}
+          <Link to="/terms" className="font-semibold text-primary hover:underline">Terms of Service</Link> -- an
+          institution deploying this platform for real exams should have both reviewed by counsel before candidates'
+          data is at stake.
         </p>
 
         <div className="flex flex-col gap-5 mb-10">

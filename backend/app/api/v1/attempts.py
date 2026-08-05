@@ -1,16 +1,23 @@
 """Student exam-taking endpoints."""
 import json
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, require_examiner, require_student
+from app.api.deps import attempt_student, get_current_user, require_examiner, require_student
+from app.core.config import settings
+from app.core.security import create_attempt_token
 from app.database.session import get_db
 from app.models.enums import QuestionType
 from app.models.user import User
-from app.repositories import attempt_repository, exam_repository, proctor_repository, user_repository
+from app.repositories import (
+    admin_repository, attempt_repository, exam_repository, proctor_repository, user_repository,
+)
+from app.schemas.pagination import Page, PageParams, build_page
 from app.schemas.attempt import (
-    AttemptCommentRequest, AttemptReportOut, CodeAnswerRequest, CodeRunRequest, ExamResultOut, ResetAttemptRequest,
+    AttemptCommentRequest, AttemptReportOut, AttemptStatusOut, CodeAnswerRequest, CodeRunRequest, ExamResultOut,
+    FinalizeAttemptRequest, ResetAttemptRequest,
     SaveAnswerRequest, SaveMultiAnswerRequest, StartAttemptResponse,
 )
 from app.services import attempt_service, organization_service, pdf_service
@@ -63,19 +70,57 @@ def start_attempt(exam_id: int, db: Session = Depends(get_db), user: User = Depe
     # exist across every organization. Both checks now live inside
     # start_attempt, access first, so every rejection looks identical.
     attempt, question_ids = attempt_service.start_attempt(db, student.id, exam_id)
+    remaining = attempt_service.remaining_seconds(attempt)
     return StartAttemptResponse(
         attempt_id=attempt.id,
         exam_title=attempt.exam.title,
         duration_minutes=attempt.exam.duration_minutes,
         started_at=attempt.started_at,
-        remaining_seconds=attempt_service.remaining_seconds(attempt),
+        remaining_seconds=remaining,
         proctoring_enabled=attempt.exam.proctoring_enabled,
         question_ids_in_order=question_ids,
+        # Derived from the attempt's OWN remaining time, not a fixed lifetime:
+        # a 45-minute exam gets a token that dies 45 minutes (plus grace) from
+        # now, not one that outlives it by hours.
+        attempt_token=create_attempt_token(
+            subject=str(user.id), role=user.role.name, attempt_id=attempt.id,
+            expires_at=datetime.now(timezone.utc)
+            + timedelta(seconds=remaining)
+            + timedelta(minutes=settings.ATTEMPT_TOKEN_GRACE_MINUTES),
+            # Carries the password epoch like any other token: an attempt token
+            # is long-lived, so it is the LAST one that should survive the
+            # account's password being reset mid-exam.
+            user=user,
+        ),
+    )
+
+
+@router.get("/{attempt_id}/status", response_model=AttemptStatusOut)
+def get_attempt_status(attempt_id: int, db: Session = Depends(get_db),
+                       user: User = Depends(attempt_student)):
+    """Cheap, read-only heartbeat: is this attempt still live, and for how long.
+
+    Also the client's recovery path. If the connection drops long enough for the
+    deadline to pass, the server finalises the attempt (finalize_if_expired) and
+    this reports it -- so the page learns its attempt is over from the server
+    rather than guessing from its own timer.
+    """
+    student = user_repository.get_student_by_user_id(db, user.id)
+    attempt = attempt_repository.get_attempt(db, attempt_id)
+    if not attempt or not student or attempt.student_id != student.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Attempt not found.")
+    attempt = attempt_service.finalize_if_expired(db, attempt)
+    return AttemptStatusOut(
+        attempt_id=attempt.id,
+        status=attempt.status.value,
+        remaining_seconds=attempt_service.remaining_seconds(attempt),
+        submitted_at=attempt.submitted_at,
+        server_time=datetime.now(timezone.utc),
     )
 
 
 @router.get("/{attempt_id}/question/{question_id}")
-def get_question_for_attempt(attempt_id: int, question_id: int, db: Session = Depends(get_db), user: User = Depends(require_student)):
+def get_question_for_attempt(attempt_id: int, question_id: int, db: Session = Depends(get_db), user: User = Depends(attempt_student)):
     student = user_repository.get_student_by_user_id(db, user.id)
     attempt = attempt_service.ensure_attempt_is_active(db, student.id, attempt_id)
     if question_id not in {int(value) for value in attempt.question_order.split(",")}:
@@ -85,9 +130,21 @@ def get_question_for_attempt(attempt_id: int, question_id: int, db: Session = De
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Question not found in this attempt.")
     existing_answer = next((answer for answer in attempt_repository.get_answers_for_attempt(db, attempt_id) if answer.question_id == question_id), None)
 
+    # The version the server currently holds for this question, so the client
+    # can continue the sequence instead of restarting it.
+    #
+    # This is what makes a page reload survivable. The client owns the counter
+    # and bumps it per change; on a fresh page load its map is empty, so it
+    # started again from 1 while the server still held 5 -- and every save the
+    # candidate made after reloading was correctly refused as stale by a server
+    # doing exactly what it was told, then reported to them as saved. Seeding
+    # from here means the next change is version 6, and lands.
+    stored_version = (existing_answer.answer_version or 0) if existing_answer else 0
+
     if question.question_type == QuestionType.CODING:
         return {
             "question_id": question.id,
+            "answer_version": stored_version,
             "question_type": "coding",
             "text": question.text,
             "marks": question.marks,
@@ -109,6 +166,7 @@ def get_question_for_attempt(attempt_id: int, question_id: int, db: Session = De
                 selected_ids = []
         return {
             "question_id": question.id,
+            "answer_version": stored_version,
             "question_type": "multi_select",
             "text": question.text,
             "marks": question.marks,
@@ -117,6 +175,7 @@ def get_question_for_attempt(attempt_id: int, question_id: int, db: Session = De
         }
     return {
         "question_id": question.id,
+        "answer_version": stored_version,
         "question_type": "mcq",
         "text": question.text,
         "marks": question.marks,
@@ -126,7 +185,7 @@ def get_question_for_attempt(attempt_id: int, question_id: int, db: Session = De
 
 
 @router.get("/{attempt_id}/answers")
-def get_answers(attempt_id: int, db: Session = Depends(get_db), user: User = Depends(require_student)):
+def get_answers(attempt_id: int, db: Session = Depends(get_db), user: User = Depends(attempt_student)):
     """Full saved-answers map for the in-progress attempt owned by the caller,
     used to repaint question-navigator state after a reload/reconnect (see
     'exam recovery' in exam.js's beginExam)."""
@@ -135,7 +194,7 @@ def get_answers(attempt_id: int, db: Session = Depends(get_db), user: User = Dep
 
 
 @router.put("/{attempt_id}/answer")
-def save_answer(attempt_id: int, payload: SaveAnswerRequest, db: Session = Depends(get_db), user: User = Depends(require_student)):
+def save_answer(attempt_id: int, payload: SaveAnswerRequest, db: Session = Depends(get_db), user: User = Depends(attempt_student)):
     """Autosave one MCQ answer.
 
     Returns 200 even when the write was NOT applied, and says so in `applied`.
@@ -161,7 +220,7 @@ def save_answer(attempt_id: int, payload: SaveAnswerRequest, db: Session = Depen
 
 
 @router.put("/{attempt_id}/multi-answer")
-def save_multi_answer(attempt_id: int, payload: SaveMultiAnswerRequest, db: Session = Depends(get_db), user: User = Depends(require_student)):
+def save_multi_answer(attempt_id: int, payload: SaveMultiAnswerRequest, db: Session = Depends(get_db), user: User = Depends(attempt_student)):
     student = user_repository.get_student_by_user_id(db, user.id)
     answer, outcome = attempt_service.save_multi_select_answer(
         db, student.id, attempt_id, payload.question_id, payload.selected_option_ids,
@@ -179,7 +238,7 @@ def save_multi_answer(attempt_id: int, payload: SaveMultiAnswerRequest, db: Sess
 
 
 @router.put("/{attempt_id}/code-answer")
-def save_code_answer(attempt_id: int, payload: CodeAnswerRequest, db: Session = Depends(get_db), user: User = Depends(require_student)):
+def save_code_answer(attempt_id: int, payload: CodeAnswerRequest, db: Session = Depends(get_db), user: User = Depends(attempt_student)):
     """Autosave only -- persists the student's current code without running
     it. Grading happens once at final submit (see attempt_service)."""
     student = user_repository.get_student_by_user_id(db, user.id)
@@ -197,18 +256,57 @@ def save_code_answer(attempt_id: int, payload: CodeAnswerRequest, db: Session = 
 
 
 @router.post("/{attempt_id}/code-answer/run")
-def run_code_sample(attempt_id: int, payload: CodeRunRequest, db: Session = Depends(get_db), user: User = Depends(require_student)):
+def run_code_sample(attempt_id: int, payload: CodeRunRequest, db: Session = Depends(get_db), user: User = Depends(attempt_student)):
     """Ungraded 'Run' button: executes against sample test cases only, for
     immediate feedback. Never touches the hidden test cases used for grading."""
     student = user_repository.get_student_by_user_id(db, user.id)
     return attempt_service.run_sample_test_cases(db, student.id, attempt_id, payload.question_id, payload.source_code)
 
 
-@router.post("/{attempt_id}/submit", response_model=ExamResultOut)
-def submit_attempt(attempt_id: int, auto: bool = False, db: Session = Depends(get_db), user: User = Depends(require_student)):
+def _result_out(attempt_id: int, result) -> ExamResultOut:
+    return ExamResultOut(attempt_id=attempt_id, **{key: getattr(result, key) for key in [
+        "total_marks", "scored_marks", "percentage", "correct_count", "incorrect_count", "unattempted_count",
+    ]})
+
+
+@router.post("/{attempt_id}/finalize", response_model=ExamResultOut)
+def finalize_attempt(attempt_id: int, payload: FinalizeAttemptRequest,
+                     db: Session = Depends(get_db), user: User = Depends(attempt_student)):
+    """Submit, carrying the candidate's final answers in the same request.
+
+    The submission the exam page actually makes. Sending the answers with the
+    submission rather than just before it is what stops the last change being
+    graded from a previous version -- see attempt_service.finalize_attempt.
+
+    Safe to retry: an attempt that is already submitted returns its existing
+    result rather than an error, which is what lets the client keep retrying a
+    submission over a bad connection without ever showing the candidate a
+    failure for something that already succeeded.
+    """
     student = user_repository.get_student_by_user_id(db, user.id)
-    result = attempt_service.submit_attempt(db, student.id, attempt_id, auto=auto)
-    return ExamResultOut(attempt_id=attempt_id, **{key: getattr(result, key) for key in ["total_marks", "scored_marks", "percentage", "correct_count", "incorrect_count", "unattempted_count"]})
+    result = attempt_service.finalize_attempt(
+        db, student.id, attempt_id, final_answers=payload.final_answers,
+    )
+    return _result_out(attempt_id, result)
+
+
+@router.post("/{attempt_id}/submit", response_model=ExamResultOut)
+def submit_attempt(attempt_id: int, db: Session = Depends(get_db), user: User = Depends(attempt_student)):
+    """Submit with no answer payload -- everything already autosaved.
+
+    Kept alongside /finalize for clients that have nothing outstanding to send,
+    and because a candidate mid-exam on a cached bundle must keep being able to
+    submit through a deployment.
+
+    The `auto` query parameter this used to take is gone. It decided whether the
+    attempt was recorded as a deliberate submission or a timeout, and it came
+    from the candidate: `?auto=true` before the deadline made a normal
+    submission look like they had run out of time, and `?auto=false` after it
+    made a timeout look deliberate. It is now read from the server's clock.
+    """
+    student = user_repository.get_student_by_user_id(db, user.id)
+    result = attempt_service.finalize_attempt(db, student.id, attempt_id)
+    return _result_out(attempt_id, result)
 
 
 @router.get("/{attempt_id}/result", response_model=ExamResultOut)
@@ -237,7 +335,10 @@ def get_report(attempt_id: int, db: Session = Depends(get_db), user: User = Depe
     attempt = attempt_service.finalize_if_expired(db, attempt)
     if not attempt_repository.get_result(db, attempt_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Report not available yet.")
-    return attempt_service.build_full_report(db, attempt)
+    # A candidate reading their OWN report does not get the answer key until the
+    # examiner releases it -- see build_full_report. Staff always do.
+    return attempt_service.build_full_report(
+        db, attempt, for_candidate=(user.role.name == "student"))
 
 
 def _is_staff_for_attempt(user: User, attempt) -> bool:
@@ -285,13 +386,93 @@ def my_attempts(db: Session = Depends(get_db), user: User = Depends(require_stud
     return [{"attempt_id": attempt.id, "exam_id": attempt.exam_id, "exam_title": attempt.exam.title, "status": attempt.status.value, "started_at": attempt.started_at, "submitted_at": attempt.submitted_at, "scored_marks": result.scored_marks if (result := attempt_repository.get_result(db, attempt.id)) else None, "total_marks": result.total_marks if result else None, "percentage": result.percentage if result else None} for attempt in attempts]
 
 
-@router.get("/exam/{exam_id}", response_model=list[dict])
-def attempts_for_exam(exam_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+@router.get("/exam/{exam_id}", response_model=Page[dict])
+def attempts_for_exam(exam_id: int, params: PageParams = Depends(), search: str = "",
+                      db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """One page of this exam's attempts.
+
+    This returned every attempt the exam had ever had, and the browser sliced
+    them for display -- so viewing 25 rows cost the transfer and parse of all of
+    them, repeatedly, for every examiner watching a live sitting. It also ran a
+    separate result query per attempt; results now come back in one batch.
+    """
     exam = exam_repository.get_exam(db, exam_id)
     if not exam or (user.role.name != "admin" and (not user.examiner_profile or exam.examiner_id != user.examiner_profile.id)):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Exam not found.")
-    attempts = [attempt_service.finalize_if_expired(db, a) for a in attempt_repository.list_attempts_for_exam(db, exam_id)]
-    return [{"attempt_id": attempt.id, "student_id": attempt.student_id, "student_name": attempt.student.user.full_name, "status": attempt.status.value, "started_at": attempt.started_at, "submitted_at": attempt.submitted_at, "scored_marks": result.scored_marks if (result := attempt_repository.get_result(db, attempt.id)) else None, "total_marks": result.total_marks if result else None} for attempt in attempts]
+
+    rows, total = attempt_repository.paginated_attempts_for_exam(
+        db, exam_id, offset=params.offset, limit=params.page_size, search=search,
+    )
+    attempts = [attempt_service.finalize_if_expired(db, row) for row in rows]
+    results = attempt_repository.results_for_attempts(db, [a.id for a in attempts])
+    items = [{
+        "attempt_id": attempt.id,
+        "student_id": attempt.student_id,
+        "student_name": attempt.student.user.full_name if attempt.student and attempt.student.user else None,
+        "status": attempt.status.value,
+        "started_at": attempt.started_at,
+        "submitted_at": attempt.submitted_at,
+        "scored_marks": results[attempt.id].scored_marks if attempt.id in results else None,
+        "total_marks": results[attempt.id].total_marks if attempt.id in results else None,
+    } for attempt in attempts]
+    return build_page(items, total, params)
+
+
+@router.get("/exam/{exam_id}/active", response_model=list[dict])
+def active_attempts_for_exam(exam_id: int, db: Session = Depends(get_db),
+                             user: User = Depends(get_current_user)):
+    """Only the candidates currently writing -- what live monitoring polls.
+
+    That page used to fetch every attempt for the exam every ten seconds and
+    filter in the browser, so watching two live candidates cost the same as
+    downloading the entire sitting history, repeatedly, for as long as the page
+    stayed open. It also ran a separate result query per attempt.
+    """
+    exam = exam_repository.get_exam(db, exam_id)
+    if not exam or (user.role.name != "admin"
+                    and (not user.examiner_profile or exam.examiner_id != user.examiner_profile.id)):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Exam not found.")
+
+    attempts = attempt_repository.active_attempts_for_exam(db, exam_id)
+    violations = admin_repository.violation_counts_for_attempts(db, [a.id for a in attempts])
+    return [{
+        "attempt_id": attempt.id,
+        "student_id": attempt.student_id,
+        "student_name": attempt.student.user.full_name if attempt.student and attempt.student.user else None,
+        "started_at": attempt.started_at,
+        "remaining_seconds": attempt_service.remaining_seconds(attempt),
+        "violation_count": violations.get(attempt.id, 0),
+    } for attempt in attempts]
+
+
+@router.get("/exam/{exam_id}/archived", response_model=list[dict])
+def archived_attempts_for_exam(exam_id: int, db: Session = Depends(get_db),
+                               user: User = Depends(get_current_user)):
+    """Attempts superseded by a reset.
+
+    These used to be deleted outright, so this endpoint could not have existed:
+    the reset destroyed the answers, result, comments and every proctoring event
+    along with the attempt. They are now archived instead, which is what makes a
+    disputed exam answerable after a retake has been granted.
+    """
+    exam = exam_repository.get_exam(db, exam_id)
+    if not exam or (user.role.name != "admin"
+                    and (not user.examiner_profile or exam.examiner_id != user.examiner_profile.id)):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Exam not found.")
+
+    attempts = attempt_repository.list_archived_attempts_for_exam(db, exam_id)
+    results = attempt_repository.results_for_attempts(db, [a.id for a in attempts])
+    return [{
+        "attempt_id": attempt.id,
+        "student_id": attempt.student_id,
+        "student_name": attempt.student.user.full_name if attempt.student and attempt.student.user else None,
+        "status": attempt.status.value,
+        "started_at": attempt.started_at,
+        "submitted_at": attempt.submitted_at,
+        "archived_at": attempt.archived_at,
+        "scored_marks": results[attempt.id].scored_marks if attempt.id in results else None,
+        "total_marks": results[attempt.id].total_marks if attempt.id in results else None,
+    } for attempt in attempts]
 
 
 @router.post("/exam/{exam_id}/student/{student_id}/reset")

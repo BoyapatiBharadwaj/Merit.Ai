@@ -1,9 +1,17 @@
 /**
- * Client-side pagination footer for the admin list tables (Examiners,
- * Candidates, Violations). The admin drill-down endpoints return a fully
- * filtered/searched list in one response rather than a paged one (these are
- * platform-scale, not internet-scale, tables), so pagination just slices
- * the already-filtered array -- see usePagination below.
+ * Pagination footer for the admin list tables.
+ *
+ * The note that used to sit here said these endpoints return the whole
+ * filtered list in one response because the tables are "platform-scale, not
+ * internet-scale". That reasoning does not survive contact with a real
+ * institution: violations accumulate per candidate per exam and never stop, and
+ * a few thousand candidates is an ordinary year. Downloading all of them to
+ * display fifteen rows cost the transfer, the parse and the render every time a
+ * filter changed.
+ *
+ * The endpoints are paginated server-side now (see backend
+ * app/schemas/pagination.py). This component only reports which page to fetch;
+ * `paginate` below remains for the few small lists still held in memory.
  */
 export default function Pagination({ page, pageCount, onChange, totalCount, pageSize }) {
   if (pageCount <= 1) return null;
@@ -39,9 +47,10 @@ export default function Pagination({ page, pageCount, onChange, totalCount, page
   );
 }
 
-/** `rows.slice(...)` for the current page, clamping `page` back in range
- * whenever filtering shrinks the result set out from under it (e.g. a
- * search narrows 4 pages down to 1 while sitting on page 3). */
+/** `rows.slice(...)` for a list the client genuinely holds in full -- an
+ * exam's own sections, an organization's roster. NOT for the admin
+ * collections, which are paged by the server; slicing those meant fetching
+ * everything to show one page. */
 export function paginate(rows, page, pageSize) {
   const pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
   const safePage = Math.min(page, pageCount);

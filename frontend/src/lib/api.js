@@ -29,10 +29,27 @@ function messageFromDetail(detail, fallback) {
   return fallback;
 }
 
-async function request(path, { method = "GET", body, auth = true } = {}) {
+/**
+ * Token for the exam attempt currently in progress, if any.
+ *
+ * Issued by POST /attempts/start and valid until that attempt's deadline plus a
+ * grace period, so a long exam cannot be ended by the 120-minute session token
+ * expiring underneath it. Held in memory only, never persisted: it is worth
+ * nothing after the attempt ends, and a token for a live exam is the last thing
+ * that should outlive the tab in localStorage on a shared examination machine.
+ */
+let attemptToken = null;
+export function setAttemptToken(token) {
+  attemptToken = token || null;
+}
+
+async function request(path, { method = "GET", body, auth = true, exam = false } = {}) {
   const headers = { "Content-Type": "application/json" };
   if (auth) {
-    const token = getToken();
+    // Inside an exam, prefer the attempt token. Falls back to the session token
+    // when there isn't one, so nothing breaks if an attempt started before this
+    // deployment or the field is missing.
+    const token = (exam && attemptToken) || getToken();
     if (token) headers.Authorization = `Bearer ${token}`;
   }
 
@@ -48,7 +65,14 @@ async function request(path, { method = "GET", body, auth = true } = {}) {
   }
 
   if (auth && res.status === 401) {
-    clearSession();
+    // A 401 on an exam request does NOT clear the session.
+    //
+    // clearSession() wipes the stored token, and every other page treats that
+    // as "log in again" -- which, mid-exam, meant one unlucky response threw
+    // away the candidate's session while their unsaved answers were still in
+    // memory. The exam page handles its own 401 by re-authenticating and
+    // retrying; destroying the session first removes any chance of that.
+    if (!exam) clearSession();
     throw new ApiError("Session expired. Please log in again.", 401, null);
   }
 
@@ -153,4 +177,14 @@ export const Api = {
   del: (path) => request(path, { method: "DELETE" }),
   downloadFile,
   fetchBlob,
+
+  /**
+   * Same verbs, but authenticated with the attempt token and non-destructive on
+   * 401. Every call the live exam page makes should go through this.
+   */
+  exam: {
+    get: (path) => request(path, { exam: true }),
+    post: (path, body) => request(path, { method: "POST", body, exam: true }),
+    put: (path, body) => request(path, { method: "PUT", body, exam: true }),
+  },
 };

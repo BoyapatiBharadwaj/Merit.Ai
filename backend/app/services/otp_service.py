@@ -131,18 +131,27 @@ def request_code(db: Session, *, email: str, purpose: OtpPurpose,
 
 
 def verify_code(db: Session, *, email: str, purpose: OtpPurpose, code: str,
-                consume: bool = True) -> OtpCode:
+                consume: bool = True, commit: bool = True) -> OtpCode:
     """Check a submitted code. Raises 400 on any failure; returns the row on success.
 
     Every rejection uses the same generic message. Distinguishing "expired" from
     "wrong" from "already used" tells an attacker which of their guesses landed
     on a real, live code -- and tells a legitimate user nothing they can act on
     that "request a new code" doesn't already cover.
+
+    `commit=False` marks the code consumed without committing, so the caller can
+    finish the work the code authorised in the same transaction. The signup
+    endpoint's own comment claimed a failed registration could not burn a valid
+    code; it could, because consumption was committed here and the account was
+    created afterwards. A duplicate email or student ID then left the candidate
+    with no account and no usable code, having done nothing wrong.
     """
     email = email.strip().lower()
     generic = "That code is invalid or has expired. Request a new one."
 
-    row = otp_repository.get_latest(db, email=email, purpose=purpose)
+    # Locked when the caller is going to hold the transaction open: two requests
+    # racing with the same valid code must not both see it unconsumed.
+    row = otp_repository.get_latest(db, email=email, purpose=purpose, lock=not commit)
     if row is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, generic)
 
@@ -175,7 +184,7 @@ def verify_code(db: Session, *, email: str, purpose: OtpPurpose, code: str,
         raise HTTPException(status.HTTP_400_BAD_REQUEST, generic)
 
     if consume:
-        otp_repository.mark_consumed(db, row, when=_now())
+        otp_repository.mark_consumed(db, row, when=_now(), commit=commit)
     return row
 
 

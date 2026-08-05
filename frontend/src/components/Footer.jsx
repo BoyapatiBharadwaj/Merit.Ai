@@ -25,8 +25,9 @@ const COLUMNS = [
     // so three links implied portals that don't exist.
     title: "Candidates",
     links: [
-      { label: "Create an Account", to: "/register" },
-      { label: "Take an Exam", to: "/register" },
+      { label: "Create Candidate Account", to: "/register" },
+      { label: "Candidate Login", to: "/login" },
+      { label: "Test Your Device", to: "/system-check" },
       { label: "Log in", to: "/login" },
     ],
   },

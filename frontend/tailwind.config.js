@@ -19,6 +19,10 @@ export default {
         danger: "rgb(var(--danger) / <alpha-value>)",
         warning: "rgb(var(--warning) / <alpha-value>)",
         success: "rgb(var(--success) / <alpha-value>)",
+        // For icons, filled badges and large text, where 3:1 applies and the
+        // accessible-on-white shades above look washed out.
+        "success-vivid": "rgb(var(--success-vivid) / <alpha-value>)",
+        "warning-vivid": "rgb(var(--warning-vivid) / <alpha-value>)",
         page: "rgb(var(--bg) / <alpha-value>)",
         surface: "rgb(var(--card-bg) / <alpha-value>)",
         input: "rgb(var(--input-bg) / <alpha-value>)",

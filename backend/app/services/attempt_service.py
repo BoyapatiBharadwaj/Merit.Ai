@@ -12,6 +12,11 @@ from app.models.student import Student
 from app.services import admin_service, code_runner_service, identity_service, organization_service
 
 
+# An attempt in any of these is over: no further answers, and a result is
+# expected to exist for it.
+_FINISHED_STATUSES = (AttemptStatus.SUBMITTED, AttemptStatus.AUTO_SUBMITTED, AttemptStatus.TERMINATED)
+
+
 def _as_utc(value: datetime) -> datetime:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
@@ -50,6 +55,13 @@ def finalize_if_expired(db: Session, attempt):
     """
     if attempt.status == AttemptStatus.IN_PROGRESS and remaining_seconds(attempt) <= 0:
         attempt = attempt_repository.mark_attempt_submitted(db, attempt, AttemptStatus.AUTO_SUBMITTED)
+        _compute_and_store_result(db, attempt)
+    elif attempt.status in _FINISHED_STATUSES and not attempt_repository.get_result(db, attempt.id):
+        # Submitted but never graded -- grading runs outside the finalize
+        # transaction (see finalize_attempt) so a sandbox timeout or a restart
+        # can leave exactly this state. Repairing it on read is what stops it
+        # being permanent, and costs one indexed lookup for every attempt that
+        # is already fine.
         _compute_and_store_result(db, attempt)
     return attempt
 
@@ -261,7 +273,151 @@ def _get_owned_coding_question(db: Session, student_id: int, attempt_id: int, qu
     return attempt, question
 
 
+def _apply_final_answer(db: Session, attempt, item) -> None:
+    """Validate and stage ONE final answer inside the finalize transaction.
+
+    Reuses the same ownership and type checks the autosave endpoints apply,
+    because "it arrived attached to a submit" is not a reason to trust an
+    option id. A question that isn't part of this attempt, or an option that
+    belongs to a different question, is rejected here exactly as it would be
+    from PUT /answer -- otherwise finalize would be a hole straight through
+    every check the autosave path performs.
+    """
+    question_ids = {int(x) for x in attempt.question_order.split(",")}
+    if item.question_id not in question_ids:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Question does not belong to this attempt.")
+    question = exam_repository.get_question(db, item.question_id)
+    if not question or question.section.exam_id != attempt.exam_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Question does not belong to this exam.")
+
+    valid_ids = {option.id for option in question.options}
+
+    if question.question_type == QuestionType.CODING:
+        if item.source_code is None:
+            return
+        source_code = item.source_code
+
+        def _apply(answer):
+            answer.code_submission = source_code
+    elif question.question_type == QuestionType.MULTI_SELECT:
+        if item.selected_option_ids is None:
+            return
+        if any(option_id not in valid_ids for option_id in item.selected_option_ids):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Selected option does not belong to this question.")
+        deduped = sorted(set(item.selected_option_ids))
+        payload = json.dumps(deduped) if deduped else None
+
+        def _apply(answer):
+            answer.selected_option_ids_json = payload
+    else:
+        if item.selected_option_id is not None and item.selected_option_id not in valid_ids:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Selected option does not belong to this question.")
+        selected_option_id = item.selected_option_id
+
+        def _apply(answer):
+            answer.selected_option_id = selected_option_id
+
+    attempt_repository.stage_answer(
+        db, attempt.id, item.question_id, _apply,
+        answer_version=item.answer_version, idempotency_key=item.idempotency_key,
+    )
+
+
+def finalize_attempt(db: Session, student_id: int, attempt_id: int, *, final_answers=None):
+    """Freeze the candidate's final answers and submit, as one transaction.
+
+    This replaces a submit that raced the autosave it depended on. The client
+    used to fire the last code save and immediately POST /submit without
+    awaiting it; on any connection where the submit won that race the server
+    marked the attempt submitted and graded the *previous* version of the code,
+    then rejected the save that carried the real answer because the attempt was
+    no longer active. The candidate saw a successful submission and was marked
+    on work they had already replaced. Automatic timeout submission hit the same
+    race, with nobody watching.
+
+    Sending the final answers WITH the submission removes the race rather than
+    narrowing it: there is no longer an ordering between them to get wrong. The
+    attempt row is locked for the duration, so a manual submit and the timer's
+    auto-submit firing together cannot both freeze a different set of answers.
+
+    Idempotent on purpose. A finalize whose response was lost is retried by the
+    client -- that is how the expired-pending-submission state recovers -- so an
+    attempt that is already submitted returns its existing result instead of an
+    error. Without that, the retry that repairs a dropped connection would
+    instead show the candidate a failure for a submission that succeeded.
+
+    `auto` is decided here, from the server's own clock, and is deliberately not
+    a parameter. It used to be a query string the candidate controlled, which
+    let them submit early flagged as a timeout, or late flagged as deliberate --
+    an audit field the audited party could set.
+    """
+    # Ownership and roster access, but deliberately NOT the in-progress check
+    # that every other attempt endpoint applies. A finalize arriving for an
+    # already-submitted attempt is the retry path, not an error -- rejecting it
+    # would mean the retry that repairs a dropped connection reports failure for
+    # a submission that succeeded.
+    _get_owned_attempt(db, student_id, attempt_id)
+
+    # Re-read under the lock. Between the check above and here, the timer's
+    # auto-submit may have finished this attempt; the locked read is the one
+    # whose answer can be acted on.
+    attempt = attempt_repository.get_attempt_for_update(db, attempt_id)
+    if attempt is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Attempt not found.")
+    if attempt.status != AttemptStatus.IN_PROGRESS:
+        db.commit()  # release the lock; someone else already finalized
+        return ensure_result(db, attempt)
+
+    try:
+        for item in (final_answers or []):
+            _apply_final_answer(db, attempt, item)
+
+        expired = remaining_seconds(attempt) <= 0
+        attempt_repository.mark_attempt_submitted(
+            db, attempt,
+            AttemptStatus.AUTO_SUBMITTED if expired else AttemptStatus.SUBMITTED,
+            commit=False,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    db.refresh(attempt)
+
+    # Grading runs AFTER the commit, deliberately outside the transaction and
+    # the lock. Coding questions execute the candidate's code in a Docker
+    # sandbox, which can take tens of seconds; holding a row lock and a pooled
+    # connection open across that would let one exam hall submitting at once
+    # exhaust the pool and block every other candidate's autosave. What has to
+    # be atomic -- the answers and the submitted status -- already is. Grading
+    # is idempotent and re-entrant instead: if it fails here the attempt is
+    # submitted with no result, and ensure_result recomputes it the next time
+    # anyone opens the result or report.
+    return ensure_result(db, attempt)
+
+
+def ensure_result(db: Session, attempt):
+    """The result for a finished attempt, computing it if it is missing.
+
+    Grading deliberately happens outside the finalize transaction (see
+    finalize_attempt), which leaves a window where an attempt is submitted but
+    ungraded -- a sandbox timeout, a worker restart mid-grade. Before this
+    existed that state was permanent: finalize_if_expired only looks at
+    IN_PROGRESS attempts, so nothing ever revisited it, and the candidate's
+    result endpoint returned 404 forever with their answers sitting in the
+    database, graded by nobody.
+    """
+    result = attempt_repository.get_result(db, attempt.id)
+    if result:
+        return result
+    return _compute_and_store_result(db, attempt)
+
+
 def submit_attempt(db: Session, student_id: int, attempt_id: int, auto: bool = False):
+    """Retained for the server-side callers that submit an attempt with no
+    client payload -- the expiry sweep and the lockdown terminator. Candidate
+    submissions go through finalize_attempt, which carries their final answers.
+    """
     attempt = _get_owned_in_progress_attempt(db, student_id, attempt_id)
     status_value = AttemptStatus.AUTO_SUBMITTED if auto else AttemptStatus.SUBMITTED
     attempt = attempt_repository.mark_attempt_submitted(db, attempt, status_value)
@@ -348,7 +504,7 @@ def _grade_from_stored_coding_result(question, answer) -> tuple[int, str, dict |
     return earned, outcome, run_result
 
 
-def build_full_report(db: Session, attempt) -> dict:
+def build_full_report(db: Session, attempt, *, for_candidate: bool = False) -> dict:
     """Assembles the comprehensive post-exam report: exam + candidate details,
     timing, pass/fail, and a full per-question breakdown (text, options,
     selected vs. correct answer, marks awarded, explanation). Built entirely
@@ -360,6 +516,16 @@ def build_full_report(db: Session, attempt) -> dict:
     result = attempt_repository.get_result(db, attempt.id)
     question_ids = [int(x) for x in attempt.question_order.split(",")]
     answers = {a.question_id: a for a in attempt_repository.get_answers_for_attempt(db, attempt.id)}
+
+    # Whether THIS reader may see the answer key.
+    #
+    # The candidate report returned correct options, correct-answer text and
+    # explanations the instant an attempt was submitted. So the first person to
+    # finish held the complete key while everyone else was still writing, and
+    # could simply send it to them -- the platform handing out the answers to
+    # its own live exam. Staff are unaffected: an examiner reviewing a paper
+    # needs the key, and always has.
+    withhold_key = for_candidate and not (exam.results_released and exam.show_answers_on_release)
 
     questions_report = []
     for question_id in question_ids:
@@ -408,11 +574,14 @@ def build_full_report(db: Session, attempt) -> dict:
             "options": options_out,
             "selected_option_id": selected_option_id,
             "selected_option_ids": selected_option_ids,
-            "correct_option_ids": correct_option_ids,
+            "correct_option_ids": None if withhold_key else correct_option_ids,
             "selected_answer": selected_answer,
-            "correct_answer": correct_answer,
+            "correct_answer": None if withhold_key else correct_answer,
+            # The outcome stays: a candidate is entitled to know whether they
+            # got it right. What is withheld is WHICH answer was correct, which
+            # is the part that is useful to someone still writing.
             "outcome": outcome,  # "correct" | "incorrect" | "unattempted"
-            "explanation": question.explanation,
+            "explanation": None if withhold_key else question.explanation,
             "code_test_results": run_result,
         })
 
@@ -441,6 +610,8 @@ def build_full_report(db: Session, attempt) -> dict:
         "percentage": percentage,
         "pass_percentage": exam.pass_percentage,
         "passed": passed,
+        "answers_released": not withhold_key,
+        "release_results_at": exam.release_results_at,
         "correct_count": result.correct_count if result else 0,
         "incorrect_count": result.incorrect_count if result else 0,
         "unattempted_count": result.unattempted_count if result else 0,
@@ -466,7 +637,15 @@ def build_staff_report(db: Session, attempt) -> dict:
     student = attempt.student
     identity = identity_service.verification_state(db, student)
     events = proctor_repository.list_events_for_attempt(db, attempt.id)
-    risk_score, risk_tier = admin_service.risk_score_and_tier(events, attempt.status.value)
+    # Both scores. Dismissing a violation used to change admin_decision and
+    # nothing else, so a candidate whose flags a reviewer had explicitly cleared
+    # stayed labelled high risk -- and the label is what the next person to open
+    # the record reads. The summary is built from the ADJUDICATED tier, since
+    # that is the conclusion; the automated figure stays visible beside it so a
+    # reviewer's judgement can itself be reviewed.
+    risk = admin_service.adjudicated_risk(events, attempt.status.value)
+    risk_score = risk["adjudicated_score"]
+    risk_tier = risk["adjudicated_tier"]
     summary = admin_service.proctoring_summary(events, risk_tier, attempt.status.value)
 
     violation_type_counts: dict[str, int] = {}
@@ -475,6 +654,7 @@ def build_staff_report(db: Session, attempt) -> dict:
 
     return {
         **base,
+        "risk": risk,
         "candidate_id": student.id,
         "roll_number": student.roll_number,
         "face_registered": identity["face_registered"],
@@ -588,12 +768,25 @@ def reset_student_attempt(db: Session, examiner_id: int, exam_id: int, student_i
     attempt's current status (in progress, submitted, auto-submitted, or
     terminated): the whole point is to undo whatever state it's stuck in.
 
-    student_exam_attempts has a unique (student_id, exam_id) constraint, so a
-    fresh retake cannot be created *alongside* the old row -- it must replace
-    it. The old attempt (and, via cascade, its answers and result) is deleted
-    outright, but only after an AttemptReset audit row records who did this,
-    when, why, and what the attempt looked like beforehand -- see
-    app.models.attempt.AttemptReset.
+    The old attempt is ARCHIVED, not deleted.
+
+    It used to be deleted, because student_exam_attempts had a plain unique
+    (student_id, exam_id) constraint and the retake needed the slot. The cost of
+    that was everything hanging off the row: answers, the result, the examiner's
+    and admin's comments, every proctoring event and every violation screenshot,
+    all removed by cascade. What survived was an AttemptReset row holding a
+    reason string and an integer pointing at an attempt that no longer existed.
+
+    That is the wrong trade for this feature specifically. A reset is granted
+    after something went wrong -- a crash, a disconnection, a proctoring
+    interruption, an accusation -- which is exactly the situation where somebody
+    may later need to see what actually happened. The evidence was being
+    destroyed by the action most likely to precede a request to examine it.
+
+    Uniqueness is now scoped to live attempts (see the partial index on
+    StudentExamAttempt), so the archived row can stay where it is. It stops
+    counting as this student's attempt -- gone from their results, the
+    examiner's list and the analytics -- while remaining readable to staff.
     """
     exam = exam_repository.get_exam(db, exam_id)
     if not exam:
@@ -605,15 +798,22 @@ def reset_student_attempt(db: Session, examiner_id: int, exam_id: int, student_i
     if not attempt:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "This student has not attempted this exam.")
 
-    attempt_repository.create_attempt_reset(db, {
-        "exam_id": exam_id,
-        "student_id": student_id,
-        "examiner_id": examiner_id,
-        "previous_attempt_id": attempt.id,
-        "previous_status": attempt.status.value,
-        "reason": reason,
-    })
-    attempt_repository.delete_attempt(db, attempt)
+    try:
+        reset = attempt_repository.create_attempt_reset(db, {
+            "exam_id": exam_id,
+            "student_id": student_id,
+            "examiner_id": examiner_id,
+            "previous_attempt_id": attempt.id,
+            "previous_status": attempt.status.value,
+            "reason": reason,
+        }, commit=False)
+        db.flush()
+        attempt_repository.archive_attempt(db, attempt, reset_id=reset.id, commit=False)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return reset
 
 
 def list_attempt_resets(db: Session, exam_id: int):
@@ -631,10 +831,21 @@ def _get_owned_in_progress_attempt(db: Session, student_id: int, attempt_id: int
     attempt, but the one they already had kept working, which defeats the
     point. The access check therefore lives here, not just at the door.
     """
+    attempt = _get_owned_attempt(db, student_id, attempt_id)
+    if attempt.status != AttemptStatus.IN_PROGRESS:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "This attempt is no longer in progress.")
+    return attempt
+
+
+def _get_owned_attempt(db: Session, student_id: int, attempt_id: int):
+    """Ownership and roster access, without requiring the attempt to be live.
+
+    Split out of _get_owned_in_progress_attempt for finalize_attempt, which must
+    accept a retry against an already-submitted attempt while still refusing one
+    that belongs to somebody else.
+    """
     attempt = attempt_repository.get_attempt(db, attempt_id)
     if not attempt or attempt.student_id != student_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Attempt not found.")
     organization_service.require_student_access(db, attempt.student, attempt.exam)
-    if attempt.status != AttemptStatus.IN_PROGRESS:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "This attempt is no longer in progress.")
     return attempt

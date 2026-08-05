@@ -28,6 +28,46 @@ class Settings(BaseSettings):
     SECRET_KEY: str = PLACEHOLDER_SECRET_KEY
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 120
+    # Extra life on the attempt-scoped token beyond the attempt's own deadline
+    # (see security.create_attempt_token). The candidate is submitting at the
+    # moment their deadline passes, and the submission -- possibly retried over
+    # a bad connection -- must not fail because the token it needs expired in
+    # the same second. Also covers the server-side expiry sweep finalising an
+    # attempt the candidate abandoned.
+    ATTEMPT_TOKEN_GRACE_MINUTES: int = 30
+
+    # --- account policy -------------------------------------------------------
+    # Refuse student self-registration that has not proved control of the email
+    # address. Both registration endpoints were public, so the OTP flow the
+    # frontend walks a candidate through was decoration: POST
+    # /auth/register/student created an account with no code at all. With this
+    # on, the unverified endpoint is closed and the verified one is the only way
+    # in. _validate_secrets refuses to boot if this is on while email is off,
+    # because that combination lets nobody register.
+    REQUIRE_EMAIL_VERIFICATION: bool = True
+
+    # Refuse a registration that does not carry the consent the form asks for.
+    # The checkboxes were enforced only in React, so a direct API call skipped
+    # them entirely -- on a platform collecting face and ID images, that is the
+    # consent that matters most going unrecorded.
+    REQUIRE_CONSENT_ON_SIGNUP: bool = True
+
+    # Length floor for new passwords. The rest of the policy -- a blocklist, no
+    # character-class rules, no name or email inside the password -- lives in
+    # app/core/passwords.py, which explains why it is shaped that way.
+    PASSWORD_MIN_LENGTH: int = 10
+
+    # Networks whose X-Forwarded-For header may be believed, comma separated,
+    # as IPs or CIDRs. Empty means trust nobody and use the TCP peer.
+    #
+    # Behind the bundled nginx the TCP peer is the proxy container, so without
+    # this every candidate in the building shares ONE login rate-limit budget
+    # and ten wrong passwords lock out the entire hall. Naming the proxy network
+    # explicitly is what makes the header safe to read: a client that could set
+    # its own X-Forwarded-For would otherwise get an unlimited budget by
+    # changing one header, which is worse than the problem being fixed.
+    TRUSTED_PROXY_IPS: str = "172.16.0.0/12,10.0.0.0/8,192.168.0.0/16,127.0.0.1/32"
+
     UPLOAD_DIR: str = "uploads"
     CORS_ORIGINS: str = "http://127.0.0.1:5173,http://localhost:5173"
     AI_SERVICE_URL: str = ""
@@ -302,12 +342,46 @@ class Settings(BaseSettings):
         if self.is_production and not self.cors_origins:
             problems.append("CORS_ORIGINS is empty; no frontend will be able to reach this API.")
 
+        # Requiring verified email while being unable to send any is a closed
+        # door with no key: /auth/register/student refuses because verification
+        # is mandatory, and /auth/otp/signup/request refuses because there is no
+        # mail transport. Nobody can create an account, and the only symptom is
+        # two unrelated-looking 503s. Better to refuse the boot and say which
+        # two settings contradict each other.
+        if self.REQUIRE_EMAIL_VERIFICATION and not self.EMAIL_ENABLED:
+            problems.append(
+                "REQUIRE_EMAIL_VERIFICATION is on but EMAIL_ENABLED is off, so no candidate could "
+                "ever register: verification is mandatory and no code can be sent. Enable email, or "
+                "set REQUIRE_EMAIL_VERIFICATION=false."
+            )
+
         if problems:
             joined = " ".join(f"({i}) {p}" for i, p in enumerate(problems, 1))
             if self.is_production:
                 raise ValueError(f"Refusing to start with an insecure production configuration: {joined}")
             logger.warning("Insecure configuration (tolerated because ENVIRONMENT=%s): %s", self.ENVIRONMENT, joined)
         return self
+
+    @property
+    def trusted_proxies(self) -> list:
+        """TRUSTED_PROXY_IPS parsed into networks. Malformed entries are dropped.
+
+        Dropped rather than fatal on purpose: a typo here should narrow what is
+        trusted, never widen it, and a hard failure would take the whole API down
+        over a stray comma in an environment variable.
+        """
+        import ipaddress
+
+        networks = []
+        for entry in self.TRUSTED_PROXY_IPS.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            try:
+                networks.append(ipaddress.ip_network(entry, strict=False))
+            except ValueError:
+                logger.warning("Ignoring unparseable TRUSTED_PROXY_IPS entry: %r", entry)
+        return networks
 
     @property
     def cors_origins(self) -> list[str]:

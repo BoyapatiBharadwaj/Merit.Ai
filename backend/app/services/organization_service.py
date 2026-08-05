@@ -22,6 +22,7 @@ from app.models.enums import ExamStatus
 from app.models.exam import Exam, Section
 from app.models.organization import ExamParticipant, Organization, OrganizationMember
 from app.models.student import Student
+from app.models.user import User
 
 # Deliberately identical for "this exam does not exist" and "this exam exists
 # but is not yours". Saying "not enrolled" would confirm the exam is real and
@@ -48,6 +49,10 @@ def _looks_like_email(email: str) -> bool:
 # ---------------------------------------------------------------------------
 # Organizations
 # ---------------------------------------------------------------------------
+
+def get_by_id(db: Session, organization_id: int) -> Organization | None:
+    return db.query(Organization).filter(Organization.id == organization_id).first()
+
 
 def get_or_create(db: Session, name: str, commit: bool = True) -> Organization:
     """Find an organization by name, or create it. Names are matched
@@ -398,6 +403,24 @@ def add_exam_participants(db: Session, exam: Exam, emails: list[str],
 
     roster_emails = {m.email for m in list_members(db, exam.organization_id)}
 
+    # Grandfathering, before anything is added.
+    #
+    # An exam with no participant rows is open to the whole organization; the
+    # FIRST row flips it into allow-list mode. So adding one person to a live
+    # exam did not just add them -- it excluded everyone else, instantly. A
+    # candidate mid-attempt who was not on the new list lost the ability to load
+    # questions, autosave, or submit, mid-sitting, with no warning and no way to
+    # tell what had happened. The examiner's action was "also let Priya sit
+    # this"; the effect was "end everyone else's exam".
+    #
+    # Anyone with an attempt already underway is therefore added alongside. They
+    # were legitimately admitted under the rules in force when they started, and
+    # a roster edit is not a decision to void that.
+    was_unrestricted = not db.query(ExamParticipant.id).filter(
+        ExamParticipant.exam_id == exam.id).first()
+    if was_unrestricted:
+        emails = list(emails) + _emails_of_students_with_attempts(db, exam)
+
     for raw in emails:
         email = normalize_email(raw)
         if not _looks_like_email(email):
@@ -430,6 +453,24 @@ def add_exam_participants(db: Session, exam: Exam, emails: list[str],
             "not_in_organization": not_in_organization}
 
 
+def _emails_of_students_with_attempts(db: Session, exam: Exam) -> list[str]:
+    """Addresses of everyone who has started this exam and not been reset.
+
+    Used to grandfather live candidates through a roster change, and to refuse
+    removing one.
+    """
+    from app.models.attempt import StudentExamAttempt
+
+    rows = (db.query(User.email)
+            .join(Student, Student.user_id == User.id)
+            .join(StudentExamAttempt, StudentExamAttempt.student_id == Student.id)
+            .filter(StudentExamAttempt.exam_id == exam.id,
+                    StudentExamAttempt.archived_at.is_(None))
+            .distinct()
+            .all())
+    return [normalize_email(email) for (email,) in rows if email]
+
+
 def remove_exam_participant(db: Session, exam: Exam, participant_id: int) -> None:
     participant = (db.query(ExamParticipant)
                    .filter(ExamParticipant.id == participant_id,
@@ -437,6 +478,19 @@ def remove_exam_participant(db: Session, exam: Exam, participant_id: int) -> Non
                    .first())
     if not participant:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Participant not found.")
+
+    # Removing someone who has already sat, or is sitting, this exam is not an
+    # invitation being withdrawn -- it is an attempt being cut off, or a
+    # completed result being made unreachable to its owner. Neither is what
+    # "remove from list" means, and neither should happen by clicking a row's
+    # delete button.
+    if participant.email in set(_emails_of_students_with_attempts(db, exam)):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This candidate has already started this exam, so they cannot be removed from the "
+            "list -- it would cut off an attempt in progress or hide a result from the person "
+            "who earned it. Reset their attempt first if you need to undo it.",
+        )
     db.delete(participant)
     db.commit()
 

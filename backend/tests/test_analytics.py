@@ -32,8 +32,13 @@ def test_exam_analytics_reflects_a_completed_attempt(client, seed_roles, admin_t
     assert data["average_percentage"] == 100.0
     assert data["min_percentage"] == 100.0
     assert data["max_percentage"] == 100.0
-    top_bucket = next(bucket for bucket in data["score_distribution"] if bucket["range"] == "81-100%")
+    # Band labels changed with the bucketing fix: they used to be (0,20),
+    # (21,40)... matched inclusively at both ends, which left every decimal
+    # percentage between bands counted nowhere. They are now half-open, with
+    # only the last band closed so 100% still has a home.
+    top_bucket = next(bucket for bucket in data["score_distribution"] if bucket["range"] == "80-100%")
     assert top_bucket["count"] == 1
+    assert sum(bucket["count"] for bucket in data["score_distribution"]) == 1
 
 
 def test_exam_analytics_hidden_from_non_owning_examiner(client, seed_roles, admin_token):

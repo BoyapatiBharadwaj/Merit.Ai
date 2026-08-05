@@ -100,6 +100,50 @@ const REQUIRED_STREAK = {
   objectsUnavailable: 3,
 };
 
+/**
+ * A repeating async check that never overlaps itself.
+ *
+ * `setInterval` with an async callback fires on the wall clock regardless of
+ * whether the previous run has finished. Each of these checks uploads a JPEG
+ * and waits for a model, so on a slow connection -- or when the server is busy,
+ * which is exactly when a hall is mid-exam -- the next tick started before the
+ * last had returned. The effects compounded: overlapping uploads competing for
+ * the same connection, CPU spent capturing frames nobody was waiting for, the
+ * same momentary condition reported twice as two violations, and memory growing
+ * with every in-flight request.
+ *
+ * Self-scheduling fixes it by construction: the next run is booked only once
+ * the previous one has finished, so the interval becomes a minimum gap rather
+ * than a fixed cadence. Returns a canceller with the same shape the callers
+ * already expected from clearInterval.
+ */
+function repeatWithoutOverlap(fn, intervalMs) {
+  let timer = null;
+  let cancelled = false;
+
+  async function run() {
+    if (cancelled) return;
+    try {
+      await fn();
+    } catch {
+      // Never let one failed check stop the loop -- an offline moment must not
+      // silently end proctoring for the rest of the exam.
+    } finally {
+      if (!cancelled) timer = setTimeout(run, intervalMs);
+    }
+  }
+
+  timer = setTimeout(run, intervalMs);
+  return {
+    cancel() {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      timer = null;
+    },
+  };
+}
+
+
 export function createProctoring() {
   let attemptId = null;
   let videoEl = null;
@@ -292,11 +336,11 @@ export function createProctoring() {
    */
   function startIdentityMonitoring() {
     if (stopped) return;
-    faceCheckInterval = setInterval(async () => {
+    faceCheckInterval = repeatWithoutOverlap(async () => {
       if (!videoEl || !videoEl.videoWidth) return;
       try {
         const frame = captureFrame();
-        const result = await Api.post("/proctoring/face/verify", { image_base64: frame });
+        const result = await Api.exam.post("/proctoring/face/verify", { image_base64: frame });
 
         // available=false means the signal was not collected -- the operator
         // switched face matching off (FACE_MATCHING_ENABLED), or no model could
@@ -307,7 +351,7 @@ export function createProctoring() {
         if (result.available === false) {
           setStatus("Face matching unavailable", "idle");
           reportSignal("face", "idle");
-          if (faceCheckInterval) clearInterval(faceCheckInterval);
+          if (faceCheckInterval) faceCheckInterval.cancel();
           faceCheckInterval = null;
           return;
         }
@@ -352,11 +396,11 @@ export function createProctoring() {
   function startObjectMonitoring() {
     if (stopped) return;
     let unavailableStreak = 0;
-    objectCheckInterval = setInterval(async () => {
+    objectCheckInterval = repeatWithoutOverlap(async () => {
       if (!videoEl || !videoEl.videoWidth) return;
       try {
         const frame = captureFrame();
-        const result = await Api.post("/proctoring/objects/detect", { image_base64: frame });
+        const result = await Api.exam.post("/proctoring/objects/detect", { image_base64: frame });
         if (!result.available) {
           // Two very different things arrive as available=false: "no detector
           // is installed" (permanent -- stop polling, which is the point of
@@ -369,7 +413,7 @@ export function createProctoring() {
           // the detector genuinely is not there.
           unavailableStreak += 1;
           if (unavailableStreak >= REQUIRED_STREAK.objectsUnavailable) {
-            clearInterval(objectCheckInterval);
+            objectCheckInterval.cancel();
             objectCheckInterval = null;
             reportSignal("objects", "unavailable");
           }
@@ -424,13 +468,13 @@ export function createProctoring() {
       lookingAway: Math.max(2, Math.round(REQUIRED_STREAK.lookingAway / FALLBACK_STREAK_DIVISOR)),
       gazeDeviation: Math.max(2, Math.round(REQUIRED_STREAK.gazeDeviation / FALLBACK_STREAK_DIVISOR)),
     };
-    poseCheckInterval = setInterval(async () => {
+    poseCheckInterval = repeatWithoutOverlap(async () => {
       if (!videoEl || !videoEl.videoWidth) return;
       try {
         const frame = captureFrame();
-        const result = await Api.post("/proctoring/pose/check", { image_base64: frame });
+        const result = await Api.exam.post("/proctoring/pose/check", { image_base64: frame });
         if (!result.available) {
-          clearInterval(poseCheckInterval);
+          poseCheckInterval.cancel();
           poseCheckInterval = null;
           reportSignal("pose", "unavailable");
           reportSignal("gaze", "unavailable");
@@ -691,7 +735,7 @@ export function createProctoring() {
     if (logEvent) {
       logEvent(eventType, description, screenshot);
     } else {
-      Api.post("/proctoring/events", {
+      Api.exam.post("/proctoring/events", {
         attempt_id: attemptId,
         event_type: eventType,
         description,
@@ -748,10 +792,10 @@ export function createProctoring() {
   function stop() {
     stopped = true;
     if (faceTracker) faceTracker.stop();
-    if (faceCheckInterval) clearInterval(faceCheckInterval);
+    if (faceCheckInterval) faceCheckInterval.cancel();
     if (noiseCheckInterval) clearInterval(noiseCheckInterval);
-    if (objectCheckInterval) clearInterval(objectCheckInterval);
-    if (poseCheckInterval) clearInterval(poseCheckInterval);
+    if (objectCheckInterval) objectCheckInterval.cancel();
+    if (poseCheckInterval) poseCheckInterval.cancel();
     if (monitorCheckInterval) clearInterval(monitorCheckInterval);
     if (videoEl && videoEl.srcObject) videoEl.srcObject.getTracks().forEach((t) => t.stop());
     if (micStream) micStream.getTracks().forEach((t) => t.stop());
