@@ -235,7 +235,11 @@ export function PasswordField({ id, label, labelExtra, error, hint, showStrength
         />
         <button
           type="button"
-          tabIndex={-1}
+          // Was tabIndex={-1}, which removed this from the tab order entirely -- so a
+        // keyboard-only user could not reveal what they had typed, on a field where
+        // that is the single most useful affordance. aria-pressed reports the state,
+        // which an icon alone does not.
+        aria-pressed={show}
           onClick={() => setShow((s) => !s)}
           aria-label={show ? "Hide password" : "Show password"}
           className="absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-ink transition-colors"

@@ -212,7 +212,7 @@ def test_the_whole_chain_applies_to_a_clean_database(migrated_url):
 @pytest.mark.parametrize("type_name, required", [
     ("questiontype", {"mcq", "coding", "multi_select"}),
     ("eventtype", {"screen_share_stopped", "noise_detected_loud", "spoof_detected"}),
-    ("otppurpose", {"signup", "password_reset"}),
+    ("otppurpose", {"signup", "password_reset", "activation"}),
 ])
 def test_native_enum_types_contain_every_value_the_app_uses(migrated_url, type_name, required):
     labels = set(_enum_labels(migrated_url, type_name))
@@ -242,6 +242,46 @@ def test_multi_select_and_screen_share_stopped_are_rejected_before_0017(postgres
             with pytest.raises(sa.exc.DataError):
                 with engine.begin() as conn:
                     conn.execute(sa.text(f"SELECT '{literal}'::{type_name}"))
+    finally:
+        engine.dispose()
+
+
+def test_activation_rows_and_the_must_change_flag_work_after_0026(migrated_url):
+    """The 0017 lesson, applied to 0026.
+
+    Adding OtpPurpose.ACTIVATION in Python costs nothing on SQLite, where the
+    column is a VARCHAR with a CHECK. On PostgreSQL it is a native enum, and a
+    missing ALTER TYPE means every activation link fails at INSERT with
+    InvalidTextRepresentation -- with a green test suite, because nothing else
+    here runs against Postgres. That is precisely how multi_select shipped.
+
+    Asserting the enum LABEL exists is not enough on its own: 0026 issues the
+    ADD VALUE after an explicit COMMIT (it cannot run inside the migration's
+    transaction on older servers), which is the kind of thing that can leave the
+    type looking right while the value is unusable in the same session. So this
+    actually inserts a row.
+    """
+    engine = sa.create_engine(migrated_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(sa.text(
+                "INSERT INTO otp_codes (email, purpose, code_hash, expires_at, attempts) "
+                "VALUES ('activate@example.com', 'activation', :h, NOW() + INTERVAL '72 hours', 0)"
+            ), {"h": "a" * 64})
+            stored = conn.execute(sa.text(
+                "SELECT purpose::text FROM otp_codes WHERE email = 'activate@example.com'"
+            )).scalar()
+        assert stored == "activation"
+
+        # And the column the login response reads, with the backfill 0026
+        # promises: FALSE for rows that already existed, never NULL.
+        with engine.begin() as conn:
+            nullable, default = conn.execute(sa.text(
+                "SELECT is_nullable, column_default FROM information_schema.columns "
+                "WHERE table_name = 'users' AND column_name = 'must_change_password'"
+            )).one()
+        assert nullable == "NO"
+        assert default is not None and "false" in default.lower()
     finally:
         engine.dispose()
 

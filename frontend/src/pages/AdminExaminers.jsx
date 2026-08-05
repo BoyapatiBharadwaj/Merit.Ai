@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Navigate, Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import RedirectToLogin from "../components/RedirectToLogin.jsx";
 import DashboardHeader from "../components/DashboardHeader.jsx";
 import Icon from "../components/Icon.jsx";
 import EmptyState from "../components/EmptyState.jsx";
@@ -14,8 +15,54 @@ import { isLoggedIn, getRole } from "../lib/auth.js";
 
 const PAGE_SIZE = 10;
 
+/**
+ * Download the current view as CSV.
+ *
+ * The filters are passed through deliberately: an export that silently ignored
+ * what is on screen would hand someone a different dataset from the one they
+ * were looking at, which is the kind of discrepancy that surfaces in a meeting.
+ * The download is recorded server-side in the activity trail.
+ */
+function ExportButton({ kind, params = {} }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function download() {
+    setBusy(true);
+    setError("");
+    try {
+      const query = new URLSearchParams(
+        Object.entries(params).filter(([, value]) => value !== "" && value != null),
+      ).toString();
+      await Api.downloadFile(`/admin/export/${kind}${query ? `?${query}` : ""}`,
+                             `meritai-${kind}.csv`);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Couldn't export.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="inline-flex flex-col items-end">
+      <button type="button" onClick={download} disabled={busy}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-semibold rounded-xl border border-border text-ink hover:border-primary hover:text-primary transition-colors disabled:opacity-60">
+        <Icon name="doc" width={14} height={14} />
+        {busy ? "Preparing…" : "Export CSV"}
+      </button>
+      {error && <span role="alert" className="mt-1 text-xs text-danger">{error}</span>}
+    </div>
+  );
+}
+
 export default function AdminExaminers() {
   const [organizations, setOrganizations] = useState([]);
+  // Whether the organization list could be loaded at all. Empty and
+  // unavailable are different facts: one means there are no organizations,
+  // the other means we could not ask -- and the filter silently degrades to
+  // "no filtering" in the second case, which looks identical to a filter that
+  // matched everything.
+  const [organizationsFailed, setOrganizationsFailed] = useState(false);
   const [rows, setRows] = useState(null);
   const [loadError, setLoadError] = useState("");
 
@@ -70,7 +117,9 @@ export default function AdminExaminers() {
   }
 
   useEffect(() => {
-    Api.get("/admin/organizations").then(setOrganizations).catch(() => {});
+    Api.get("/admin/organizations")
+      .then((data) => { setOrganizations(data); setOrganizationsFailed(false); })
+      .catch(() => setOrganizationsFailed(true));
   }, []);
 
   // Filters reset to page 1; changing page refetches at the new offset.
@@ -83,7 +132,7 @@ export default function AdminExaminers() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search, organizationId, status, page]);
 
-  if (!isLoggedIn() || getRole() !== "admin") return <Navigate to="/login" replace />;
+  if (!isLoggedIn() || getRole() !== "admin") return <RedirectToLogin />;
 
   // The server decides the page; `rows` IS the page.
   const pageRows = rows || [];
@@ -104,7 +153,9 @@ export default function AdminExaminers() {
       setNewCredentials({ email: form.email.trim(), password: form.password });
       setForm({ firstName: "", lastName: "", email: "", organizationName: "", password: "" });
       await load();
-      Api.get("/admin/organizations").then(setOrganizations).catch(() => {});
+      Api.get("/admin/organizations")
+      .then((data) => { setOrganizations(data); setOrganizationsFailed(false); })
+      .catch(() => setOrganizationsFailed(true));
     } catch (err) {
       setFormError(err instanceof ApiError ? err.message : "Something went wrong.");
     } finally {
@@ -123,6 +174,7 @@ export default function AdminExaminers() {
             <h1 className="text-2xl font-extrabold tracking-tight">Examiners</h1>
             <p className="text-sm text-muted mt-1">Every examiner account across the platform.</p>
           </div>
+          <ExportButton kind="examiners" params={{ search, organization_id: organizationId }} />
           <button type="button" onClick={() => setFormOpen((v) => !v)} className={`${btnPrimary.replace("px-5 py-3", "px-4 py-2")} text-xs`}>
             + Add Examiner
           </button>
@@ -189,7 +241,7 @@ export default function AdminExaminers() {
             />
           </div>
           <select value={organizationId} onChange={(e) => setOrganizationId(e.target.value)} className={`${fieldInput} sm:w-56`}>
-            <option value="">All organizations</option>
+            <option value="">{organizationsFailed ? "Organizations unavailable" : "All organizations"}</option>
             {organizations.map((o) => (
               <option key={o.id} value={o.id}>{o.name}</option>
             ))}

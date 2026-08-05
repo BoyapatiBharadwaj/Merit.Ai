@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Navigate, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
+import RedirectToLogin from "../components/RedirectToLogin.jsx";
 import DashboardHeader from "../components/DashboardHeader.jsx";
 import Icon from "../components/Icon.jsx";
 import EmptyState from "../components/EmptyState.jsx";
@@ -39,7 +40,7 @@ export default function AdminLiveSessions() {
     return () => clearInterval(timerRef.current);
   }, []);
 
-  if (!isLoggedIn() || getRole() !== "admin") return <Navigate to="/login" replace />;
+  if (!isLoggedIn() || getRole() !== "admin") return <RedirectToLogin />;
 
   return (
     <div className="min-h-screen bg-page text-ink">

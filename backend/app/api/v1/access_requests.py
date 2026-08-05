@@ -58,7 +58,7 @@ def pending_count(db: Session = Depends(get_db), _: User = Depends(require_admin
 def approve_access_request(request_id: int, payload: AccessRequestApprove, background: BackgroundTasks,
                            db: Session = Depends(get_db), admin: User = Depends(require_admin)):
     """Creates the examiner account, emails the credentials, marks it approved."""
-    return access_request_service.approve(db, request_id, admin, payload.password, payload.review_note,
+    return access_request_service.approve(db, request_id, admin, payload.review_note,
                                           background=background)
 
 

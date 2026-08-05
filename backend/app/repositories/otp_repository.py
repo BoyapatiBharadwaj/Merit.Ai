@@ -82,6 +82,35 @@ def record_attempt(db: Session, row: OtpCode, *, commit: bool = True) -> OtpCode
     return row
 
 
+def consume_outstanding(db: Session, *, email: str, purpose: OtpPurpose,
+                        when: datetime, commit: bool = False) -> int:
+    """Mark every live code for this (email, purpose) as spent.
+
+    Used when issuing a replacement, so that exactly one link is ever valid.
+    Without it, re-sending an invitation to a candidate who mistyped their
+    address once would leave the original link working in the original inbox --
+    the failure mode where "we resent it" quietly means "there are now two".
+
+    Marks consumed rather than deleting: verify_code distinguishes "spent" from
+    "never existed" internally (both surface the same message), and keeping the
+    row preserves the audit trail of what was issued when.
+    """
+    updated = (
+        db.query(OtpCode)
+        .filter(
+            OtpCode.email == email,
+            OtpCode.purpose == purpose,
+            OtpCode.consumed_at.is_(None),
+        )
+        .update({OtpCode.consumed_at: when}, synchronize_session=False)
+    )
+    if commit:
+        db.commit()
+    else:
+        db.flush()
+    return updated
+
+
 def delete_expired(db: Session, *, before: datetime, commit: bool = True) -> int:
     """Housekeeping: drop codes that expired before `before`.
 

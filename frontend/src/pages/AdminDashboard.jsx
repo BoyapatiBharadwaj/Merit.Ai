@@ -4,8 +4,7 @@ import DashboardHeader from "../components/DashboardHeader.jsx";
 import Icon from "../components/Icon.jsx";
 import EmptyState from "../components/EmptyState.jsx";
 import StatCard from "../components/StatCard.jsx";
-import { TextField, PasswordField } from "../components/FormField.jsx";
-import CredentialsHandoff, { generatePassword } from "../components/CredentialsHandoff.jsx";
+import { TextField } from "../components/FormField.jsx";
 import { Api, ApiError } from "../lib/api.js";
 import { btnPrimary } from "../lib/ui.js";
 import "../lib/vendorChart.js";
@@ -25,6 +24,8 @@ const NAV_ITEMS = [
   { id: "exams", label: "Exams", icon: "doc", to: "/admin/exams" },
   { id: "live", label: "Live Sessions", icon: "eye", to: "/admin/live-sessions" },
   { id: "violations", label: "Violations", icon: "flag", to: "/admin/violations" },
+  { id: "review", label: "Review Queue", icon: "shield-check", to: "/admin/review-queue" },
+  { id: "organizations", label: "Organizations", icon: "briefcase", to: "/admin/organizations" },
   { id: "requests", label: "Access Requests", icon: "mail", anchor: true },
   { id: "settings", label: "Settings", icon: "settings", anchor: true },
 ];
@@ -223,14 +224,16 @@ export default function AdminDashboard() {
                 a bigger, wider treatment than the five secondary cards below. */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
               <StatCard label="Total Examiners" value={summary ? summary.total_examiners : null} tone="primary" to="/admin/examiners" prominent />
-              <StatCard label="Total Candidates" value={summary ? summary.total_candidates : null} tone="primary" to="/admin/candidates" prominent />
+              <StatCard label="Total Candidates" value={summary ? summary.total_candidates : null} tone="primary" to="/admin/candidates" prominent
+                             hint="Registered accounts, not roster invitations" />
             </div>
             <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
               <StatCard label="Active Exams" value={summary ? summary.active_exams : null} tone="success" to="/admin/exams?status=active" />
               <StatCard label="Upcoming Exams" value={summary ? summary.upcoming_exams : null} tone="primary" to="/admin/exams?status=upcoming" />
               <StatCard label="Completed Exams" value={summary ? summary.completed_exams : null} tone="muted" to="/admin/exams?status=completed" />
               <StatCard label="Live Sessions" value={summary ? summary.live_sessions : null} tone="warning" to="/admin/live-sessions" />
-              <StatCard label="Violations Logged" value={summary ? summary.violations_logged : null} tone="danger" to="/admin/violations" />
+              <StatCard label="Violations Logged" value={summary ? summary.violations_logged : null} tone="danger" to="/admin/violations"
+                             hint="All flags, before review" />
             </div>
 
             <div className="grid md:grid-cols-2 gap-4 mt-6">
@@ -260,11 +263,13 @@ export default function AdminDashboard() {
 
           <section id="settings" className="scroll-mt-20 pb-10">
             <h2 className="text-lg font-bold mb-3">Settings</h2>
-            <div className="rounded-2xl border border-border bg-surface shadow-card p-5 max-w-lg text-sm text-muted leading-relaxed">
-              Platform-wide settings (branding, retention windows, notification preferences) aren't yet configurable
-              from this UI — they're managed via the backend's <code className="text-ink">.env</code> configuration.
-              This section is reserved for that control panel as it's built out.
-            </div>
+            {/* Was a paragraph saying settings live in .env and nothing else --
+                so an administrator asking "is email actually working here?" or
+                "how many strikes end an exam?" had to read a file on a server
+                they may not have access to. Read-only, and labelled as such:
+                a settings page that appears to save and does not would be worse
+                than one that explains where the values come from. */}
+            <SettingsPanel />
           </section>
         </main>
       </div>
@@ -281,15 +286,17 @@ const REQUEST_STATUS_STYLES = {
 /**
  * Examiner access requests submitted from the public site.
  *
- * Approving is the primary path for creating an examiner account, so the
- * approve action collects the initial password inline rather than bouncing
- * the admin to the separate "+ New Examiner" form on the Examiners page and
- * making them re-key details the requester already supplied.
+ * Approving is the primary path for creating an examiner account.
+ *
+ * It used to collect an initial password here, which was then emailed to the
+ * new examiner in plain text and shown once to the admin to relay by hand. That
+ * is gone: approving now mints the account with an unusable random secret and
+ * emails a single-use activation link, so the only person who ever knows the
+ * password is the person it belongs to. There is nothing for the admin to type
+ * and nothing for them to pass on.
  */
 function AccessRequestsPanel({ requests, onChange }) {
   const [expandedId, setExpandedId] = useState(null);
-  const [approvedCredentials, setApprovedCredentials] = useState(null);
-  const [password, setPassword] = useState("");
   const [note, setNote] = useState("");
   const [busyId, setBusyId] = useState(null);
   const [error, setError] = useState("");
@@ -302,7 +309,6 @@ function AccessRequestsPanel({ requests, onChange }) {
 
   function resetForm() {
     setExpandedId(null);
-    setPassword("");
     setNote("");
   }
 
@@ -311,19 +317,16 @@ function AccessRequestsPanel({ requests, onChange }) {
   }
 
   async function handleApprove(request) {
-    if (password.length < 8) {
-      setError("Set a temporary password of at least 8 characters.");
-      return;
-    }
     setError("");
     setSuccess("");
     setBusyId(request.id);
     try {
-      await Api.post(`/access-requests/${request.id}/approve`, { password, review_note: note.trim() || null });
+      await Api.post(`/access-requests/${request.id}/approve`, { review_note: note.trim() || null });
       await refresh();
-      // Capture before resetForm() clears `password` -- this is the only
-      // render where it can be shown, since the server stores only a hash.
-      setApprovedCredentials({ email: request.email, password });
+      setSuccess(
+        `Approved. An activation link has been emailed to ${request.email} — they choose their own ` +
+        "password from it. Nothing needs to be sent by hand.",
+      );
       resetForm();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Couldn't approve this request.");
@@ -377,16 +380,7 @@ function AccessRequestsPanel({ requests, onChange }) {
           <span>{error}</span>
         </div>
       )}
-      {approvedCredentials && (
-        <div className="mb-4">
-          <CredentialsHandoff
-            email={approvedCredentials.email}
-            password={approvedCredentials.password}
-            onDismiss={() => setApprovedCredentials(null)}
-          />
-        </div>
-      )}
-      {success && !approvedCredentials && (
+      {success && (
         <div className="mb-4 flex items-start gap-2.5 rounded-xl border border-success/30 bg-success/5 px-4 py-3 text-sm text-success">
           <Icon name="check" width={16} height={16} className="mt-0.5 shrink-0" />
           <span>{success}</span>
@@ -442,22 +436,14 @@ function AccessRequestsPanel({ requests, onChange }) {
                 {r.status === "pending" &&
                   (isOpen ? (
                     <div className="rounded-xl border border-border bg-page p-4">
-                      <PasswordField
-                        id={`req-password-${r.id}`}
-                        label="Temporary password"
-                        required
-                        minLength={8}
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
-                        hint="At least 8 characters. Send this to the examiner — only an admin can reset it later."
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setPassword(generatePassword())}
-                        className="-mt-1 mb-3 text-xs font-semibold text-primary hover:underline"
-                      >
-                        Generate a strong password
-                      </button>
+                      <p className="mb-3 flex items-start gap-2 text-sm text-muted leading-relaxed">
+                        <Icon name="mail" width={15} height={15} className="mt-0.5 shrink-0" />
+                        <span>
+                          Approving emails <strong className="text-ink">{r.email}</strong> a
+                          single-use activation link. They choose their own password from it — you
+                          will not see it, and there is nothing to send on.
+                        </span>
+                      </p>
                       <TextField
                         id={`req-note-${r.id}`}
                         label={
@@ -517,5 +503,95 @@ function AccessRequestsPanel({ requests, onChange }) {
         </div>
       )}
     </section>
+  );
+}
+
+/**
+ * What this deployment is actually configured to do.
+ *
+ * Read-only by design, and says so. Making these writable means persisting
+ * overrides and reloading them across every worker process; a page that looks
+ * like it saved and silently did not is worse than one that tells an
+ * administrator where the value comes from.
+ *
+ * No secrets reach here — the endpoint returns whether email is configured, not
+ * the credentials behind it. There is a test asserting that.
+ */
+function SettingsPanel() {
+  const [config, setConfig] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    Api.get("/admin/settings")
+      .then((data) => { if (!cancelled) setConfig(data); })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof ApiError ? err.message : "Couldn't load settings.");
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  if (error) {
+    return (
+      <div role="alert" className="rounded-2xl border border-danger/30 bg-danger/5 p-5 text-sm text-danger">
+        {error}
+      </div>
+    );
+  }
+  if (!config) {
+    return <div className="h-64 rounded-2xl border border-border bg-surface animate-pulse" aria-hidden="true" />;
+  }
+
+  const groups = [
+    ["Accounts", [
+      ["Email verification required", config.authentication.require_email_verification ? "Yes" : "No"],
+      ["Consent required at signup", config.authentication.require_consent_on_signup ? "Yes" : "No"],
+      ["Minimum password length", `${config.authentication.password_min_length} characters`],
+      ["Session length", `${config.authentication.session_minutes} minutes`],
+      ["Exam token grace", `${config.authentication.attempt_token_grace_minutes} minutes past the deadline`],
+    ]],
+    ["Proctoring", [
+      ["Strikes before auto-submit", config.proctoring.strike_limit],
+      ["Face match tolerance", config.proctoring.face_match_tolerance],
+      ["Risk weights", Object.entries(config.proctoring.risk_weights)
+        .map(([severity, weight]) => `${severity} ${weight}`).join(" · ")],
+    ]],
+    ["Email", [
+      ["Delivery configured", config.email.configured ? "Yes" : "No — codes cannot be sent"],
+      ["Code length", `${config.email.otp_length} digits`],
+      ["Code lifetime", `${config.email.otp_ttl_minutes} minutes`],
+    ]],
+    ["Scaling", [
+      ["Shared state (Redis)", config.scaling.shared_state ? "Connected" : "Not configured — single worker only"],
+      ["Trusted proxy networks", config.scaling.trusted_proxies],
+    ]],
+  ];
+
+  return (
+    <div className="space-y-4 max-w-2xl">
+      <div className="flex items-start gap-2.5 rounded-xl border border-border bg-page px-4 py-3">
+        <span className="text-muted mt-0.5 shrink-0"><Icon name="alert" width={15} height={15} /></span>
+        <p className="text-sm text-muted leading-relaxed">
+          Read-only. {config.note} Running as{" "}
+          <strong className="text-ink">{config.environment}</strong>.
+        </p>
+      </div>
+
+      {groups.map(([title, rows]) => (
+        <div key={title} className="rounded-2xl border border-border bg-surface shadow-card overflow-hidden">
+          <div className="px-5 py-3 border-b border-border">
+            <h3 className="text-sm font-bold text-ink">{title}</h3>
+          </div>
+          <dl className="divide-y divide-border">
+            {rows.map(([label, value]) => (
+              <div key={label} className="flex flex-wrap items-baseline justify-between gap-3 px-5 py-2.5">
+                <dt className="text-sm text-muted">{label}</dt>
+                <dd className="text-sm font-medium text-ink text-right">{String(value)}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      ))}
+    </div>
   );
 }

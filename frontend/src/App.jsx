@@ -28,6 +28,7 @@ import Placeholder from "./pages/Placeholder.jsx";
 
 // --- marketing -------------------------------------------------------------
 const ForgotPassword = lazy(() => import("./pages/ForgotPassword.jsx"));
+const Activate = lazy(() => import("./pages/Activate.jsx"));
 const Register = lazy(() => import("./pages/Register.jsx"));
 const RequestAccess = lazy(() => import("./pages/RequestAccess.jsx"));
 const ExaminerDashboard = lazy(() => import("./pages/ExaminerDashboard.jsx"));
@@ -62,6 +63,8 @@ const AdminCandidateDetail = lazy(() => import("./pages/AdminCandidateDetail.jsx
 const AdminAttemptReport = lazy(() => import("./pages/AdminAttemptReport.jsx"));
 const AdminLiveSessions = lazy(() => import("./pages/AdminLiveSessions.jsx"));
 const AdminViolations = lazy(() => import("./pages/AdminViolations.jsx"));
+const AdminReviewQueue = lazy(() => import("./pages/AdminReviewQueue.jsx"));
+const AdminOrganizations = lazy(() => import("./pages/AdminOrganizations.jsx"));
 
 /**
  * Sets the page's metadata whenever the route changes.
@@ -102,6 +105,10 @@ export default function App() {
           <Route path="/" element={<Home />} />
           <Route path="/login" element={<Login />} />
           <Route path="/forgot-password" element={<ForgotPassword />} />
+          {/* Where an activation link lands. No login: the token in the URL is
+              the credential, and the whole point is that the account has no
+              password yet for anyone to sign in with. */}
+          <Route path="/activate" element={<Activate />} />
           <Route path="/register" element={<Register />} />
           {/* Examiners can't self-register -- this collects a request an admin
               reviews, and is where the marketing site's examiner CTA points. */}
@@ -144,6 +151,10 @@ export default function App() {
           <Route path="/admin/attempts/:attemptId" element={<AdminAttemptReport />} />
           <Route path="/admin/live-sessions" element={<AdminLiveSessions />} />
           <Route path="/admin/violations" element={<AdminViolations />} />
+          {/* The reviewer's worklist, and the tenancy boundary every access
+              decision runs through -- neither had a page. */}
+          <Route path="/admin/review-queue" element={<AdminReviewQueue />} />
+          <Route path="/admin/organizations" element={<AdminOrganizations />} />
 
           <Route path="*" element={<Placeholder title="Page not found" description="That page doesn't exist yet." />} />
         </Routes>

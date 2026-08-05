@@ -14,7 +14,16 @@ const TONES = { primary: "text-primary", success: "text-success", warning: "text
  * AdminDashboard.jsx StatCard used, so a card never flashes "0" while its
  * fetch is still in flight.
  */
-export default function StatCard({ label, value, tone = "primary", to, prominent = false }) {
+/**
+ * `hint` says what the number actually counts.
+ *
+ * Several of these labels were ambiguous in ways that matter to somebody making
+ * a decision from them: "Total Violations" does not say whether dismissed flags
+ * are included, and "Total Exams" on a candidate does not say whether an exam
+ * they were assigned but never opened is in there. A number an administrator
+ * cannot interpret is worse than no number, because it gets acted on anyway.
+ */
+export default function StatCard({ label, value, hint, tone = "primary", to, prominent = false }) {
   const Wrapper = to ? Link : "div";
   return (
     <Wrapper
@@ -31,6 +40,9 @@ export default function StatCard({ label, value, tone = "primary", to, prominent
         )}
       </div>
       <div className={`text-muted mt-1 ${prominent ? "text-sm font-medium" : "text-xs"}`}>{label}</div>
+      {hint && (
+        <div className="text-[11px] leading-snug text-muted/80 mt-0.5">{hint}</div>
+      )}
     </Wrapper>
   );
 }

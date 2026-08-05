@@ -2,7 +2,7 @@ import { Link, useNavigate } from "react-router-dom";
 import Logo from "./Logo.jsx";
 import ThemeToggle from "./ThemeToggle.jsx";
 import { btnGhost } from "../lib/ui.js";
-import { getName, getRole, clearSession, roleLabel } from "../lib/auth.js";
+import { getName, getRole, clearSession, mustChangePassword, roleLabel } from "../lib/auth.js";
 
 /** Top bar shared by every authenticated page (dashboards, and eventually
  * the exam interface's non-fullscreen chrome). Keeping this in one place
@@ -18,6 +18,27 @@ export default function DashboardHeader({ title }) {
   }
 
   return (
+    <>
+    {/*
+      Shown on every authenticated page, because "someone else knows your
+      password" is not a fact that belongs only on the screen you happened to
+      land on. Not a forced redirect: students cannot change their own password
+      on this platform by design, so routing every flagged session to a change
+      form would strand the one role with no form to fill in. Each role is
+      pointed at the route that actually works for it.
+    */}
+    {mustChangePassword() && (
+      <div role="status"
+           className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 bg-warning/10 border-b border-warning/30 px-4 py-2.5 text-sm text-warning">
+        <span className="font-semibold">
+          Your password was set by an administrator, so you are not the only person who knows it.
+        </span>
+        <Link to={role === "student" ? "/forgot-password" : "/profile"}
+              className="font-semibold underline underline-offset-2 hover:no-underline">
+          {role === "student" ? "Set one only you know" : "Change it now"}
+        </Link>
+      </div>
+    )}
     <header className="border-b border-border bg-surface">
       <div className="max-w-7xl mx-auto px-5 sm:px-6 lg:px-8 h-[68px] flex items-center justify-between gap-4">
         <div className="flex items-center gap-4 min-w-0">
@@ -61,5 +82,6 @@ export default function DashboardHeader({ title }) {
         </div>
       </div>
     </header>
+    </>
   );
 }

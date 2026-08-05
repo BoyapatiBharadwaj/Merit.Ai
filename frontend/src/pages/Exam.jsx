@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useParams, useNavigate, Navigate, Link } from "react-router-dom";
+import RedirectToLogin from "../components/RedirectToLogin.jsx";
 import { Api, ApiError, setAttemptToken } from "../lib/api.js";
 import { createAutosaveQueue, SaveState } from "../lib/autosave.js";
 import { isLoggedIn, getName, getRole } from "../lib/auth.js";
@@ -1337,7 +1338,7 @@ export default function Exam() {
 
   // auth guard, evaluated after all hooks -- see the comment at the top of
   // this component for why it can't run before them.
-  if (!isLoggedIn()) return <Navigate to="/login" replace />;
+  if (!isLoggedIn()) return <RedirectToLogin />;
   if (getRole() !== "student") return <Navigate to="/dashboard" replace />;
 
   if (phase === "precheck") {
@@ -1724,7 +1725,17 @@ export default function Exam() {
       <ToastStack toasts={toasts} bannerActive={Boolean(connectionBanner)} />
 
       {/* header */}
-      <header className="sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-border bg-surface/95 backdrop-blur px-4 sm:px-6 py-3 shadow-sm">
+      {/*
+        flex-wrap, and the timer/Submit group can no longer shrink.
+
+        Everything sat in one non-wrapping row: title, candidate name,
+        fullscreen state, network and battery readouts, save status, timer and
+        the Submit button. On a phone that meant the two things a candidate
+        actually needs -- how long is left, and how to hand in -- were the ones
+        being squeezed, because they are last in the source order. Wrapping puts
+        them on their own line instead of compressing them.
+      */}
+      <header className="sticky top-0 z-30 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-border bg-surface/95 backdrop-blur px-4 sm:px-6 py-3 shadow-sm">
         <div className="flex items-center gap-3 min-w-0">
           <span className="hidden sm:flex h-9 w-9 flex-none items-center justify-center rounded-lg bg-primary/10 text-primary font-bold text-sm">
             AI
@@ -1842,16 +1853,21 @@ export default function Exam() {
             </div>
           )}
           <SaveStatus summary={saveSummary} onRetry={() => autosave.retryAll()} />
-          <span className={`inline-flex items-center gap-1.5 font-mono font-bold text-base sm:text-lg ${timerDanger ? "text-red-500 exam-timer-danger" : "text-ink"}`}>
+          <span className={`inline-flex items-center gap-1.5 font-mono font-bold text-base sm:text-lg shrink-0 tabular-nums ${timerDanger ? "text-red-500 exam-timer-danger" : "text-ink"}`}>
             <Icon name="clock" width={17} height={17} />
             {timerText}
           </span>
           <button
             onClick={() => setShowSubmitConfirm(true)}
             disabled={expiredPendingSubmission || submitting}
-            className={`${btnPrimary.replace("px-6 py-3.5", "px-4 py-2.5")} disabled:opacity-50 disabled:cursor-not-allowed`}
+            className={`${btnPrimary.replace("px-6 py-3.5", "px-4 py-2.5")} shrink-0 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed`}
           >
-            Submit Exam
+            {/* "Submit" alone on a phone. The word "Exam" adds nothing a
+                candidate sitting one does not already know, and keeping it was
+                costing the button width it needed more. (No `xs:` breakpoint --
+                Tailwind's defaults start at `sm`, and inventing one for a single
+                word is not worth a config change.) */}
+            Submit<span className="hidden sm:inline"> Exam</span>
           </button>
         </div>
       </header>
@@ -1859,26 +1875,13 @@ export default function Exam() {
       {/* body */}
       <main className="flex-1 grid grid-cols-1 lg:grid-cols-[220px_1fr_300px] gap-5 max-w-[1600px] w-full mx-auto px-4 sm:px-6 py-5">
         {/* question navigator */}
-        <aside className="order-2 lg:order-1 rounded-2xl border border-border bg-card p-4 h-fit">
-          <h2 className="text-xs font-bold uppercase tracking-wide text-muted mb-3">Questions</h2>
-          <div className="grid grid-cols-6 lg:grid-cols-4 gap-2">
-            {questionIds.map((qid, idx) => (
-              <button
-                key={qid}
-                onClick={() => goToIndex(idx)}
-                className={dotClasses(idx, qid, currentIndex, answeredMap, markedSet)}
-                title={`Question ${idx + 1}`}
-              >
-                {idx + 1}
-              </button>
-            ))}
-          </div>
-          <div className="mt-4 space-y-1.5 text-[11px] text-muted">
-            <LegendRow swatchClass="bg-primary text-primary" label="Answered" />
-            <LegendRow swatchClass="bg-amber-500 text-amber-500" label="Marked for review" />
-            <LegendRow swatchClass="border border-border text-muted" label="Unanswered" outline />
-          </div>
-        </aside>
+        <QuestionNavigator
+          questionIds={questionIds}
+          currentIndex={currentIndex}
+          answeredMap={answeredMap}
+          markedSet={markedSet}
+          onGo={goToIndex}
+        />
 
         {/* question content */}
         <section className="order-1 lg:order-2 rounded-2xl border border-border bg-card p-5 sm:p-6 min-h-[420px] flex flex-col">
@@ -2130,6 +2133,139 @@ function SaveStatus({ summary, onRetry }) {
     </span>
   );
 }
+
+/**
+ * The question grid, with a filter and a mobile layout.
+ *
+ * Two problems, both about a paper with sixty questions rather than the six a
+ * demo has.
+ *
+ * FILTERING. The grid coloured answered, marked and unanswered differently and
+ * offered no way to see only one of them. With ten minutes left, "which ones
+ * did I skip?" is the single most useful question a candidate can ask, and the
+ * only way to answer it was to scan every tile by eye -- under time pressure,
+ * which is exactly when people miscount. The counts are on the buttons because
+ * "8 unanswered" is itself the answer much of the time.
+ *
+ * MOBILE. On a narrow screen the navigator sat above the question as a
+ * six-across grid, so a long paper pushed the question itself entirely below
+ * the fold: every question change meant scrolling past the whole navigator to
+ * reach what you were meant to be reading. It now collapses, defaulting to
+ * closed on small screens and always open from `lg` up, where there is a column
+ * for it.
+ *
+ * The filter deliberately never hides the CURRENT question. Filtering to
+ * "unanswered", answering it, and watching the tile you are standing on vanish
+ * from the grid is disorienting in a way that a live exam should not be.
+ */
+function QuestionNavigator({ questionIds, currentIndex, answeredMap, markedSet, onGo }) {
+  const [filter, setFilter] = useState("all");
+  const [open, setOpen] = useState(false);
+
+  const counts = useMemo(() => {
+    let answered = 0;
+    let marked = 0;
+    questionIds.forEach((qid) => {
+      const value = answeredMap[qid];
+      if (value !== null && value !== undefined) answered += 1;
+      if (markedSet.has(qid)) marked += 1;
+    });
+    return { all: questionIds.length, answered, marked, unanswered: questionIds.length - answered };
+  }, [questionIds, answeredMap, markedSet]);
+
+  function matches(qid, idx) {
+    if (idx === currentIndex) return true;
+    const value = answeredMap[qid];
+    const isAnswered = value !== null && value !== undefined;
+    if (filter === "answered") return isAnswered;
+    if (filter === "unanswered") return !isAnswered;
+    if (filter === "marked") return markedSet.has(qid);
+    return true;
+  }
+
+  const FILTERS = [
+    ["all", "All", counts.all],
+    ["unanswered", "Unanswered", counts.unanswered],
+    ["marked", "Marked", counts.marked],
+  ];
+
+  const visible = questionIds.map((qid, idx) => ({ qid, idx })).filter(({ qid, idx }) => matches(qid, idx));
+
+  return (
+    <aside className="order-2 lg:order-1 rounded-2xl border border-border bg-card p-4 h-fit">
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-muted">Questions</h2>
+        <span className="text-[11px] text-muted tabular-nums">
+          {counts.answered}/{counts.all} answered
+        </span>
+      </div>
+
+      {/* Collapsed by default on small screens only. `lg:hidden` on the toggle
+          and `lg:block` on the panel means the desktop column is never hidden
+          behind a click it does not need. */}
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-controls="question-navigator-panel"
+        className="lg:hidden mt-3 w-full inline-flex items-center justify-center gap-1.5 rounded-lg border border-border px-3 py-2 text-xs font-semibold text-ink"
+      >
+        {open ? "Hide questions" : `Show all ${counts.all} questions`}
+        <Icon name="chevron-down" width={13} height={13}
+              className={`transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+
+      <div id="question-navigator-panel" className={`${open ? "block" : "hidden"} lg:block`}>
+        <div role="group" aria-label="Filter questions" className="flex flex-wrap gap-1.5 mt-3 mb-3">
+          {FILTERS.map(([key, label, count]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setFilter(key)}
+              aria-pressed={filter === key}
+              className={`rounded-full px-2.5 py-1 text-[11px] font-semibold border transition-colors ${
+                filter === key
+                  ? "border-primary bg-primary text-white"
+                  : "border-border text-muted hover:border-primary/50"
+              }`}
+            >
+              {label} <span className="tabular-nums">{count}</span>
+            </button>
+          ))}
+        </div>
+
+        {visible.length === 0 ? (
+          <p className="py-3 text-[11px] leading-snug text-muted">
+            {filter === "unanswered"
+              ? "Every question has an answer saved."
+              : "Nothing matches this filter."}
+          </p>
+        ) : (
+          <div className="grid grid-cols-6 lg:grid-cols-4 gap-2">
+            {visible.map(({ qid, idx }) => (
+              <button
+                key={qid}
+                onClick={() => { onGo(idx); setOpen(false); }}
+                className={dotClasses(idx, qid, currentIndex, answeredMap, markedSet)}
+                title={`Question ${idx + 1}`}
+                aria-current={idx === currentIndex ? "true" : undefined}
+              >
+                {idx + 1}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div className="mt-4 space-y-1.5 text-[11px] text-muted">
+          <LegendRow swatchClass="bg-primary text-primary" label="Answered" />
+          <LegendRow swatchClass="bg-amber-500 text-amber-500" label="Marked for review" />
+          <LegendRow swatchClass="border border-border text-muted" label="Unanswered" outline />
+        </div>
+      </div>
+    </aside>
+  );
+}
+
 
 function dotClasses(index, questionId, currentIndex, answeredMap, markedSet) {
   const base = "h-9 rounded-lg text-xs font-bold flex items-center justify-center transition-colors border";

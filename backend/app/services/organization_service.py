@@ -228,6 +228,29 @@ def list_members(db: Session, organization_id: int) -> list[OrganizationMember]:
 # Access control -- the single authority
 # ---------------------------------------------------------------------------
 
+def is_invited(db: Session, email: str) -> bool:
+    """Has anyone enrolled this address, anywhere?
+
+    Used only by invite-only registration mode. Both rosters count because both
+    represent an examiner deliberately naming a person: an organization member
+    is "this candidate belongs to us", an exam participant is "this candidate
+    sits this paper". Requiring org membership alone would break the ordinary
+    case of inviting an external candidate to a single exam.
+
+    Existence, not a join to a user row -- the whole premise of these tables is
+    that they are written before the account exists.
+    """
+    address = normalize_email(email)
+    if not address:
+        return False
+
+    member = db.query(OrganizationMember.id).filter(OrganizationMember.email == address).first()
+    if member is not None:
+        return True
+    participant = db.query(ExamParticipant.id).filter(ExamParticipant.email == address).first()
+    return participant is not None
+
+
 def can_student_access_exam(db: Session, student: Student, exam: Exam) -> bool:
     """Is this student permitted to see and sit this exam?
 

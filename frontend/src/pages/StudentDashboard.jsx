@@ -93,20 +93,48 @@ export default function StudentDashboard() {
   const [exams, setExams] = useState(null);
   const [identity, setIdentity] = useState(null);
   const [loadError, setLoadError] = useState("");
+  // "ok" | "unknown" -- whether the identity check itself could be reached.
+  //
+  // The identity fetch swallowed its own failure with `.catch(() => null)`,
+  // which made "we could not check" indistinguishable from "not verified yet".
+  // On a proctored exam those lead to opposite actions: one means go and
+  // register your face, the other means try again in a minute. Telling a
+  // verified candidate to re-register minutes before an exam is a real cost.
+  const [identityState, setIdentityState] = useState("ok");
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      setLoadError("");
       try {
-        const [examsData, identityData] = await Promise.all([
+        // Settled, not all: a failing identity check must not blank the exam
+        // list, and a failing exam list must not be masked by a working
+        // identity check. They are independent questions with independent
+        // answers, and Promise.all collapses both into whichever failed first.
+        const [examsResult, identityResult] = await Promise.allSettled([
           Api.get("/exams/available"),
           // Mirrors the server-side gate in start_attempt so the student sees
           // *why* they can't start before clicking, instead of hitting a 403.
-          Api.get("/proctoring/identity/status").catch(() => null),
+          Api.get("/proctoring/identity/status"),
         ]);
         if (cancelled) return;
-        setExams(examsData);
-        setIdentity(identityData);
+
+        if (examsResult.status === "fulfilled") {
+          setExams(examsResult.value);
+        } else {
+          const err = examsResult.reason;
+          setLoadError(err instanceof ApiError ? err.message
+            : "Couldn't load your exams. Please try again.");
+        }
+
+        if (identityResult.status === "fulfilled") {
+          setIdentity(identityResult.value);
+          setIdentityState("ok");
+        } else {
+          setIdentity(null);
+          setIdentityState("unknown");
+        }
       } catch (err) {
         if (cancelled) return;
         setLoadError(err instanceof ApiError ? err.message : "Couldn't load your dashboard. Please try again.");
@@ -115,7 +143,7 @@ export default function StudentDashboard() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [reloadKey]);
 
   const derived = useMemo(() => {
     if (!exams) return null;
@@ -168,13 +196,39 @@ export default function StudentDashboard() {
         </div>
 
         {loadError && (
-          <div className="mb-6 flex items-start gap-2.5 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger">
+          <div role="alert"
+               className="mb-6 flex flex-wrap items-start gap-2.5 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger">
             <Icon name="alert" width={16} height={16} className="mt-0.5 shrink-0" />
-            <span>{loadError}</span>
+            <span className="flex-1 min-w-[12rem]">{loadError}</span>
+            {/* A retry, not just a message. The banner previously left the only
+                recovery as a full page reload, which a candidate mid-exam-day
+                is entitled not to have to guess at. */}
+            <button type="button" onClick={() => setReloadKey((n) => n + 1)}
+                    className="font-semibold underline underline-offset-2 hover:no-underline">
+              Try again
+            </button>
           </div>
         )}
 
-        {identity && !identity.exam_ready && <VerificationBanner identity={identity} />}
+        {/* Distinct from "not verified". See identityState above. */}
+        {identityState === "unknown" && (
+          <div role="status"
+               className="mb-6 flex flex-wrap items-start gap-2.5 rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-warning">
+            <Icon name="alert" width={16} height={16} className="mt-0.5 shrink-0" />
+            <span className="flex-1 min-w-[12rem]">
+              We couldn't check your identity verification status. This does not mean you are
+              unverified — if you have already registered your face and ID, you are still verified.
+            </span>
+            <button type="button" onClick={() => setReloadKey((n) => n + 1)}
+                    className="font-semibold underline underline-offset-2 hover:no-underline">
+              Check again
+            </button>
+          </div>
+        )}
+
+        {identityState === "ok" && identity && !identity.exam_ready && (
+          <VerificationBanner identity={identity} />
+        )}
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
           <StatCard label="Ongoing" value={derived ? derived.ongoing.length : null} tone="warning" icon="clock" delay={0} />
           <StatCard label="Upcoming" value={derived ? derived.upcoming.length : null} tone="primary" icon="layout" delay={0.05} />
@@ -396,7 +450,7 @@ function OngoingCard({ exam, identity, navigate }) {
           <p className="text-xs text-muted mb-4">
             {exam.duration_minutes} minutes{exam.proctoring_enabled ? " · AI Proctored" : ""}
           </p>
-          {exam.proctoring_enabled && identity && !identity.exam_ready ? (
+          {exam.proctoring_enabled && identity && identity.exam_ready === false ? (
             <button
               onClick={() => navigate("/profile")}
               className={`${btnGhost.replace("px-5 py-3", "px-4 py-2")} mt-auto`}

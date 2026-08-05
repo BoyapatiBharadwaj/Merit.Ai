@@ -48,6 +48,7 @@ logger = logging.getLogger("app")
 _PURPOSE_LABELS = {
     OtpPurpose.SIGNUP: "verify your email address",
     OtpPurpose.PASSWORD_RESET: "reset your Merit.Ai password",
+    OtpPurpose.ACTIVATION: "activate your Merit.Ai account",
 }
 
 
@@ -80,6 +81,60 @@ def _generate_code() -> str:
     """
     upper = 10 ** settings.OTP_LENGTH
     return str(secrets.randbelow(upper)).zfill(settings.OTP_LENGTH)
+
+
+def _generate_token() -> str:
+    """A 256-bit URL-safe token for an activation link.
+
+    Deliberately not the six-digit code above. A code is typed, so it has to be
+    short, and shortness is survivable only because the code expires in minutes
+    and burns after five wrong guesses. An activation link lives for days and is
+    clicked rather than typed, so the same defences do not apply and the secret
+    has to carry its own weight -- 43 characters of base64url from
+    `secrets.token_urlsafe` is not guessable at any rate the network permits.
+    """
+    return secrets.token_urlsafe(32)
+
+
+def issue_activation_token(db: Session, *, email: str) -> tuple[str, datetime]:
+    """Mint an activation token and return it with its expiry.
+
+    Returns the token instead of mailing it because the caller (an approval, an
+    invitation, an admin re-send) writes a different message around the same
+    link, and because the token must be handed over strictly after the caller's
+    own transaction commits -- an email cannot be rolled back.
+
+    Any earlier live activation token for this address is invalidated. Otherwise
+    re-sending an invitation would leave two working links in two inboxes, and
+    revoking access would mean hunting down every one ever issued.
+    """
+    email = email.strip().lower()
+    otp_repository.consume_outstanding(db, email=email, purpose=OtpPurpose.ACTIVATION, when=_now())
+
+    token = _generate_token()
+    expires_at = _now() + timedelta(hours=settings.ACTIVATION_TTL_HOURS)
+    otp_repository.create(
+        db,
+        email=email,
+        purpose=OtpPurpose.ACTIVATION,
+        code_hash=_digest(token),
+        expires_at=expires_at,
+    )
+    return token, expires_at
+
+
+def activation_link(token: str, email: str) -> str:
+    """The URL that lands on the activation screen.
+
+    The address rides along so the screen can show whose account is being
+    activated without asking the person to retype it -- and so the server has
+    something to look the token up by. It is not a secret and grants nothing on
+    its own; the token is what authorises.
+    """
+    from urllib.parse import quote
+
+    base = settings.APP_BASE_URL.rstrip("/")
+    return f"{base}/activate?token={quote(token)}&email={quote(email)}"
 
 
 def _seconds_since(value: datetime | None) -> float:

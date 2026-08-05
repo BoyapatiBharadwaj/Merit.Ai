@@ -56,6 +56,9 @@ class ActivityType(str, enum.Enum):
     # but not changes -- so "who moved this examiner into our organization?" had
     # no answer, which is exactly the question a surprise tenancy change raises.
     EXAMINER_UPDATED = "examiner_updated"
+    # An export is the moment a slice of this platform's data leaves it. "Who
+    # took a copy of the candidate list, and when?" had no answer before.
+    DATA_EXPORTED = "data_exported"
     ACCOUNT_DISABLED = "account_disabled"
     ACCOUNT_ENABLED = "account_enabled"
     ACCOUNT_DELETED = "account_deleted"

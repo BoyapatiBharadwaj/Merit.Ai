@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Navigate, useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import RedirectToLogin from "../components/RedirectToLogin.jsx";
 import DashboardHeader from "../components/DashboardHeader.jsx";
 import Icon from "../components/Icon.jsx";
 import EmptyState from "../components/EmptyState.jsx";
@@ -40,12 +41,54 @@ function EvidenceModal({ eventId, onClose }) {
   );
 }
 
+/**
+ * Download the current view as CSV.
+ *
+ * The filters are passed through deliberately: an export that silently ignored
+ * what is on screen would hand someone a different dataset from the one they
+ * were looking at, which is the kind of discrepancy that surfaces in a meeting.
+ * The download is recorded server-side in the activity trail.
+ */
+function ExportButton({ kind, params = {} }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function download() {
+    setBusy(true);
+    setError("");
+    try {
+      const query = new URLSearchParams(
+        Object.entries(params).filter(([, value]) => value !== "" && value != null),
+      ).toString();
+      await Api.downloadFile(`/admin/export/${kind}${query ? `?${query}` : ""}`,
+                             `meritai-${kind}.csv`);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Couldn't export.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="inline-flex flex-col items-end">
+      <button type="button" onClick={download} disabled={busy}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-semibold rounded-xl border border-border text-ink hover:border-primary hover:text-primary transition-colors disabled:opacity-60">
+        <Icon name="doc" width={14} height={14} />
+        {busy ? "Preparing…" : "Export CSV"}
+      </button>
+      {error && <span role="alert" className="mt-1 text-xs text-danger">{error}</span>}
+    </div>
+  );
+}
+
 export default function AdminViolations() {
   const navigate = useNavigate();
   const [rows, setRows] = useState(null);
   const [loadError, setLoadError] = useState("");
   const [severity, setSeverity] = useState("");
   const [decision, setDecision] = useState("");
+  // Keyed by event id -- see handleDecisionChange for why this is not one banner.
+  const [rowErrors, setRowErrors] = useState({});
   const [searchInput, setSearchInput] = useState("");
   const [page, setPage] = useState(1);
   // The server's figures, not derived from a list the client holds.
@@ -98,7 +141,7 @@ export default function AdminViolations() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [severity, decision, search, page]);
 
-  if (!isLoggedIn() || getRole() !== "admin") return <Navigate to="/login" replace />;
+  if (!isLoggedIn() || getRole() !== "admin") return <RedirectToLogin />;
 
   // No client-side filter. It searched only the rows already loaded, so with a
   // paged list it would have searched the current page and reported "no
@@ -108,14 +151,39 @@ export default function AdminViolations() {
   const pageRows = rows || [];
   const safePage = page;
 
+  /**
+   * Adjudicate one flag.
+   *
+   * Two things here are per-row on purpose, and neither was before.
+   *
+   * The rollback restores only the row that failed. It used to snapshot the
+   * whole `rows` array and restore all of it, so if an admin changed three
+   * decisions in quick succession and the second request failed, the first and
+   * third were silently reverted in the UI while remaining saved on the server
+   * -- leaving the screen disagreeing with the database about work that had
+   * actually succeeded.
+   *
+   * The error is attached to the row too. A page-level banner reading "couldn't
+   * update that decision" over a table of forty rows does not say which one,
+   * and on this screen a decision that did not save means an unreviewed flag
+   * still counting against a candidate.
+   */
   async function handleDecisionChange(eventId, next) {
-    const previous = rows;
+    const previousValue = (rows || []).find((v) => v.id === eventId)?.admin_decision;
+    setRowErrors((prev) => {
+      if (!prev[eventId]) return prev;
+      const { [eventId]: _removed, ...rest } = prev;
+      return rest;
+    });
     setRows((rs) => rs.map((v) => (v.id === eventId ? { ...v, admin_decision: next } : v)));
     try {
       await Api.patch(`/proctoring/events/${eventId}/decision`, { decision: next });
     } catch (err) {
-      setRows(previous);
-      setLoadError(err instanceof ApiError ? err.message : "Couldn't update that decision.");
+      setRows((rs) => rs.map((v) => (v.id === eventId ? { ...v, admin_decision: previousValue } : v)));
+      setRowErrors((prev) => ({
+        ...prev,
+        [eventId]: err instanceof ApiError ? err.message : "Couldn't save that decision.",
+      }));
     }
   }
 
@@ -125,8 +193,20 @@ export default function AdminViolations() {
       <main className="max-w-6xl mx-auto w-full p-4 sm:p-6">
         <Breadcrumbs trail={[{ label: "Dashboard", to: "/dashboard" }, { label: "Violations" }]} />
 
-        <h1 className="text-2xl font-extrabold tracking-tight mb-1">Violations</h1>
-        <p className="text-sm text-muted mb-5">Every proctoring violation logged across the platform.</p>
+        <div className="flex flex-wrap items-start justify-between gap-3 mb-5">
+          <div>
+            <h1 className="text-2xl font-extrabold tracking-tight mb-1">Violations</h1>
+            <p className="text-sm text-muted">Every proctoring violation logged across the platform.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Link to="/admin/review-queue"
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-semibold rounded-xl border border-border text-ink hover:border-primary hover:text-primary transition-colors">
+              <Icon name="shield-check" width={14} height={14} />
+              Review queue
+            </Link>
+            <ExportButton kind="violations" params={{ severity, decision, search }} />
+          </div>
+        </div>
 
         {loadError && (
           <div className="mb-4 flex items-start gap-2.5 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger">
@@ -203,6 +283,11 @@ export default function AdminViolations() {
                           <option key={d} value={d}>{d}</option>
                         ))}
                       </select>
+                      {rowErrors[v.id] && (
+                        <p role="alert" className="mt-1 max-w-[14rem] text-[11px] leading-snug text-danger">
+                          {rowErrors[v.id]}
+                        </p>
+                      )}
                     </td>
                   </tr>
                 ))}

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Navigate, useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import RedirectToLogin from "../components/RedirectToLogin.jsx";
 import DashboardHeader from "../components/DashboardHeader.jsx";
 import Icon from "../components/Icon.jsx";
 import EmptyState from "../components/EmptyState.jsx";
@@ -59,7 +60,7 @@ export default function AdminExams() {
     return () => { cancelled = true; };
   }, [tab, search]);
 
-  if (!isLoggedIn() || getRole() !== "admin") return <Navigate to="/login" replace />;
+  if (!isLoggedIn() || getRole() !== "admin") return <RedirectToLogin />;
 
   // Client-side, deliberately: /admin/exams is one row per exam an institution
   // has ever created, which is bounded by staff activity rather than by

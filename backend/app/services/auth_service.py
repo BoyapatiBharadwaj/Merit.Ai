@@ -12,10 +12,11 @@ from app.core.security import hash_password, verify_password, create_access_toke
 from app.repositories import user_repository
 from app.models.enums import RoleName
 from app.models.user import User
-from app.services import organization_service
+from app.models.otp import OtpPurpose
+from app.services import organization_service, otp_service
 
 
-def _set_password(user: User, new_password: str) -> None:
+def _set_password(user: User, new_password: str, *, chosen_by_owner: bool = True) -> None:
     """The ONLY place a password hash is written.
 
     Stamping password_changed_at alongside the hash is what makes a password
@@ -27,6 +28,42 @@ def _set_password(user: User, new_password: str) -> None:
     """
     user.hashed_password = hash_password(new_password)
     user.password_changed_at = datetime.now(timezone.utc)
+    # `chosen_by_owner` is required of every caller for the same reason the
+    # timestamp is written here rather than at the call sites: an admin reset
+    # and a self-service change are the same column write and opposite facts
+    # about who knows the secret. While must_change_password is true, at least
+    # two people can sign in, so nothing the account does is attributable to
+    # its owner alone -- and the login response carries the flag so the app can
+    # insist on a change before anything else happens.
+    user.must_change_password = not chosen_by_owner
+
+
+def _require_invited(db: Session, email: str) -> None:
+    """In invite-only mode, refuse an address nobody has enrolled.
+
+    Signup was open to anyone on the internet who found the URL. For a public
+    trial that is correct; for an institution running degree examinations it
+    means the candidate list is whoever happened to sign up, and an examiner
+    checking "is this the right cohort?" has no answer. REGISTRATION_MODE lets
+    the deployment decide, and the default stays open so that trying the
+    software out does not first require seeding a roster.
+
+    "Invited" means an examiner has already put the address on an exam roster or
+    an organization roster -- both of which are keyed on email precisely because
+    they are written before the account exists. So the invite this checks is the
+    one the institution already had to create; there is no second list to keep
+    in sync, which is the usual way an allow-list drifts out of date.
+    """
+    if (settings.REGISTRATION_MODE or "open").strip().lower() != "invite":
+        return
+    if organization_service.is_invited(db, email):
+        return
+    raise HTTPException(
+        status.HTTP_403_FORBIDDEN,
+        "This address has not been invited. Registration on this server is limited to "
+        "candidates an examiner has already added to an exam or organization. "
+        "Contact your institution if you believe this is a mistake.",
+    )
 
 
 def register_student(db: Session, first_name: str, last_name: str, email: str, password: str,
@@ -40,6 +77,7 @@ def register_student(db: Session, first_name: str, last_name: str, email: str, p
     the account together or do neither.
     """
     email = (email or "").strip().lower()
+    _require_invited(db, email)
     passwords.require(password, email=email, name=f"{first_name} {last_name}")
     if user_repository.get_user_by_email(db, email):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Email already registered.")
@@ -101,6 +139,7 @@ def create_examiner(db: Session, admin_user_id: int, first_name: str, last_name:
     whatever else the caller commits alongside it succeed or fail together
     instead of the account silently existing while the rest rolls back."""
     email = (email or "").strip().lower()
+    _require_invited(db, email)
     passwords.require(password, email=email, name=f"{first_name} {last_name}")
     if user_repository.get_user_by_email(db, email):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Email already registered.")
@@ -211,13 +250,76 @@ def reset_password_by_email(db: Session, email: str, new_password: str) -> bool:
 
 def admin_reset_password(db: Session, target: User, new_password: str) -> None:
     """Admin override -- no current-password check, because the whole point is
-    that the user has lost access to it."""
+    that the user has lost access to it.
+
+    Flagged as not-owner-chosen: the administrator typed this password and
+    therefore knows it, so the account is forced through a change on next
+    sign-in. Until then two people hold the credential, and the flag is what
+    stops that state from being invisible.
+    """
     try:
-        _set_password(target, new_password)
+        _set_password(target, new_password, chosen_by_owner=False)
         db.commit()
     except Exception:
         db.rollback()
         raise
+
+
+def activate_account(db: Session, *, email: str, token: str, new_password: str) -> User:
+    """Turn an activation link into a password the owner chose.
+
+    Deliberately one transaction with the token consumption. The token is marked
+    spent with commit=False and the password write rides the same commit, so the
+    two outcomes that would be wrong -- a burnt token with the old password
+    still in place, or a set password with the link still live -- are both
+    unreachable. This is the same reasoning as the verified-registration path,
+    which had exactly that bug before it was folded together.
+
+    Activating also verifies the address. It has to: the token only reached
+    somebody who can read that mailbox, which is precisely what verification
+    establishes. Making them prove it twice would be theatre.
+    """
+    email = (email or "").strip().lower()
+    user = user_repository.get_user_by_email(db, email)
+
+    # An unknown address and a wrong token get the same rejection. Saying "no
+    # such account" here would turn the activation endpoint into the
+    # enumeration oracle that request_code and reset_password_by_email are both
+    # written to avoid.
+    generic = "That activation link is invalid or has expired. Ask for a new one."
+    if not user:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, generic)
+    if not user.is_active:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Account is deactivated.")
+
+    passwords.require(new_password, email=email, name=user.full_name)
+
+    try:
+        try:
+            otp_service.verify_code(
+                db, email=email, purpose=OtpPurpose.ACTIVATION, code=token, commit=False,
+            )
+        except HTTPException as exc:
+            # Rewritten to the SAME sentence the unknown-address branch above
+            # uses. otp_service phrases its rejection for a typed code ("that
+            # code is invalid"), which is both wrong wording for a link and --
+            # more importantly -- a different string. Two different rejections
+            # from one endpoint is exactly the oracle the generic message
+            # elsewhere exists to close: an attacker submitting a junk token
+            # could tell a real account from an imaginary one by which sentence
+            # came back. A test caught this by asserting the two were equal.
+            if exc.status_code == status.HTTP_400_BAD_REQUEST:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, generic) from exc
+            raise
+        _set_password(user, new_password, chosen_by_owner=True)
+        if user.email_verified_at is None:
+            user.email_verified_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(user)
+    except Exception:
+        db.rollback()
+        raise
+    return user
 
 
 def update_profile(db: Session, user: User, first_name: str | None, last_name: str | None, email: str | None) -> User:

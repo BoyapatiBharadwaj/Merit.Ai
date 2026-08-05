@@ -616,7 +616,13 @@ def candidate_detail(db: Session, student_id: int) -> dict:
     history.sort(key=lambda h: h["started_at"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
 
     return {
-        "id": student.id, "full_name": student.user.full_name, "email": student.user.email,
+        "id": student.id,
+        # The USER id, not just the student profile id. Every account action
+        # (activate, reset password, delete) is keyed on the user, and the page
+        # had no way to reach it -- which is part of why the account panel was
+        # never built despite the endpoints existing.
+        "user_id": student.user_id,
+        "full_name": student.user.full_name, "email": student.user.email,
         "roll_number": student.roll_number,
         "organization_name": student.organization.name if student.organization else None,
         "is_active": student.user.is_active,
@@ -678,3 +684,76 @@ def set_violation_decision(db: Session, event_id: int, decision: str) -> dict:
     db.commit()
     db.refresh(event)
     return {"id": event.id, "admin_decision": event.admin_decision.value}
+
+
+def review_queue(db: Session, *, offset: int, limit: int) -> tuple[list[dict], int]:
+    """The reviewer's worklist: what still needs a decision, worst first."""
+    events, total = admin_repository.review_queue(db, offset=offset, limit=limit)
+    now = datetime.now(timezone.utc)
+    rows = []
+    for event in events:
+        attempt = event.attempt
+        created = event.created_at
+        if created is not None and created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        rows.append({
+            "id": event.id,
+            "attempt_id": attempt.id,
+            "student_id": attempt.student_id,
+            "student_name": attempt.student.user.full_name if attempt.student and attempt.student.user else None,
+            "exam_id": attempt.exam_id,
+            "exam_title": attempt.exam.title,
+            "event_type": event.event_type.value,
+            "severity": event.severity.value,
+            "description": event.description,
+            "has_screenshot": bool(event.screenshot_path),
+            "created_at": event.created_at,
+            # How long this candidate has been waiting on a decision. An
+            # undecided flag counts against them (see adjudicated_risk), so
+            # age is not cosmetic -- it is how long someone has carried an
+            # unresolved accusation.
+            "waiting_hours": round((now - created).total_seconds() / 3600, 1) if created else None,
+        })
+    return rows, total
+
+
+def organizations_overview(db: Session) -> list[dict]:
+    return admin_repository.organizations_overview(db)
+
+
+# --- exports ------------------------------------------------------------------
+#
+# Deliberately narrow. Every export below is a flat table of facts an
+# administrator already sees on screen -- no identity photographs, no ID card
+# images, no face embeddings, no proctoring screenshots. Those are the most
+# sensitive things this platform holds, they are served through individually
+# authorised endpoints for a reason, and a CSV is exactly the artefact that ends
+# up forwarded, stored on a laptop and forgotten about.
+
+CANDIDATE_EXPORT_COLUMNS = ["id", "full_name", "email", "organization_name",
+                            "exams_taken", "completed_exams", "in_progress_exams",
+                            "total_violations", "is_active"]
+EXAMINER_EXPORT_COLUMNS = ["id", "full_name", "email", "organization_name",
+                           "active_exams", "upcoming_exams", "completed_exams",
+                           "candidate_count", "is_active"]
+VIOLATION_EXPORT_COLUMNS = ["id", "attempt_id", "student_name", "exam_title", "examiner_name",
+                            "event_type", "severity", "description", "admin_decision", "created_at"]
+
+
+def export_rows(db: Session, kind: str, **filters) -> tuple[list[str], list[dict]]:
+    """Column order and rows for one export.
+
+    Returns the columns explicitly rather than deriving them from the first row:
+    a dict's key order is an implementation detail, and a CSV whose columns
+    shift between exports is one nobody can build a spreadsheet against.
+    """
+    if kind == "candidates":
+        rows, _ = candidates_overview(db, **filters)
+        return CANDIDATE_EXPORT_COLUMNS, rows
+    if kind == "examiners":
+        rows, _ = examiners_overview(db, **filters)
+        return EXAMINER_EXPORT_COLUMNS, rows
+    if kind == "violations":
+        rows, _ = violations_overview(db, **filters)
+        return VIOLATION_EXPORT_COLUMNS, rows
+    raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown export '{kind}'.")

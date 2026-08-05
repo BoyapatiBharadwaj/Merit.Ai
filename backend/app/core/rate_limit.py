@@ -236,3 +236,18 @@ def _reset_all() -> None:
                 client.delete(key)
         except Exception:
             logger.warning("Could not clear Redis rate-limit keys", exc_info=True)
+
+
+def client_ip(request: Request) -> str | None:
+    """The caller's address, as this module resolves it, for anything outside
+    rate limiting that needs it.
+
+    A thin public name over `_client_ip` rather than a second implementation:
+    the trusted-proxy walk is subtle enough (rightmost-untrusted, not leftmost)
+    that a login-notification email quietly using a different rule would report
+    an address the rate limiter never saw. Returns None rather than the
+    "unknown" sentinel, because a notice that says nothing is better than one
+    that says something wrong.
+    """
+    ip = _client_ip(request)
+    return None if not ip or ip == "unknown" else ip

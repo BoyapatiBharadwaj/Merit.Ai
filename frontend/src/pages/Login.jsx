@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Link, Navigate, useNavigate } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 import AuthLayout from "../components/AuthLayout.jsx";
 import { TextField, PasswordField } from "../components/FormField.jsx";
 import Icon from "../components/Icon.jsx";
@@ -11,6 +11,27 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function Login() {
   const navigate = useNavigate();
+  const location = useLocation();
+
+  /**
+   * Where to go after signing in.
+   *
+   * Every login landed on /dashboard, so a candidate who followed a link to
+   * their exam, was bounced to login, and signed in successfully ended up on a
+   * dashboard and had to find the exam again -- most likely with a clock
+   * running.
+   *
+   * Only an internal path is honoured. Taking a redirect target from anything
+   * the caller controls is how an open redirect works: a link to
+   * /login?next=https://evil.example would send someone straight there wearing
+   * the trust of your domain. Router state, and a leading-single-slash check,
+   * make that unreachable.
+   */
+  const intended = typeof location.state?.from === "string"
+    && location.state.from.startsWith("/")
+    && !location.state.from.startsWith("//")
+    ? location.state.from
+    : "/dashboard";
   const [form, setForm] = useState({ email: "", password: "" });
   const [errors, setErrors] = useState({});
   // Only a field the person has actually left (or tried to submit through)
@@ -19,6 +40,11 @@ export default function Login() {
   // before the person has even had a chance to type into it.
   const [touched, setTouched] = useState({});
   const [formError, setFormError] = useState("");
+  // Focus moves to the error when one appears. Without it a screen-reader user
+  // submits, hears nothing, and is left at the bottom of a form with no
+  // indication that anything happened -- the message was rendered above them
+  // with no announcement and no way to find it but to read the page again.
+  const errorRef = useRef(null);
   const [loading, setLoading] = useState(false);
   // Defaults to OFF.
   //
@@ -35,7 +61,7 @@ export default function Login() {
   // checkbox simply did not match it.
   const [remember, setRemember] = useState(false);
 
-  if (isLoggedIn()) return <Navigate to="/dashboard" replace />;
+  if (isLoggedIn()) return <Navigate to={intended} replace />;
 
   function computeErrors(values) {
     const next = {};
@@ -80,6 +106,10 @@ export default function Login() {
     return "Something went wrong. Please try again.";
   }
 
+  useEffect(() => {
+    if (formError) errorRef.current?.focus();
+  }, [formError]);
+
   async function handleSubmit(e) {
     e.preventDefault();
     setFormError("");
@@ -92,7 +122,7 @@ export default function Login() {
     try {
       const data = await Api.login(form.email.trim(), form.password);
       setSession(data, remember);
-      navigate("/dashboard", { replace: true });
+      navigate(intended, { replace: true });
     } catch (err) {
       setFormError(describeError(err));
     } finally {
@@ -108,7 +138,13 @@ export default function Login() {
       subtitle="Enter your credentials to access your dashboard."
     >
       {formError && (
-        <div className="mb-5 flex items-start gap-2.5 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger animate-fade-in">
+        <div
+          ref={errorRef}
+          tabIndex={-1}
+          role="alert"
+          aria-live="assertive"
+          className="mb-5 flex items-start gap-2.5 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger animate-fade-in outline-none"
+        >
           <Icon name="alert" width={16} height={16} className="mt-0.5 shrink-0" />
           <span>{formError}</span>
         </div>

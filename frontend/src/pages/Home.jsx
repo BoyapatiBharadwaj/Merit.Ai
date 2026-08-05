@@ -30,9 +30,23 @@ import Icon, { IconBadge } from "../components/Icon.jsx";
  * not a detected behaviour), 3 is LOCKDOWN_STRIKE_LIMIT, 2 is the face + ID
  * gate in identity_service, and 0 is literal -- the platform is browser-only.
  */
+/**
+ * Facts about what the software does, not claims about how many people use it.
+ *
+ * Deliberately no "10,000 exams proctored" or "99.9% uptime": this deployment
+ * has no such figures, and a number a visitor cannot check is worth less than
+ * no number on a page whose entire argument is that the platform is honest
+ * about what it can and cannot see.
+ *
+ * Each of these is checkable in the source, and each was checked. "19 violation
+ * types" was wrong -- EventType has twenty members -- which is exactly the drift
+ * a hardcoded marketing figure invites: the code grew one and the homepage did
+ * not notice. LOCKDOWN_STRIKE_LIMIT is 3 and is configurable, so the label says
+ * "by default" rather than stating it as a law.
+ */
 const STATS = [
-  { value: "19", label: "Violation Types Tracked" },
-  { value: "3", label: "Strikes Before Auto-Submit" },
+  { value: "20", label: "Violation Types Tracked" },
+  { value: "3", label: "Strikes Before Auto-Submit, by default" },
   { value: "2", label: "Identity Checks Before Entry" },
   { value: "0", label: "Downloads Required" },
 ];
@@ -84,8 +98,11 @@ const STEPS = [
   },
   {
     n: "4",
-    title: "Results, Immediately",
-    desc: "Scores compute automatically — including partial credit on coding tests — with instant reports and live analytics.",
+    title: "Results, When You Choose",
+    // Was "Results, Immediately", which stopped being true when result release
+    // became the examiner's decision. The first candidate to finish used to
+    // hold the complete answer key while everyone else was still writing.
+    desc: "Scores compute automatically — including partial credit on coding tests. Release them the moment an attempt ends, or hold every result until the paper closes.",
   },
 ];
 
@@ -128,6 +145,68 @@ const AUDIENCES = [
   },
 ];
 
+/**
+ * Who actually runs exams on this, and what each one needs.
+ *
+ * The page described features and roles but never a situation. "Multi-signal
+ * proctoring" tells a university registrar nothing about whether this fits a
+ * 400-seat first-year paper; a sentence about a 400-seat first-year paper does.
+ * Each of these is deliberately tied to a capability that exists rather than
+ * one that would be nice to advertise.
+ */
+const USE_CASES = [
+  {
+    icon: "briefcase",
+    title: "University semester exams",
+    desc: "A large cohort sitting the same paper at the same time. Roster the class by email before anyone has signed up, hold every result until the last candidate submits, then release the lot at once.",
+  },
+  {
+    icon: "code",
+    title: "Technical hiring screens",
+    desc: "Python and JavaScript run in isolated, network-disabled containers with partial credit per test case — so a candidate who solves three of five cases scores three of five, not zero.",
+  },
+  {
+    icon: "shield-check",
+    title: "Certification and licensing",
+    desc: "Where a result carries legal weight, every flag is timestamped, evidence-backed and reviewable, and an examiner's confirm-or-dismiss decision is recorded against their name.",
+  },
+  {
+    icon: "user",
+    title: "Remote and distance learning",
+    desc: "Candidates test their camera, microphone and connection days ahead on a page that needs no account, so exam morning is not the first time anything is checked.",
+  },
+];
+
+/**
+ * What the platform will not claim.
+ *
+ * This section exists because everything above it is a sales pitch, and an exam
+ * platform asking for a webcam in someone's bedroom owes them the other half.
+ * Every line here is a real limit in the code, not modesty: the lockdown is
+ * best-effort because a browser cannot police an operating system, the AI
+ * signals are indicators because they are, and a second device is genuinely
+ * undetectable. An institution that reads this and walks away was going to be
+ * disappointed later anyway.
+ */
+const TRUST = [
+  {
+    claim: "Violations are decided by the server",
+    detail: "Strike counting, auto-submit and the timer all run server-side. A candidate editing the page cannot award themselves more time or unlogged tab switches.",
+  },
+  {
+    claim: "The lockdown is best-effort, and we say so",
+    detail: "A web page cannot police an operating system. Screen recorders, virtual machines and a second phone under the desk are outside what any browser-based proctoring can see.",
+  },
+  {
+    claim: "AI signals are indicators, not verdicts",
+    detail: "Gaze, head pose and object detection produce flags for a human to review. Nothing here fails a candidate on its own, and every flag carries the evidence it was raised from.",
+  },
+  {
+    claim: "Biometric data is yours to delete",
+    detail: "Face and ID-card data can be erased from your own profile at any time, without asking anyone. Your results and history are not touched — they are assessment records, not biometrics.",
+  },
+];
+
 /* ==========================================================================
    Shared section furniture
    ========================================================================== */
@@ -145,9 +224,29 @@ function SectionHeader({ eyebrow, icon, title, children, className = "" }) {
   );
 }
 
+/**
+ * Card styling, split by whether the card actually does anything.
+ *
+ * `cardBase` used to include a lift-and-shadow hover on every card on the page,
+ * including the ones that are pure text. Hover feedback is a promise: it says
+ * "this responds to you", and every card that rose under the cursor and then
+ * did nothing when clicked spent a little of the page's credibility. On a site
+ * whose argument is that it tells you the truth about what it does, that is
+ * worse than merely untidy.
+ *
+ * Static cards keep the border transition, so they still feel alive on a
+ * pointer without claiming to be a target.
+ *
+ * Every card on this page is now static. The audience cards come closest to an
+ * exception -- they contain a real call to action -- but the clickable thing
+ * there is the button inside, not the card, and giving the card the hover of a
+ * link would misdirect the cursor by a hundred pixels. No `cardInteractive`
+ * constant is defined for the same reason: an unused style waiting for a use is
+ * how the original problem got in.
+ */
 const cardBase =
-  "rounded-2xl border border-border transition-all duration-200 " +
-  "hover:border-primary/30 hover:-translate-y-1 hover:shadow-[0_16px_40px_-16px_rgba(15,23,42,0.18)] animate-slide-up";
+  "rounded-2xl border border-border transition-colors duration-200 " +
+  "hover:border-border/80 animate-slide-up";
 
 /* ==========================================================================
    Hero mockup
@@ -241,6 +340,8 @@ export default function Home() {
         <HeroSection />
         <HighlightsSection />
         <WorkflowSection />
+        <UseCasesSection />
+        <TrustSection />
         <AudiencesSection />
         <FinalCta />
       </main>
@@ -410,6 +511,63 @@ function WorkflowSection() {
           ))}
         </ol>
       </div>
+    </section>
+  );
+}
+
+function UseCasesSection() {
+  return (
+    <section className="bg-surface border-y border-border">
+      <div className="max-w-7xl mx-auto px-5 sm:px-6 lg:px-8 py-20 lg:py-24">
+        <SectionHeader eyebrow="Use cases" icon="briefcase" title="What people actually run on it" className="mb-12">
+          Four situations this was built around. If yours is not one of them, the honest answer is
+          probably on the Features page, which also lists what the platform cannot do.
+        </SectionHeader>
+
+        <div className="grid sm:grid-cols-2 gap-6">
+          {USE_CASES.map((item, i) => (
+            <div key={item.title} className={`p-6 bg-page ${cardBase}`} style={{ animationDelay: `${i * 0.08}s` }}>
+              <span aria-hidden="true"
+                    className="inline-flex items-center justify-center w-10 h-10 rounded-xl bg-primary/10 text-primary mb-4">
+                <Icon name={item.icon} width={18} height={18} />
+              </span>
+              <h3 className="font-bold text-ink mb-2">{item.title}</h3>
+              <p className="text-sm text-muted leading-relaxed">{item.desc}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function TrustSection() {
+  return (
+    <section className="max-w-7xl mx-auto px-5 sm:px-6 lg:px-8 py-20 lg:py-24">
+      <SectionHeader eyebrow="Where we stand" icon="shield-check"
+                     title="What we claim, and what we don't" className="mb-12">
+        An exam platform asking for a webcam in someone's bedroom owes them both halves. Every line
+        below is a real property of the software, including the limits.
+      </SectionHeader>
+
+      <dl className="grid sm:grid-cols-2 gap-x-8 gap-y-7">
+        {TRUST.map((item) => (
+          <div key={item.claim}>
+            <dt className="flex items-start gap-2.5 font-bold text-ink mb-1.5">
+              <Icon name="check" width={16} height={16} className="mt-0.5 shrink-0 text-success" />
+              <span>{item.claim}</span>
+            </dt>
+            <dd className="text-sm text-muted leading-relaxed pl-[26px]">{item.detail}</dd>
+          </div>
+        ))}
+      </dl>
+
+      <p className="mt-8 text-sm text-muted">
+        The full list, limits included, is on the{" "}
+        <Link to="/features" className="font-semibold text-primary hover:underline">Features</Link>{" "}
+        and{" "}
+        <Link to="/privacy" className="font-semibold text-primary hover:underline">Privacy</Link> pages.
+      </p>
     </section>
   );
 }

@@ -67,6 +67,16 @@ class User(Base):
     # did nothing to the attacker's existing token for up to two hours.
     password_changed_at = Column(DateTime(timezone=True), nullable=True)
 
+    # True while the account holds a password its owner never chose.
+    #
+    # Set when an account is created for somebody else (an approved access
+    # request, an admin reset), cleared the moment they set their own. It exists
+    # so that "this account did X" means something: while it is true, at least
+    # two people can sign in, so nothing the account does is attributable to its
+    # owner alone. The login response carries it so the app can route the person
+    # to a password change before anything else.
+    must_change_password = Column(Boolean, default=False, nullable=False)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

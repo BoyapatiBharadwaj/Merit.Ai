@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import AuthLayout from "../components/AuthLayout.jsx";
 import { TextField, PasswordField } from "../components/FormField.jsx";
@@ -21,6 +21,11 @@ export default function Register() {
   // shows its error -- see the identical comment in Login.jsx for why.
   const [touched, setTouched] = useState({});
   const [formError, setFormError] = useState("");
+  // Focus moves to the error when one appears. Without it a screen-reader user
+  // submits, hears nothing, and is left at the bottom of a form with no
+  // indication that anything happened -- the message was rendered above them
+  // with no announcement and no way to find it but to read the page again.
+  const errorRef = useRef(null);
   const [loading, setLoading] = useState(false);
 
   // Email verification. Signup is two phases now: request a code, then create
@@ -115,6 +120,10 @@ export default function Register() {
     }
     return "Something went wrong. Please try again.";
   }
+
+  useEffect(() => {
+    if (formError) errorRef.current?.focus();
+  }, [formError]);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -259,7 +268,13 @@ export default function Register() {
     >
 
       {formError && (
-        <div className="mb-5 flex items-start gap-2.5 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger animate-fade-in">
+        <div
+          ref={errorRef}
+          tabIndex={-1}
+          role="alert"
+          aria-live="assertive"
+          className="mb-5 flex items-start gap-2.5 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger animate-fade-in outline-none"
+        >
           <Icon name="alert" width={16} height={16} className="mt-0.5 shrink-0" />
           <span>{formError}</span>
         </div>

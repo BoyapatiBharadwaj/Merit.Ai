@@ -581,3 +581,276 @@ def test_moving_an_examiner_moves_their_tenancy(client, seed_roles, admin_token,
     organization = db_session.query(Organization).filter(
         Organization.id == row.organization_id).first()
     assert organization.name == "Riverside Polytechnic", "the two disagree"
+
+
+# --- per-exam proctoring policy -----------------------------------------------
+
+def test_an_exam_can_switch_off_camera_and_screen_share(client, examiner, seed_roles):
+    """proctoring_enabled gated the AI signals, but the exam page demanded
+    camera, microphone, screen sharing AND fullscreen from every candidate
+    regardless -- then told them the exam was not proctored."""
+    exam = client.post("/api/v1/exams", json={
+        "title": "Open book", "duration_minutes": 30, "proctoring_enabled": False,
+        "require_camera": False, "require_microphone": False,
+        "require_screen_share": False, "require_fullscreen": True,
+    }, headers=examiner)
+    assert exam.status_code == 201, exam.text
+
+    section = client.post(f"/api/v1/exams/{exam.json()['id']}/sections",
+                          json={"title": "S"}, headers=examiner).json()
+    client.post(f"/api/v1/exams/sections/{section['id']}/questions", json={
+        "text": "Q", "marks": 1, "question_type": "mcq",
+        "options": [{"text": "a", "is_correct": True}, {"text": "b", "is_correct": False}],
+    }, headers=examiner)
+    client.post(f"/api/v1/exams/{exam.json()['id']}/publish", headers=examiner)
+
+    student = auth_headers(_register_student_and_login(client, email="openbook@example.com"))
+    available = client.get("/api/v1/exams/available", headers=student).json()
+    entry = next(e for e in available if e["id"] == exam.json()["id"])
+    assert entry["requires"] == {
+        "camera": False, "microphone": False, "screen_share": False, "fullscreen": True,
+    }
+
+
+def test_requirements_default_to_the_old_behaviour(client, examiner, seed_roles):
+    """Every exam already created has these NULL, and must keep behaving exactly
+    as it did -- following proctoring_enabled."""
+    exam_id, _ = _exam_with_questions(client, examiner, title="Legacy")
+    student = auth_headers(_register_student_and_login(client, email="legacy@example.com"))
+    entry = next(e for e in client.get("/api/v1/exams/available", headers=student).json()
+                 if e["id"] == exam_id)
+    # proctoring_enabled=False in the fixture, so nothing is demanded.
+    assert entry["requires"]["camera"] is False
+
+    proctored = client.post("/api/v1/exams", json={
+        "title": "Proctored", "duration_minutes": 30, "proctoring_enabled": True,
+    }, headers=examiner).json()
+    from app.models.exam import Exam
+    assert Exam(proctoring_enabled=True).requires("camera") is True
+
+
+# --- results release ----------------------------------------------------------
+
+def test_a_candidate_does_not_get_the_answer_key_before_release(client, examiner, seed_roles,
+                                                                db_session):
+    """The report returned correct options, correct-answer text and explanations
+    the instant an attempt was submitted -- so the first candidate to finish held
+    the complete key while everyone else was still writing."""
+    from datetime import datetime, timedelta, timezone
+    from app.models.exam import Exam
+
+    exam_id, _ = _exam_with_questions(client, examiner, count=1)
+    exam = db_session.query(Exam).filter(Exam.id == exam_id).first()
+    exam.release_results_at = datetime.now(timezone.utc) + timedelta(hours=2)
+    db_session.commit()
+
+    student = auth_headers(_register_student_and_login(client, email="early@example.com"))
+    attempt_id = client.post(f"/api/v1/attempts/start/{exam_id}", headers=student).json()["attempt_id"]
+    client.post(f"/api/v1/attempts/{attempt_id}/submit", headers=student)
+
+    report = client.get(f"/api/v1/attempts/{attempt_id}/report", headers=student)
+    assert report.status_code == 200, report.text
+    body = report.json()
+    assert body["answers_released"] is False
+    for question in body["questions"]:
+        assert question["correct_answer"] is None, "the answer key leaked before release"
+        assert question["correct_option_ids"] is None
+        assert question["explanation"] is None
+    # Their own mark is not withheld -- only WHICH answer was right.
+    assert "scored_marks" in body
+    assert body["questions"][0]["outcome"] in ("correct", "incorrect", "unattempted")
+
+
+def test_staff_always_see_the_answer_key(client, examiner, seed_roles, db_session):
+    """An examiner reviewing a paper needs it, and withholding it from them
+    would make the release setting a marking obstacle rather than an anti-leak
+    measure."""
+    from datetime import datetime, timedelta, timezone
+    from app.models.exam import Exam
+
+    exam_id, _ = _exam_with_questions(client, examiner, count=1)
+    exam = db_session.query(Exam).filter(Exam.id == exam_id).first()
+    exam.release_results_at = datetime.now(timezone.utc) + timedelta(hours=2)
+    db_session.commit()
+
+    student = auth_headers(_register_student_and_login(client, email="marked@example.com"))
+    attempt_id = client.post(f"/api/v1/attempts/start/{exam_id}", headers=student).json()["attempt_id"]
+    client.post(f"/api/v1/attempts/{attempt_id}/submit", headers=student)
+
+    staff = client.get(f"/api/v1/attempts/{attempt_id}/report", headers=examiner).json()
+    assert staff["answers_released"] is True
+    assert staff["questions"][0]["correct_answer"] is not None
+
+
+def test_results_are_released_once_the_time_passes(client, examiner, seed_roles, db_session):
+    from datetime import datetime, timedelta, timezone
+    from app.models.exam import Exam
+
+    exam_id, _ = _exam_with_questions(client, examiner, count=1)
+    student = auth_headers(_register_student_and_login(client, email="later@example.com"))
+    attempt_id = client.post(f"/api/v1/attempts/start/{exam_id}", headers=student).json()["attempt_id"]
+    client.post(f"/api/v1/attempts/{attempt_id}/submit", headers=student)
+
+    exam = db_session.query(Exam).filter(Exam.id == exam_id).first()
+    exam.release_results_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    db_session.commit()
+
+    body = client.get(f"/api/v1/attempts/{attempt_id}/report", headers=student).json()
+    assert body["answers_released"] is True
+    assert body["questions"][0]["correct_answer"] is not None
+
+
+def test_no_release_time_means_immediately(client, examiner, seed_roles):
+    """The existing behaviour for every exam already created -- switching this on
+    retroactively would surprise candidates who have already seen theirs."""
+    exam_id, _ = _exam_with_questions(client, examiner, count=1)
+    student = auth_headers(_register_student_and_login(client, email="instant@example.com"))
+    attempt_id = client.post(f"/api/v1/attempts/start/{exam_id}", headers=student).json()["attempt_id"]
+    client.post(f"/api/v1/attempts/{attempt_id}/submit", headers=student)
+
+    body = client.get(f"/api/v1/attempts/{attempt_id}/report", headers=student).json()
+    assert body["answers_released"] is True
+
+
+# --- review queue, organizations, exports -------------------------------------
+
+def _flag(client, student_headers, attempt_id, event_type="tab_switch", description="x"):
+    return client.post("/api/v1/proctoring/events", json={
+        "attempt_id": attempt_id, "event_type": event_type, "description": description,
+    }, headers=student_headers)
+
+
+def test_the_review_queue_puts_the_worst_and_oldest_first(client, examiner, seed_roles, admin_token,
+                                                          db_session):
+    """The violations table is newest-first, which buries an unreviewed
+    high-severity flag under a week of routine tab switches -- and an undecided
+    flag counts against the candidate until someone clears it."""
+    from app.models.proctor_event import ProctorEvent
+    from app.models.enums import Severity
+
+    exam_id, _ = _exam_with_questions(client, examiner)
+    student = auth_headers(_register_student_and_login(client, email="queued@example.com"))
+    attempt_id = client.post(f"/api/v1/attempts/start/{exam_id}", headers=student).json()["attempt_id"]
+    for _ in range(3):
+        _flag(client, student, attempt_id)
+
+    # Make one of them high severity, and older than the rest.
+    events = db_session.query(ProctorEvent).order_by(ProctorEvent.id).all()
+    events[2].severity = Severity.HIGH
+    events[2].created_at = datetime.now(timezone.utc) - timedelta(days=3)
+    db_session.commit()
+
+    queue = client.get("/api/v1/admin/review-queue", headers=auth_headers(admin_token))
+    assert queue.status_code == 200, queue.text
+    items = queue.json()["items"]
+    assert items[0]["id"] == events[2].id, "the high-severity, oldest flag was not first"
+    assert items[0]["waiting_hours"] > 60
+    assert items[0]["student_name"]
+
+
+def test_a_decided_violation_leaves_the_queue(client, examiner, seed_roles, admin_token):
+    exam_id, _ = _exam_with_questions(client, examiner)
+    student = auth_headers(_register_student_and_login(client, email="decided@example.com"))
+    attempt_id = client.post(f"/api/v1/attempts/start/{exam_id}", headers=student).json()["attempt_id"]
+    event_id = _flag(client, student, attempt_id).json()["id"]
+
+    assert client.get("/api/v1/admin/review-queue",
+                      headers=auth_headers(admin_token)).json()["total"] == 1
+
+    client.patch(f"/api/v1/proctoring/events/{event_id}/decision",
+                 json={"decision": "dismissed"}, headers=auth_headers(admin_token))
+
+    assert client.get("/api/v1/admin/review-queue",
+                      headers=auth_headers(admin_token)).json()["total"] == 0
+
+
+def test_the_organizations_overview_counts_what_is_in_each(client, examiner, seed_roles, admin_token):
+    """Organizations decide which candidates an examiner sees and which exams a
+    student may sit, and there was no page showing which existed."""
+    _exam_with_questions(client, examiner)
+    rows = client.get("/api/v1/admin/organizations/overview", headers=auth_headers(admin_token))
+    assert rows.status_code == 200, rows.text
+    assert rows.json(), "no organizations reported despite an examiner owning one"
+    org = rows.json()[0]
+    assert org["examiner_count"] >= 1
+    assert org["exam_count"] >= 1
+    assert "pending_invites" in org
+
+
+def test_an_export_returns_csv_and_is_recorded(client, seed_roles, admin_token):
+    """An export is the moment data leaves the platform. Without a record,
+    "who took a copy of the candidate list?" has no answer."""
+    _register_student_and_login(client, email="exported@example.com")
+
+    response = client.get("/api/v1/admin/export/candidates", headers=auth_headers(admin_token))
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("text/csv")
+    assert "attachment" in response.headers["content-disposition"]
+
+    body = response.text
+    assert body.splitlines()[0].startswith("id,full_name,email")
+    assert "exported@example.com" in body
+
+    feed = client.get("/api/v1/admin/activity", headers=auth_headers(admin_token)).json()
+    assert any(entry["type"] == "data_exported" for entry in feed), "the export left no record"
+
+
+def test_an_export_never_contains_biometric_material(client, examiner, seed_roles, admin_token):
+    """A CSV is exactly the artefact that escapes the individually-authorised
+    endpoints those images are served through."""
+    exam_id, _ = _exam_with_questions(client, examiner)
+    student = auth_headers(_register_student_and_login(client, email="biometric@example.com"))
+    attempt_id = client.post(f"/api/v1/attempts/start/{exam_id}", headers=student).json()["attempt_id"]
+    _flag(client, student, attempt_id)
+
+    for kind in ("candidates", "examiners", "violations"):
+        body = client.get(f"/api/v1/admin/export/{kind}", headers=auth_headers(admin_token)).text.lower()
+        for forbidden in ("image_path", "screenshot_path", "base64", "embedding", "face_"):
+            assert forbidden not in body, f"{kind} export leaked {forbidden}"
+
+
+def test_an_export_respects_the_current_filter(client, seed_roles, admin_token):
+    _register_student_and_login(client, email="keep@example.com")
+    _register_student_and_login(client, email="drop@example.com")
+
+    body = client.get("/api/v1/admin/export/candidates?search=keep",
+                      headers=auth_headers(admin_token)).text
+    assert "keep@example.com" in body
+    assert "drop@example.com" not in body, "the export ignored the filter on screen"
+
+
+def test_only_an_admin_can_export(client, examiner, seed_roles):
+    assert client.get("/api/v1/admin/export/candidates", headers=examiner).status_code == 403
+
+
+def test_an_unknown_export_is_refused(client, seed_roles, admin_token):
+    assert client.get("/api/v1/admin/export/passwords",
+                      headers=auth_headers(admin_token)).status_code == 400
+
+
+def test_the_settings_endpoint_never_returns_a_secret(client, seed_roles, admin_token):
+    """A settings page is exactly where a signing key or an SMTP password would
+    end up travelling through an API response into a browser, and from there
+    into a screenshot."""
+    response = client.get("/api/v1/admin/settings", headers=auth_headers(admin_token))
+    assert response.status_code == 200, response.text
+
+    from app.core.config import settings as app_settings
+    blob = response.text.lower()
+
+    # Secret VALUES, not any key whose name happens to contain "password" --
+    # `password_min_length` is a policy number and belongs here.
+    for value in (app_settings.SECRET_KEY, app_settings.DATABASE_URL, app_settings.SMTP_PASSWORD):
+        if value:
+            assert value.lower() not in blob, "the settings endpoint leaked a secret value"
+
+    # And the field names that would only ever carry one.
+    for name in ("secret_key", "smtp_password", "database_url", "redis_url", "smtp_user"):
+        assert name not in blob, f"the settings endpoint exposed {name!r}"
+    # But it does answer the question an administrator actually has.
+    assert "configured" in response.json()["email"]
+    assert response.json()["proctoring"]["strike_limit"] == app_settings.LOCKDOWN_STRIKE_LIMIT
+
+
+def test_only_an_admin_can_read_the_settings(client, examiner, seed_roles):
+    assert client.get("/api/v1/admin/settings", headers=examiner).status_code == 403

@@ -431,46 +431,99 @@ def access_request_message(*, first_name: str, last_name: str, email: str,
     return subject, text, html
 
 
-def credentials_message(*, full_name: str, email: str, password: str,
-                        organization_name: str | None) -> tuple[str, str, str]:
-    """Sent TO a newly approved examiner with their initial credentials.
+def activation_message(*, full_name: str, email: str, activation_url: str,
+                       expires_hours: int, organization_name: str | None,
+                       role_label: str = "examiner") -> tuple[str, str, str]:
+    """Sent to a newly created account so its owner can set their own password.
 
-    The password is in the body because there is nowhere else to put it: this
-    account has no other channel yet and no existing password to authenticate a
-    reset against. That is why the message tells them to change it immediately
-    -- the credential is only as private as their mailbox.
+    This replaces a message that mailed the password itself. That older design
+    had three problems that no amount of "please change it immediately" fixes:
+
+      1. The password sat in an inbox forever, in plain text, on whatever mail
+         providers it passed through -- long after the account was in use.
+      2. Whoever created the account knew the password, so "only this person
+         could have done that" was never true of anything the account did.
+      3. Mailbox compromise handed over a live credential rather than a link
+         that expires.
+
+    A link carries the same convenience with none of that: it expires, it is
+    single-use, it is stored only as a hash, and the password that ends up on
+    the account was chosen by its owner and has never been transmitted.
     """
-    subject = "Your Merit.Ai examiner account is ready"
-    login_url = f"{settings.APP_BASE_URL.rstrip('/')}/login"
+    subject = "Activate your Merit.Ai account"
     org_line = f"Organization: {organization_name}\n" if organization_name else ""
+    window = "1 hour" if expires_hours == 1 else f"{expires_hours} hours"
     text = (
         f"Hello {full_name},\n\n"
-        "Your examiner account on Merit.Ai has been approved and is ready to use.\n\n"
-        f"Email:    {email}\n"
-        f"Password: {password}\n"
+        f"An {role_label} account has been created for you on Merit.Ai. "
+        "Choose a password to activate it.\n\n"
+        f"Email: {email}\n"
         f"{org_line}\n"
-        f"Sign in here: {login_url}\n\n"
-        "Please change this password as soon as you sign in -- it was sent by email and "
-        "should be treated as temporary.\n"
+        f"Activate your account: {activation_url}\n\n"
+        f"This link works once and expires in {window}. If it has already expired, "
+        "use \"Forgot password\" on the sign-in page to get a new one.\n\n"
+        "If you were not expecting this, you can ignore this email -- the account "
+        "cannot be used until a password is set.\n"
     )
-    credential_rows = [("Email", email),
-                       ("Password", f'<span style="font-family:ui-monospace,SFMono-Regular,Menlo,'
-                                    f'monospace;font-weight:700;">{password}</span>')]
+    rows = [("Email", email)]
     if organization_name:
-        credential_rows.append(("Organization", organization_name))
+        rows.append(("Organization", organization_name))
 
     html = _wrap(
-        "Your examiner account is ready",
-        _paragraph(f"Hello {full_name}, your examiner account on Merit.Ai has been approved.")
+        "Activate your account",
+        _paragraph(f"Hello {full_name}, an {role_label} account has been created for you on "
+                   "Merit.Ai. Choose a password to activate it.")
         + f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
           f'style="background-color:{_PAGE};border:1px solid {_BORDER};border-radius:12px;margin:0 0 22px;">'
-          f'<tr><td style="padding:20px 22px;">{_detail_rows(credential_rows).replace("margin:0 0 22px", "margin:0")}</td></tr>'
+          f'<tr><td style="padding:20px 22px;">{_detail_rows(rows).replace("margin:0 0 22px", "margin:0")}</td></tr>'
           f'</table>'
-        + _button("Sign in", login_url)
-        + f'<p style="margin:22px 0 0;font-family:{_FONT};font-size:13px;line-height:1.6;color:#b45309;">'
-          "<strong>Change this password as soon as you sign in.</strong> "
-          "It was sent over email, so treat it as temporary.</p>",
-        preheader="Your Merit.Ai examiner account has been approved.",
+        + _button("Choose a password", activation_url)
+        + f'<p style="margin:22px 0 0;font-family:{_FONT};font-size:13px;line-height:1.6;color:{_MUTED};">'
+          f"This link works once and expires in {window}. If you were not expecting this, "
+          "you can ignore it \u2014 the account cannot be used until a password is set.</p>",
+        preheader="Choose a password to activate your Merit.Ai account.",
+    )
+    return subject, text, html
+
+
+def staff_login_message(*, full_name: str, role_label: str, when: str,
+                        ip: str | None, user_agent: str | None) -> tuple[str, str, str]:
+    """Tells a staff member their account was just signed into.
+
+    Only staff. An examiner or admin account can read candidate identity
+    photographs, alter results and export personal data, so an unexpected
+    sign-in is worth interrupting someone's inbox for. Sending the same for
+    every candidate login would produce one email per exam per student, which
+    is how a security notice becomes something people filter away.
+
+    Deliberately not blocking and deliberately not fatal: this is a notice, not
+    a control. Losing one to a mail outage must never stop somebody signing in.
+    """
+    subject = "New sign-in to your Merit.Ai account"
+    rows = [("When", when), ("Account type", role_label.title())]
+    if ip:
+        rows.append(("IP address", ip))
+    if user_agent:
+        rows.append(("Device", user_agent[:120]))
+
+    reset_url = f"{settings.APP_BASE_URL.rstrip('/')}/forgot-password"
+    text = (
+        f"Hello {full_name},\n\n"
+        f"Your Merit.Ai {role_label} account was just signed into.\n\n"
+        + "".join(f"{label}: {value}\n" for label, value in rows)
+        + f"\nIf this was you, nothing to do.\n"
+        f"If it was not, reset your password immediately: {reset_url}\n"
+        "Resetting signs out every existing session.\n"
+    )
+    html = _wrap(
+        "New sign-in to your account",
+        _paragraph(f"Hello {full_name}, your Merit.Ai {role_label} account was just signed into.")
+        + _detail_rows(rows)
+        + _paragraph("If this was you, there is nothing to do.")
+        + _button("This wasn't me \u2014 reset my password", reset_url)
+        + f'<p style="margin:22px 0 0;font-family:{_FONT};font-size:13px;line-height:1.6;color:{_MUTED};">'
+          "Resetting your password signs out every existing session.</p>",
+        preheader="Your Merit.Ai staff account was just signed into.",
     )
     return subject, text, html
 

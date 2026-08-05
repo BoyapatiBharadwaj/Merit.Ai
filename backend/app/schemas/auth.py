@@ -22,6 +22,11 @@ class TokenResponse(BaseModel):
     first_name: str = ""
     last_name: str = ""
     user_id: int
+    # True when the password on this account was set by somebody else (an
+    # approval, an admin reset). The app routes such a session straight to a
+    # password change: until it happens, two people hold the credential and
+    # nothing the account does is attributable to its owner alone.
+    must_change_password: bool = False
 
 
 class RegisterStudentRequest(BaseModel):
@@ -126,3 +131,19 @@ class PasswordResetConfirmRequest(BaseModel):
     email: EmailField
     code: str = Field(min_length=4, max_length=12)
     new_password: PasswordField
+
+
+class ActivationCheck(BaseModel):
+    """Ask whether an activation link is still good, before showing the form.
+
+    Separate from the activation itself so the screen can say "this link has
+    expired, ask for a new one" instead of letting somebody choose a password,
+    submit it, and only then be told the link was dead. The check does not
+    consume the token.
+    """
+    email: EmailField
+    token: str = Field(min_length=16, max_length=200)
+
+
+class ActivationRequest(ActivationCheck):
+    password: PasswordField

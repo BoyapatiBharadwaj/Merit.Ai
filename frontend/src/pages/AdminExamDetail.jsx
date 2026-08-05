@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Navigate, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
+import RedirectToLogin from "../components/RedirectToLogin.jsx";
 import DashboardHeader from "../components/DashboardHeader.jsx";
 import Icon from "../components/Icon.jsx";
 import EmptyState from "../components/EmptyState.jsx";
@@ -51,7 +52,7 @@ export default function AdminExamDetail() {
       .catch((err) => setLoadError(err instanceof ApiError ? err.message : "Couldn't load enrolled students."));
   }, [examId, search, examStatus, result, risk, verification]);
 
-  if (!isLoggedIn() || getRole() !== "admin") return <Navigate to="/login" replace />;
+  if (!isLoggedIn() || getRole() !== "admin") return <RedirectToLogin />;
 
   return (
     <div className="min-h-screen bg-page text-ink">

@@ -11,7 +11,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.attempt import StudentExamAttempt
-from app.models.enums import AttemptStatus
+from app.models.enums import AdminDecision, AttemptStatus, Severity
 from app.models.exam import Exam
 from app.models.examiner import Examiner
 from app.models.organization import ExamParticipant
@@ -254,3 +254,79 @@ def list_live_attempts(db: Session) -> list[StudentExamAttempt]:
         .order_by(StudentExamAttempt.started_at.desc())
         .all()
     )
+
+
+def review_queue(db: Session, *, offset: int, limit: int) -> tuple[list[ProctorEvent], int]:
+    """Violations waiting on a human, worst and oldest first.
+
+    The general violations table shows everything in reverse chronological
+    order, which is the wrong order for a reviewer: the newest event is rarely
+    the most important, and an unreviewed high-severity flag from last week
+    sinks below a week of routine tab switches. Nothing surfaced what still
+    needed a decision, so in practice nothing got decided -- and an
+    undecided flag counts against the candidate (see adjudicated_risk).
+
+    Ordered by severity, then age: the oldest untouched high-severity event is
+    the one a candidate has been waiting on longest.
+    """
+    from sqlalchemy import case
+
+    severity_rank = case(
+        (ProctorEvent.severity == Severity.HIGH, 0),
+        (ProctorEvent.severity == Severity.MEDIUM, 1),
+        else_=2,
+    )
+    query = (
+        db.query(ProctorEvent)
+        .join(StudentExamAttempt, ProctorEvent.attempt_id == StudentExamAttempt.id)
+        .join(Exam, StudentExamAttempt.exam_id == Exam.id)
+        .options(joinedload(ProctorEvent.attempt)
+                 .joinedload(StudentExamAttempt.student)
+                 .joinedload(Student.user))
+        .filter(ProctorEvent.admin_decision == AdminDecision.PENDING)
+    )
+    total = query.order_by(None).count()
+    rows = (query.order_by(severity_rank, ProctorEvent.created_at.asc())
+            .offset(offset).limit(limit).all())
+    return rows, total
+
+
+def organizations_overview(db: Session) -> list[dict]:
+    """Every organization with the counts an administrator needs to act on.
+
+    Organizations are the tenancy boundary -- they decide which candidates an
+    examiner sees and which exams a student can sit -- and there was no page
+    showing which existed or what was in them. Aggregated in four grouped
+    queries rather than a loop per organization.
+    """
+    from app.models.organization import Organization, OrganizationMember
+
+    orgs = db.query(Organization).order_by(Organization.name).all()
+    if not orgs:
+        return []
+
+    def _counts(query):
+        return {key: value for key, value in query.all()}
+
+    examiners = _counts(db.query(Examiner.organization_id, func.count(Examiner.id))
+                        .group_by(Examiner.organization_id))
+    students = _counts(db.query(Student.organization_id, func.count(Student.id))
+                       .group_by(Student.organization_id))
+    exams = _counts(db.query(Exam.organization_id, func.count(Exam.id))
+                    .group_by(Exam.organization_id))
+    # Roster entries with no student account yet: people invited but not
+    # registered. Counted separately because "50 on the roster, 12 registered"
+    # is the number an administrator chasing enrolment actually wants.
+    pending = _counts(db.query(OrganizationMember.organization_id, func.count(OrganizationMember.id))
+                      .filter(OrganizationMember.student_id.is_(None))
+                      .group_by(OrganizationMember.organization_id))
+
+    return [{
+        "id": org.id,
+        "name": org.name,
+        "examiner_count": examiners.get(org.id, 0),
+        "candidate_count": students.get(org.id, 0),
+        "exam_count": exams.get(org.id, 0),
+        "pending_invites": pending.get(org.id, 0),
+        "created_at": org.created_at,
+    } for org in orgs]

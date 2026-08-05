@@ -1,11 +1,12 @@
 import { Navigate } from "react-router-dom";
+import RedirectToLogin from "../components/RedirectToLogin.jsx";
 import StudentDashboard from "./StudentDashboard.jsx";
 import AdminDashboard from "./AdminDashboard.jsx";
 import ExaminerDashboard from "./ExaminerDashboard.jsx";
 import { isLoggedIn, getRole } from "../lib/auth.js";
 
 export default function Dashboard() {
-  if (!isLoggedIn()) return <Navigate to="/login" replace />;
+  if (!isLoggedIn()) return <RedirectToLogin />;
 
   const role = getRole();
   if (role === "student") return <StudentDashboard />;

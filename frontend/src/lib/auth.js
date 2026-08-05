@@ -17,7 +17,11 @@ const ROLE_KEY = "aep_role";
 const NAME_KEY = "aep_name";
 const USER_ID_KEY = "aep_user_id";
 const REMEMBER_KEY = "aep_remember";
-const SESSION_KEYS = [TOKEN_KEY, ROLE_KEY, NAME_KEY, USER_ID_KEY];
+// Whether this account is holding a password its owner never chose (an admin
+// reset, or an account created for them). Kept alongside the session because it
+// is a property of the session, and cleared the moment they set their own.
+const MUST_CHANGE_KEY = "aep_must_change_password";
+const SESSION_KEYS = [TOKEN_KEY, ROLE_KEY, NAME_KEY, USER_ID_KEY, MUST_CHANGE_KEY];
 
 function activeStorage() {
   return localStorage.getItem(REMEMBER_KEY) === "0" ? sessionStorage : localStorage;
@@ -39,6 +43,26 @@ export function setSession(data, remember = true) {
   store.setItem(ROLE_KEY, data.role);
   store.setItem(NAME_KEY, data.full_name);
   store.setItem(USER_ID_KEY, String(data.user_id));
+  if (data.must_change_password) store.setItem(MUST_CHANGE_KEY, "1");
+  else store.removeItem(MUST_CHANGE_KEY);
+}
+
+/**
+ * Is this account signed in on a password somebody else chose?
+ *
+ * Surfaced rather than enforced with a redirect, deliberately. Students cannot
+ * change their own password on this platform (users.change_my_password refuses
+ * them by design), so forcing every flagged session to a change-password screen
+ * would strand exactly the role that has no form to fill in. A notice that
+ * names the right route for each role is the honest version.
+ */
+export function mustChangePassword() {
+  return activeStorage().getItem(MUST_CHANGE_KEY) === "1";
+}
+
+/** Called once the owner has set their own password. */
+export function clearMustChangePassword() {
+  [localStorage, sessionStorage].forEach((store) => store.removeItem(MUST_CHANGE_KEY));
 }
 
 export function clearSession() {
@@ -58,8 +82,55 @@ export function getName() {
   return activeStorage().getItem(NAME_KEY);
 }
 
+/**
+ * Read the expiry out of a JWT without verifying it.
+ *
+ * Verification is the server's job and always will be -- this is only to avoid
+ * navigating somebody to a page that is about to bounce them. A forged token
+ * that lies about its expiry gains nothing: every request is still checked
+ * server-side.
+ */
+function tokenExpiry(token) {
+  try {
+    const payload = JSON.parse(atob(token.split(".")[1]));
+    return typeof payload.exp === "number" ? payload.exp * 1000 : null;
+  } catch {
+    // Not a JWT we can read. Treat it as having no expiry rather than as
+    // invalid: the server is the authority, and locking someone out over an
+    // unparseable local string would be the wrong failure.
+    return null;
+  }
+}
+
+/**
+ * Is there a session worth acting on?
+ *
+ * This used to be `!!getToken()` -- true for a token that expired two hours
+ * ago. So Login redirected to Dashboard, Dashboard fetched, the API returned
+ * 401, the session was cleared and the person landed back at Login having been
+ * bounced through two screens for nothing. Checking the expiry we already hold
+ * turns that into a normal, immediate "please sign in".
+ */
 export function isLoggedIn() {
-  return !!getToken();
+  const token = getToken();
+  if (!token) return false;
+
+  const expiresAt = tokenExpiry(token);
+  if (expiresAt !== null && Date.now() >= expiresAt) {
+    // Clear it on the way out. Leaving a token known to be dead in storage
+    // means every subsequent check pays the same round trip to rediscover it.
+    clearSession();
+    return false;
+  }
+  return true;
+}
+
+/** Milliseconds until the session expires, or null if it does not/cannot say. */
+export function sessionExpiresIn() {
+  const token = getToken();
+  if (!token) return null;
+  const expiresAt = tokenExpiry(token);
+  return expiresAt === null ? null : Math.max(0, expiresAt - Date.now());
 }
 
 export function roleLabel(role) {

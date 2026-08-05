@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Navigate, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
+import RedirectToLogin from "../components/RedirectToLogin.jsx";
 import DashboardHeader from "../components/DashboardHeader.jsx";
 import Icon from "../components/Icon.jsx";
 import EmptyState from "../components/EmptyState.jsx";
@@ -54,7 +55,7 @@ export default function AdminExaminerDetail() {
       .catch((err) => setLoadError(err instanceof ApiError ? err.message : "Couldn't load exams."));
   }, [examinerId, tab]);
 
-  if (!isLoggedIn() || getRole() !== "admin") return <Navigate to="/login" replace />;
+  if (!isLoggedIn() || getRole() !== "admin") return <RedirectToLogin />;
 
   async function handleToggleActive() {
     setBusy(true);
@@ -156,8 +157,10 @@ export default function AdminExaminerDetail() {
           <StatCard label="Active Exams" value={detail ? detail.active_exams : null} tone="success" />
           <StatCard label="Upcoming Exams" value={detail ? detail.upcoming_exams : null} tone="primary" />
           <StatCard label="Completed Exams" value={detail ? detail.completed_exams : null} tone="muted" />
-          <StatCard label="Total Candidates" value={detail ? detail.total_candidates : null} tone="primary" />
-          <StatCard label="Total Violations" value={detail ? detail.total_violations : null} tone="danger" />
+          <StatCard label="Total Candidates" value={detail ? detail.total_candidates : null} tone="primary"
+                    hint="Distinct people who attempted their exams" />
+          <StatCard label="Total Violations" value={detail ? detail.total_violations : null} tone="danger"
+                    hint="All flags recorded, including dismissed" />
         </div>
 
         <Tabs tabs={TABS} active={tab} onChange={setTab} />

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { useParams, useNavigate, useLocation, Navigate } from "react-router-dom";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
+import RedirectToLogin from "../components/RedirectToLogin.jsx";
 import DashboardHeader from "../components/DashboardHeader.jsx";
 import Icon from "../components/Icon.jsx";
 import { btnPrimary, btnGhost } from "../lib/ui.js";
@@ -54,7 +55,7 @@ export default function Results() {
     };
   }, [attemptId]);
 
-  if (!isLoggedIn()) return <Navigate to="/login" replace />;
+  if (!isLoggedIn()) return <RedirectToLogin />;
 
   async function handleDownloadReport() {
     setDownloadError("");
@@ -70,7 +71,20 @@ export default function Results() {
 
   const pct = report ? Math.round(report.percentage * 10) / 10 : null;
   const passed = report ? report.passed : null;
-  const autoSubmitted = Boolean(location.state?.autoSubmitted);
+  /**
+   * Was this attempt auto-submitted?
+   *
+   * Read from the REPORT, with router state only as a hint. It used to come
+   * from router state alone, which meant the notice appeared exactly once --
+   * on the navigation straight out of the exam -- and vanished on reload, on a
+   * bookmark, and for anyone opening the report later. Whether the clock ran
+   * out is a permanent fact about the attempt, and the server records it as
+   * such (AttemptStatus.AUTO_SUBMITTED); reading it from the thing that knows
+   * makes the notice survive a refresh.
+   */
+  const autoSubmitted = report?.status
+    ? report.status === "auto_submitted"
+    : Boolean(location.state?.autoSubmitted);
 
   return (
     <div className="min-h-screen flex flex-col bg-page text-ink">
@@ -99,7 +113,10 @@ export default function Results() {
             {autoSubmitted && (
               <div className="flex items-start gap-2.5 rounded-xl border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning font-medium">
                 <Icon name="clock" width={16} height={16} className="mt-0.5 shrink-0" />
-                <span>Your exam was automatically submitted because the allotted time expired. Everything you had answered was saved.</span>
+                <span>
+                  Your exam was submitted automatically when the time ran out. Everything you had
+                  answered was saved — nothing was lost, and this does not count against you.
+                </span>
               </div>
             )}
 

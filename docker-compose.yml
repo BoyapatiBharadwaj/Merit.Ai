@@ -207,6 +207,16 @@ services:
       OTP_TTL_MINUTES: ${OTP_TTL_MINUTES:-10}
       OTP_MAX_ATTEMPTS: ${OTP_MAX_ATTEMPTS:-5}
       OTP_RESEND_COOLDOWN_SECONDS: ${OTP_RESEND_COOLDOWN_SECONDS:-60}
+      # Activation links. Passwords are never emailed: approving an access
+      # request creates the account with an unusable random secret and mails a
+      # single-use link the owner sets their own password from.
+      ACTIVATION_TTL_HOURS: ${ACTIVATION_TTL_HOURS:-72}
+      # "open" (anyone may register) or "invite" (only addresses already on an
+      # exam or organization roster). Open is right for a trial, invite for an
+      # institution.
+      REGISTRATION_MODE: ${REGISTRATION_MODE:-open}
+      # Examiner/admin sign-ins get an email; candidate sign-ins do not.
+      NOTIFY_STAFF_ON_LOGIN: ${NOTIFY_STAFF_ON_LOGIN:-true}
       EXAM_REMINDER_ENABLED: ${EXAM_REMINDER_ENABLED:-true}
       EXAM_REMINDER_MINUTES_BEFORE: ${EXAM_REMINDER_MINUTES_BEFORE:-5}
       EXAM_REMINDER_POLL_SECONDS: ${EXAM_REMINDER_POLL_SECONDS:-60}

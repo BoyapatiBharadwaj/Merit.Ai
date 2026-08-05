@@ -14,6 +14,8 @@ registered addresses.
 import logging
 from datetime import datetime, timezone
 
+import secrets
+
 from fastapi import BackgroundTasks, HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -22,7 +24,7 @@ from app.models.access_request import AccessRequest
 from app.models.enums import AccessRequestStatus
 from app.models.user import User
 from app.repositories import access_request_repository, user_repository
-from app.services import auth_service, email_service
+from app.services import auth_service, email_service, otp_service
 
 logger = logging.getLogger("app")
 
@@ -98,7 +100,7 @@ def _load_pending(db: Session, request_id: int) -> AccessRequest:
     return request
 
 
-def approve(db: Session, request_id: int, admin: User, password: str, review_note: str | None,
+def approve(db: Session, request_id: int, admin: User, review_note: str | None,
             background: BackgroundTasks | None = None) -> AccessRequest:
     """Approve a request and mint the examiner account it asked for.
 
@@ -121,16 +123,30 @@ def approve(db: Session, request_id: int, admin: User, password: str, review_not
             "An account already exists for this email. Reject this request instead.",
         )
 
+    # A password nobody has, nobody typed and nobody will ever use.
+    #
+    # The approving admin used to choose this and it was mailed to the new
+    # examiner in plain text. Two things were wrong with that beyond the email
+    # itself: the admin knew the password, so "only this examiner could have
+    # done that" was never true of anything the account did; and the credential
+    # outlived its usefulness in an inbox indefinitely. Now the account is born
+    # with 256 bits of noise as its password and the only way in is the
+    # activation link -- which expires, works once, and is stored as a hash.
+    placeholder = secrets.token_urlsafe(32)
+
     user, examiner = auth_service.create_examiner(
         db,
         admin.id,
         request.first_name,
         request.last_name,
         request.email,
-        password,
+        placeholder,
         request.organization_name,
         commit=False,
     )
+    # Flagged from the start: nothing this account does is attributable to its
+    # owner until they have set their own password.
+    user.must_change_password = True
 
     try:
         request.status = AccessRequestStatus.APPROVED
@@ -138,6 +154,10 @@ def approve(db: Session, request_id: int, admin: User, password: str, review_not
         request.reviewed_by_id = admin.id
         request.review_note = review_note
         request.created_user_id = user.id
+        # Minted inside the transaction so an approval that rolls back leaves no
+        # usable link behind; handed to the mailer strictly after the commit,
+        # because an email cannot be rolled back.
+        token, expires_at = otp_service.issue_activation_token(db, email=request.email)
         db.commit()
         db.refresh(request)
         db.refresh(user)
@@ -146,14 +166,15 @@ def approve(db: Session, request_id: int, admin: User, password: str, review_not
         db.rollback()
         raise
 
-    # Strictly AFTER the commit. Queuing the credentials email inside the try
-    # block would mean a rollback still sends someone a working-looking password
-    # for an account that does not exist -- and unlike the database, an email
-    # cannot be rolled back once it is on its way.
-    subject, text, html = email_service.credentials_message(
+    # Strictly AFTER the commit. Queuing the mail inside the try block would
+    # mean a rollback still sends someone a working-looking link for an account
+    # that does not exist -- and unlike the database, an email cannot be rolled
+    # back once it is on its way.
+    subject, text, html = email_service.activation_message(
         full_name=request.full_name,
         email=request.email,
-        password=password,
+        activation_url=otp_service.activation_link(token, request.email),
+        expires_hours=settings.ACTIVATION_TTL_HOURS,
         organization_name=request.organization_name,
     )
     email_service.queue(background, to=request.email, subject=subject, text_body=text, html_body=html)

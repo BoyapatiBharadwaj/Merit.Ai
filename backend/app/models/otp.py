@@ -32,6 +32,12 @@ class OtpPurpose(str, enum.Enum):
     """
     SIGNUP = "signup"
     PASSWORD_RESET = "password_reset"
+    # An account someone else created for you, which you have not set a password
+    # on yet. Shares this table because the mechanics are identical -- a hashed,
+    # expiring, single-use secret mailed to an address -- but the secret is a
+    # long random token rather than six digits, because it is carried by a link
+    # rather than typed, and because its lifetime is measured in days.
+    ACTIVATION = "activation"
 
 
 class OtpCode(Base):
@@ -42,7 +48,8 @@ class OtpCode(Base):
     email = Column(String(150), nullable=False, index=True)
     purpose = Column(db_enum(OtpPurpose), nullable=False)
 
-    # HMAC-SHA256 of the code, keyed with SECRET_KEY. Hex, so 64 characters.
+    # HMAC-SHA256 of the code or token, keyed with SECRET_KEY. Hex, so 64
+    # characters regardless of how long the secret itself is.
     code_hash = Column(String(64), nullable=False)
 
     expires_at = Column(DateTime(timezone=True), nullable=False)

@@ -19,36 +19,9 @@ from app.services import email_service, otp_service, reminder_service
 from tests.conftest import auth_headers
 
 
-@pytest.fixture
-def outbox(monkeypatch):
-    """Capture every message the app tries to send.
+# `outbox` and `email_on` live in conftest.py -- see the note there about the
+# two delivery paths being normalised to one shape.
 
-    Patched at `email_service.send`, the single choke point every other helper
-    funnels through, so a new caller added later is covered by this fixture
-    automatically rather than needing its own stub.
-    """
-    sent = []
-
-    def _capture(*, to, subject, text_body, html_body=None):
-        sent.append({"to": to, "subject": subject, "text": text_body, "html": html_body})
-        return True
-
-    monkeypatch.setattr(email_service, "send", _capture)
-    # `queue` closes over the module-global `send`, so patching send is enough
-    # for the inline path -- but BackgroundTasks defers the call past the point
-    # TestClient returns, so route it inline to make assertions deterministic.
-    monkeypatch.setattr(email_service, "queue",
-                        lambda background, **kw: sent.append({**kw, "html_body": kw.get("html_body")}) or None)
-    return sent
-
-
-@pytest.fixture
-def email_on(monkeypatch):
-    """Pretend this deployment has working SMTP configured."""
-    monkeypatch.setattr(email_service, "is_enabled", lambda: True)
-
-
-# --- the SMTP wrapper ---------------------------------------------------------
 
 def test_send_is_a_no_op_when_email_is_disabled(monkeypatch):
     """The default for a fresh clone and the whole test suite. Must not raise."""
@@ -251,7 +224,14 @@ def test_a_repeat_access_request_does_not_email_again(client, seed_roles, email_
     assert len(outbox) == 1
 
 
-def test_approving_a_request_emails_the_examiner_their_credentials(client, admin_token, email_on, outbox):
+def test_approving_a_request_emails_an_activation_link_and_no_password(client, admin_token, email_on, outbox):
+    """The message must carry a link, not a credential.
+
+    This asserted the opposite until the approval flow changed: that the
+    password the admin typed appeared verbatim in the email body. That was the
+    behaviour, and it was the bug -- a live credential sitting in a mailbox in
+    plain text, known to the person who created the account.
+    """
     client.post("/api/v1/access-requests", json={
         "first_name": "Asha", "last_name": "Rao", "email": "asha@college.edu",
         "organization_name": "Example College",
@@ -261,12 +241,23 @@ def test_approving_a_request_emails_the_examiner_their_credentials(client, admin
 
     requests = client.get("/api/v1/access-requests", headers=auth_headers(admin_token)).json()
     response = client.post(f"/api/v1/access-requests/{requests[0]['id']}/approve",
-                           json={"password": "Examiner@123"}, headers=auth_headers(admin_token))
+                           json={"review_note": None}, headers=auth_headers(admin_token))
     assert response.status_code == 200
 
     delivered = [m for m in outbox if m["to"] == "asha@college.edu"]
     assert len(delivered) == 1
-    assert "Examiner@123" in delivered[0]["text_body"]
+    body = delivered[0]["text"]
+    assert "/activate?token=" in body
+    assert "Password:" not in body
+    # The account's actual stored secret is random bytes nobody has seen. If any
+    # part of it leaked into the message this would find it.
+    from app.models.user import User
+    from app.database.session import SessionLocal
+
+    with SessionLocal() as session:
+        stored = session.query(User).filter(User.email == "asha@college.edu").one()
+        assert stored.hashed_password not in body
+        assert stored.must_change_password is True
 
 
 # --- exam notifications and the reminder scheduler ----------------------------

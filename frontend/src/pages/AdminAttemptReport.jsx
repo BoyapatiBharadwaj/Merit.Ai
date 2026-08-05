@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Navigate, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
+import RedirectToLogin from "../components/RedirectToLogin.jsx";
 import DashboardHeader from "../components/DashboardHeader.jsx";
 import Icon from "../components/Icon.jsx";
 import Breadcrumbs from "../components/Breadcrumbs.jsx";
@@ -70,7 +71,7 @@ export default function AdminAttemptReport() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [attemptId]);
 
-  if (!isLoggedIn() || getRole() !== "admin") return <Navigate to="/login" replace />;
+  if (!isLoggedIn() || getRole() !== "admin") return <RedirectToLogin />;
 
   async function handleDecisionChange(eventId, decision) {
     const previous = report.violation_timeline;

@@ -2,16 +2,19 @@
 Authentication endpoints: student self-registration, admin-created examiner
 accounts, and login for all roles.
 """
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.core import passwords
 from app.core.config import settings
 from app.core.security import create_access_token
-from app.core.rate_limit import rate_limit
+from app.core.rate_limit import client_ip, rate_limit
 from app.database.session import get_db
 from app.models.otp import OtpPurpose
 from app.schemas.auth import (
+    ActivationCheck, ActivationRequest,
     CreateExaminerRequest, LoginRequest, OtpRequest, OtpRequestAccepted,
     PasswordPolicyOut, PasswordResetConfirmRequest, RegisterStudentRequest,
     RegisterStudentWithOtpRequest, TokenResponse,
@@ -32,6 +35,7 @@ def _token_response(user: User) -> TokenResponse:
         first_name=user.first_name,
         last_name=user.last_name,
         user_id=user.id,
+        must_change_password=bool(user.must_change_password),
     )
 
 
@@ -92,8 +96,43 @@ def create_examiner(payload: CreateExaminerRequest, request: Request, db: Sessio
     return _token_response(user)
 
 
+_STAFF_ROLES = {"admin", "examiner"}
+
+
+def _notify_staff_login(background: BackgroundTasks, user: User, request: Request) -> None:
+    """Email a staff member that their account was just signed into.
+
+    Staff only, and that restriction is the design rather than a limitation. An
+    examiner or admin account can read candidate identity photographs, alter
+    results and export personal data, so an unexpected sign-in is worth an inbox
+    interruption. Sending the same for every candidate login would be one email
+    per student per exam, which is how a security notice turns into something
+    people filter into a folder they never open.
+
+    Queued on the background task runner and never awaited: a mail outage must
+    not stop anybody signing in. This is a notice, not a control.
+    """
+    if not settings.NOTIFY_STAFF_ON_LOGIN:
+        return
+    if (user.role.name or "").lower() not in _STAFF_ROLES:
+        return
+    if not email_service.is_enabled():
+        return
+
+    subject, text, html = email_service.staff_login_message(
+        full_name=user.full_name,
+        role_label=user.role.name,
+        when=datetime.now(timezone.utc).strftime("%d %b %Y, %H:%M UTC"),
+        ip=client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    email_service.queue(background, to=user.email, subject=subject,
+                        text_body=text, html_body=html)
+
+
 @router.post("/login", response_model=TokenResponse, dependencies=[Depends(rate_limit("login"))])
-def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
+def login(payload: LoginRequest, request: Request, background: BackgroundTasks,
+          db: Session = Depends(get_db)):
     try:
         _, user = auth_service.authenticate(db, payload.email, payload.password)
     except HTTPException:
@@ -106,6 +145,7 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
         )
         raise
     activity_service.record(db, activity_type=ActivityType.LOGGED_IN, subject=user, request=request)
+    _notify_staff_login(background, user, request)
     return _token_response(user)
 
 
@@ -217,3 +257,53 @@ def confirm_password_reset(payload: PasswordResetConfirmRequest, request: Reques
     activity_service.record(db, activity_type=ActivityType.PASSWORD_RESET_BY_EMAIL,
                             subject_email=payload.email.strip().lower(), request=request)
     return {"reset": True, "message": "Your password has been updated. You can sign in with it now."}
+
+
+# ------------------------------------------------------------------------------
+# Activation
+#
+# An account somebody else created has no password its owner has ever chosen.
+# These two endpoints are how that changes hands. There is no third endpoint
+# that mails the password out, and that is the point: the older flow put a live
+# credential in an inbox, where it stayed in plain text long after the account
+# was in use, known to whoever created it, so nothing the account did could be
+# attributed to its owner alone.
+# ------------------------------------------------------------------------------
+
+@router.post("/activate/check", dependencies=[Depends(rate_limit("otp_verify"))])
+def check_activation(payload: ActivationCheck, db: Session = Depends(get_db)):
+    """Is this link still good? Does not consume it.
+
+    Asked before the password form is shown, so an expired link says so
+    immediately rather than after somebody has chosen a password, submitted it
+    and been refused. `consume=False` is what keeps this a look, not a spend.
+    """
+    try:
+        otp_service.verify_code(
+            db, email=payload.email, purpose=OtpPurpose.ACTIVATION,
+            code=payload.token, consume=False,
+        )
+    except HTTPException:
+        # Deliberately 200 with valid=false rather than an error status. The
+        # screen needs to distinguish "dead link" from "the server is down",
+        # and an exception status makes those two indistinguishable to a
+        # fetch().catch().
+        return {"valid": False}
+    return {"valid": True}
+
+
+@router.post("/activate", response_model=TokenResponse,
+             dependencies=[Depends(rate_limit("otp_verify"))])
+def activate(payload: ActivationRequest, request: Request, db: Session = Depends(get_db)):
+    """Set the first password on an account and sign in.
+
+    Signing in immediately, rather than bouncing to the login form, is not just
+    convenience: the person has proved control of the mailbox and just chosen
+    the password, so asking them to type it again establishes nothing.
+    """
+    user = auth_service.activate_account(
+        db, email=payload.email, token=payload.token, new_password=payload.password,
+    )
+    activity_service.record(db, activity_type=ActivityType.PASSWORD_CHANGED,
+                            subject=user, request=request)
+    return _token_response(user)

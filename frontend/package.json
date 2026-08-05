@@ -4,14 +4,15 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "npm run vendor:mediapipe && vite",
     "build": "npm run vendor:mediapipe && vite build",
-    "preview": "vite preview",
-    "vendor:mediapipe": "node scripts/vendor-mediapipe.mjs",
+    "check": "node scripts/check-imports.mjs",
+    "dev": "npm run vendor:mediapipe && vite",
     "fetch:model": "node scripts/fetch-face-model.mjs",
     "lint": "eslint src",
     "lint:fix": "eslint src --fix",
-    "check": "node scripts/check-imports.mjs"
+    "preview": "vite preview",
+    "test": "node --test src/**/*.test.mjs",
+    "vendor:mediapipe": "node scripts/vendor-mediapipe.mjs"
   },
   "dependencies": {
     "@fontsource/inter": "5.0.20",

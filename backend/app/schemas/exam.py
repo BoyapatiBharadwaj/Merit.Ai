@@ -47,6 +47,16 @@ class ExamCreate(BaseModel):
     randomize_questions: bool = True
     randomize_options: bool = True
     proctoring_enabled: bool = True
+    # Per-exam requirements, settable at creation as well as on edit. None means
+    # "follow proctoring_enabled" -- see Exam.requires().
+    require_camera: bool | None = None
+    require_microphone: bool | None = None
+    require_screen_share: bool | None = None
+    require_fullscreen: bool | None = None
+    # When candidates may see the answer key. None = immediately, which is what
+    # every exam did before this existed.
+    release_results_at: datetime | None = None
+    show_answers_on_release: bool = True
     start_time: datetime | None = None
     end_time: datetime | None = None
     # Optional address told when this exam is published and again shortly

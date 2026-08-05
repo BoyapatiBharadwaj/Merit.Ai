@@ -141,6 +141,11 @@ function ExamDetailsForm({ exam, onUpdated }) {
     description: exam.description || "",
     instructions: exam.instructions || "",
     notifyEmail: exam.notify_email || "",
+    requireCamera: exam.require_camera,
+    requireMicrophone: exam.require_microphone,
+    requireScreenShare: exam.require_screen_share,
+    requireFullscreen: exam.require_fullscreen,
+    releaseResultsAt: toDatetimeLocalValue(exam.release_results_at),
     duration: String(exam.duration_minutes ?? ""),
     passPercentage: String(exam.pass_percentage ?? 40),
     randomizeQuestions: exam.randomize_questions,
@@ -175,6 +180,11 @@ function ExamDetailsForm({ exam, onUpdated }) {
         description: form.description.trim() || null,
         instructions: form.instructions.trim() || null,
         notify_email: form.notifyEmail.trim() || null,
+        require_camera: form.requireCamera,
+        require_microphone: form.requireMicrophone,
+        require_screen_share: form.requireScreenShare,
+        require_fullscreen: form.requireFullscreen,
+        release_results_at: form.releaseResultsAt ? new Date(form.releaseResultsAt).toISOString() : null,
         duration_minutes: parseInt(form.duration, 10),
         // parseInt(..) || 40 turned a valid 0 into 40, because 0 is falsy.
         // The server has always accepted a 0% pass mark; the form silently
@@ -298,6 +308,54 @@ function ExamDetailsForm({ exam, onUpdated }) {
             list or an invigilator rota works — it does not need a Merit.Ai account.
           </p>
         </div>
+        {/* What this exam actually asks a candidate for.
+            proctoring_enabled gated the AI signals, but the exam page demanded
+            camera, microphone, screen sharing AND fullscreen from everyone
+            regardless -- and then told them the exam was not proctored. These
+            default to "follow AI proctoring", which is what every existing exam
+            does, so nothing changes unless an examiner says otherwise. */}
+        <fieldset className="rounded-xl border border-border p-4">
+          <legend className="px-2 text-xs font-semibold text-muted uppercase tracking-wide">
+            What candidates must allow
+          </legend>
+          <div className="grid sm:grid-cols-2 gap-3">
+            {[
+              ["requireCamera", "Camera"],
+              ["requireMicrophone", "Microphone"],
+              ["requireScreenShare", "Screen sharing"],
+              ["requireFullscreen", "Fullscreen"],
+            ].map(([key, label]) => (
+              <label key={key} className="flex items-center justify-between gap-3 text-sm text-ink">
+                <span>{label}</span>
+                <select
+                  value={form[key] === null || form[key] === undefined ? "" : String(form[key])}
+                  onChange={(e) => update(key, e.target.value === "" ? null : e.target.value === "true")}
+                  className={`${fieldInputCompact} !mb-0 max-w-[11rem]`}
+                >
+                  <option value="">Follow AI proctoring</option>
+                  <option value="true">Always required</option>
+                  <option value="false">Never required</option>
+                </select>
+              </label>
+            ))}
+          </div>
+          <p className="mt-3 text-xs text-muted leading-relaxed">
+            An unproctored exam that still demands a webcam and a shared screen is asking candidates
+            for something it does not use.
+          </p>
+        </fieldset>
+
+        <div>
+          <label className={fieldLabel}>Release results at (optional)</label>
+          <input type="datetime-local" value={form.releaseResultsAt}
+                 onChange={(e) => update("releaseResultsAt", e.target.value)} className={fieldInput} />
+          <p className="mt-1.5 text-xs text-muted leading-relaxed">
+            Marks and the answer key are held from candidates until this time. Leave blank to release
+            immediately — which means the first candidate to finish holds the complete answer key
+            while everyone else is still writing.
+          </p>
+        </div>
+
         <div className="grid sm:grid-cols-3 gap-4">
           <label className="flex items-center gap-2 text-sm text-ink">
             <input type="checkbox" checked={form.randomizeQuestions} onChange={(e) => update("randomizeQuestions", e.target.checked)} className="w-4 h-4 accent-primary" />

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Navigate, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
+import RedirectToLogin from "../components/RedirectToLogin.jsx";
 import DashboardHeader from "../components/DashboardHeader.jsx";
 import Icon from "../components/Icon.jsx";
 import EmptyState from "../components/EmptyState.jsx";
@@ -12,9 +13,55 @@ import { isLoggedIn, getRole } from "../lib/auth.js";
 
 const PAGE_SIZE = 10;
 
+/**
+ * Download the current view as CSV.
+ *
+ * The filters are passed through deliberately: an export that silently ignored
+ * what is on screen would hand someone a different dataset from the one they
+ * were looking at, which is the kind of discrepancy that surfaces in a meeting.
+ * The download is recorded server-side in the activity trail.
+ */
+function ExportButton({ kind, params = {} }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function download() {
+    setBusy(true);
+    setError("");
+    try {
+      const query = new URLSearchParams(
+        Object.entries(params).filter(([, value]) => value !== "" && value != null),
+      ).toString();
+      await Api.downloadFile(`/admin/export/${kind}${query ? `?${query}` : ""}`,
+                             `meritai-${kind}.csv`);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Couldn't export.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="inline-flex flex-col items-end">
+      <button type="button" onClick={download} disabled={busy}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-semibold rounded-xl border border-border text-ink hover:border-primary hover:text-primary transition-colors disabled:opacity-60">
+        <Icon name="doc" width={14} height={14} />
+        {busy ? "Preparing…" : "Export CSV"}
+      </button>
+      {error && <span role="alert" className="mt-1 text-xs text-danger">{error}</span>}
+    </div>
+  );
+}
+
 export default function AdminCandidates() {
   const navigate = useNavigate();
   const [organizations, setOrganizations] = useState([]);
+  // Whether the organization list could be loaded at all. Empty and
+  // unavailable are different facts: one means there are no organizations,
+  // the other means we could not ask -- and the filter silently degrades to
+  // "no filtering" in the second case, which looks identical to a filter that
+  // matched everything.
+  const [organizationsFailed, setOrganizationsFailed] = useState(false);
   const [rows, setRows] = useState(null);
   const [loadError, setLoadError] = useState("");
 
@@ -27,7 +74,9 @@ export default function AdminCandidates() {
   const [pageCount, setPageCount] = useState(1);
 
   useEffect(() => {
-    Api.get("/admin/organizations").then(setOrganizations).catch(() => {});
+    Api.get("/admin/organizations")
+      .then((data) => { setOrganizations(data); setOrganizationsFailed(false); })
+      .catch(() => setOrganizationsFailed(true));
   }, []);
 
   useEffect(() => {
@@ -59,7 +108,7 @@ export default function AdminCandidates() {
     return () => { cancelled = true; };
   }, [search, organizationId, page]);
 
-  if (!isLoggedIn() || getRole() !== "admin") return <Navigate to="/login" replace />;
+  if (!isLoggedIn() || getRole() !== "admin") return <RedirectToLogin />;
 
   // The server decides the page; `rows` IS the page.
   const pageRows = rows || [];
@@ -71,8 +120,13 @@ export default function AdminCandidates() {
       <main className="max-w-6xl mx-auto w-full p-4 sm:p-6">
         <Breadcrumbs trail={[{ label: "Dashboard", to: "/dashboard" }, { label: "Candidates" }]} />
 
-        <h1 className="text-2xl font-extrabold tracking-tight mb-1">Candidates</h1>
-        <p className="text-sm text-muted mb-5">Every registered student across the platform.</p>
+        <div className="flex flex-wrap items-start justify-between gap-3 mb-5">
+          <div>
+            <h1 className="text-2xl font-extrabold tracking-tight mb-1">Candidates</h1>
+            <p className="text-sm text-muted">Every registered student across the platform.</p>
+          </div>
+          <ExportButton kind="candidates" params={{ search, organization_id: organizationId }} />
+        </div>
 
         {loadError && (
           <div className="mb-4 flex items-start gap-2.5 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger">
@@ -88,7 +142,7 @@ export default function AdminCandidates() {
                    onChange={(e) => setSearchInput(e.target.value)} className={`${fieldInput} pl-10`} />
           </div>
           <select value={organizationId} onChange={(e) => setOrganizationId(e.target.value)} className={`${fieldInput} sm:w-56`}>
-            <option value="">All organizations</option>
+            <option value="">{organizationsFailed ? "Organizations unavailable" : "All organizations"}</option>
             {organizations.map((o) => (
               <option key={o.id} value={o.id}>{o.name}</option>
             ))}

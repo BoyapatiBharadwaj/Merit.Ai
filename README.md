@@ -339,13 +339,32 @@ organization check still applies. An email that isn't on your student roster
 is accepted (you may be about to enrol them) but flagged **Not enrolled**,
 because it grants nothing on its own.
 
-**Passwords.** Examiner passwords are bcrypt-hashed, so they can never be
-read back — not by an admin, not from the database. When an admin creates an
-examiner or approves an access request, the credentials are shown once in a
-copyable panel; there's a *Generate a strong password* button next to the
-field. If a password is lost, an admin resets it to a new one rather than
-looking the old one up. That's deliberate: making passwords retrievable would
-mean one database leak exposes every account.
+**Passwords.** Examiner passwords are bcrypt-hashed, so they can never be read
+back — not by an admin, not from the database. If a password is lost, an admin
+resets it to a new one rather than looking the old one up. Making passwords
+retrievable would mean one database leak exposes every account.
+
+**Approving an access request does not create a password.** It creates the
+account with an unusable random secret and emails a single-use activation link
+(`ACTIVATION_TTL_HOURS`, default 72). The new examiner chooses their own
+password from that link, and is the only person who ever knows it. Approving
+used to have the admin type a password that was then emailed in plain text —
+which meant the credential sat in a mailbox indefinitely, the admin knew it, and
+"only this examiner could have done that" was never true of anything the account
+did.
+
+An admin *can* still set a password directly (the `+ New Examiner` form, and
+candidate password resets, which candidates cannot do themselves). Those
+accounts are flagged `must_change_password`, and every authenticated page shows
+the owner a banner saying somebody else knows their password, with the route to
+replace it.
+
+**Invitation-only signup.** `REGISTRATION_MODE` defaults to `open`, which is
+right for evaluating the software and wrong for an institution: signup is
+available to anyone who finds the URL, so the candidate list is whoever happened
+to sign up. Set it to `invite` and only addresses already on an exam roster or an
+organization roster can register. That reuses the roster you had to build anyway
+to run the exam — there is no second allow-list to keep in sync.
 
 **Notes**
 

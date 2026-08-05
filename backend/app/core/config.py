@@ -213,6 +213,23 @@ class Settings(BaseSettings):
     # Minimum gap between issuing two codes to the same address. Stops the
     # "resend" button from being used to mailbomb someone else's inbox.
     OTP_RESEND_COOLDOWN_SECONDS: int = 60
+    # Activation links (app/services/otp_service.py:issue_activation_token).
+    # Days, not minutes: an examiner whose account was approved on a Friday
+    # should still be able to open the link on Monday. The token is 256 bits of
+    # entropy, so a long window costs nothing in guessability -- the risk it
+    # carries is mailbox compromise, which a shorter TTL barely mitigates.
+    ACTIVATION_TTL_HOURS: int = 72
+    # Registration mode. "open" lets anyone create a student account; "invite"
+    # accepts only addresses an examiner has already put on an exam roster.
+    # Invite is the right default for a real institution but the wrong one for
+    # somebody trying the software out, so the default stays open and the
+    # deployment decides.
+    REGISTRATION_MODE: str = "open"
+    # Email staff (examiner/admin) accounts when a new sign-in happens. Staff
+    # accounts can read candidate identity photos and alter results, so an
+    # unexpected "you signed in from..." is worth an inbox interruption; doing
+    # the same for every candidate login would be noise.
+    NOTIFY_STAFF_ON_LOGIN: bool = True
 
     # --- Database pool (app/database/session.py) -----------------------------
     # PER PROCESS. Total connections to Postgres are

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link, Navigate } from "react-router-dom";
+import { Link } from "react-router-dom";
+import RedirectToLogin from "../components/RedirectToLogin.jsx";
 import DashboardHeader from "../components/DashboardHeader.jsx";
 import CaptureCard from "../components/CaptureCard.jsx";
 import { PhotoBox } from "../components/IdentityPhotoModal.jsx";
@@ -7,7 +8,7 @@ import Icon from "../components/Icon.jsx";
 import { PasswordField } from "../components/FormField.jsx";
 import { btnPrimary, btnGhost, sectionEyebrow } from "../lib/ui.js";
 import { Api, ApiError } from "../lib/api.js";
-import { isLoggedIn, getRole } from "../lib/auth.js";
+import { clearMustChangePassword, isLoggedIn, getRole } from "../lib/auth.js";
 
 export default function Profile() {
   // See the identical comment in Exam.jsx: the guard used to run before any
@@ -21,6 +22,7 @@ export default function Profile() {
   const refresh = useCallback(async () => {
     try {
       setMe(await Api.get("/users/me"));
+      setLoadError("");
     } catch (err) {
       setLoadError(err instanceof ApiError ? err.message : "Couldn't load your profile.");
     }
@@ -38,7 +40,7 @@ export default function Profile() {
   const idDone = Boolean(me?.id_verified);
   const locked = Boolean(me?.identity_locked);
 
-  if (!isLoggedIn()) return <Navigate to="/login" replace />;
+  if (!isLoggedIn()) return <RedirectToLogin />;
 
   // Examiners and admins get this page too. Identity verification is
   // student-only.
@@ -84,9 +86,14 @@ export default function Profile() {
         </div>
 
         {loadError && (
-          <div className="flex items-start gap-2.5 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger">
+          <div role="alert"
+               className="flex flex-wrap items-start gap-2.5 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger">
             <Icon name="alert" width={16} height={16} className="mt-0.5 shrink-0" />
-            <span>{loadError}</span>
+            <span className="flex-1 min-w-[12rem]">{loadError}</span>
+            <button type="button" onClick={() => { setLoadError(""); refresh(); }}
+                    className="font-semibold underline underline-offset-2 hover:no-underline">
+              Try again
+            </button>
           </div>
         )}
 
@@ -139,6 +146,12 @@ export default function Profile() {
             {(faceDone || idDone) && (
               <VerifiedPhotos studentId={me?.student_id} faceDone={faceDone} idDone={idDone} />
             )}
+
+            {/* Shown regardless of whether anything is captured yet: "nothing
+                is held about you" is itself information a person is entitled
+                to see, and hiding the panel until data exists would mean the
+                only way to learn what is collected is to hand it over first. */}
+            <BiometricData onErased={refresh} />
           </section>
         )}
 
@@ -220,6 +233,155 @@ function VerificationPill({ faceDone, idDone }) {
  * the student themselves (proctoring._can_view_student_identity), so no new
  * access is being granted here, only a place to look.
  */
+/**
+ * See what biometric data is held, and delete it.
+ *
+ * Both endpoints have existed since biometric consent was added
+ * (users.my_biometric_status / users.erase_my_biometrics) and nothing in the
+ * app called either. A deletion right that a person can only exercise by
+ * writing to an administrator is most of the way to not having one -- and the
+ * privacy page already told candidates they could do this.
+ *
+ * The confirmation is deliberate friction, and deliberately not a typed
+ * phrase: this is destructive but recoverable (register again), so a
+ * second click is proportionate where retyping an email address would not be.
+ * What the dialogue must do is state the consequence -- you will have to
+ * register your face again before your next proctored exam -- because that is
+ * the part someone deleting on exam morning would regret not knowing.
+ */
+function BiometricData({ onErased }) {
+  const [status, setStatus] = useState(null);
+  const [state, setState] = useState("loading");
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [error, setError] = useState("");
+
+  const load = useCallback(() => {
+    let cancelled = false;
+    setState("loading");
+    Api.get("/users/me/biometrics")
+      .then((data) => { if (!cancelled) { setStatus(data); setState("ready"); } })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(err instanceof ApiError ? err.message : "Couldn't load your biometric data.");
+        setState("error");
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => load(), [load]);
+
+  async function erase() {
+    setBusy(true);
+    setError("");
+    try {
+      const res = await Api.del("/users/me/biometrics");
+      setNotice(res?.message || "Your face and ID-card data have been deleted.");
+      setConfirming(false);
+      load();
+      await onErased?.();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Couldn't delete your data. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const held = [];
+  if (status?.face?.captured) held.push("your registered face photo and its face-match data");
+  if (status?.id_card?.captured) held.push("the photo of your ID card");
+
+  return (
+    <div className="rounded-2xl border border-border bg-surface shadow-card p-6">
+      <h3 className="text-base font-bold text-ink mb-1">Your biometric data</h3>
+      <p className="text-sm text-muted leading-relaxed mb-5">
+        What Merit.Ai holds to verify you during proctored exams, and your right to have it removed.
+      </p>
+
+      {state === "loading" && <div className="h-20 rounded-xl bg-border/30 animate-pulse" aria-hidden="true" />}
+
+      {state === "error" && (
+        <div role="alert" className="rounded-xl border border-border bg-page px-4 py-3 text-sm text-ink">
+          <p className="mb-2">{error}</p>
+          <button type="button" onClick={load} className={`${btnGhost} px-3 py-1.5 text-sm`}>Try again</button>
+        </div>
+      )}
+
+      {state === "ready" && (
+        <>
+          {held.length === 0 ? (
+            <p className="rounded-xl border border-border bg-page px-4 py-3 text-sm text-ink">
+              {status?.erased_at
+                ? "Your biometric data has been deleted. You'll need to register your face again before your next proctored exam."
+                : "Nothing on file yet. Data is only collected when you register your face or verify your ID above."}
+            </p>
+          ) : (
+            <>
+              <ul className="mb-4 space-y-1.5 text-sm text-ink">
+                {held.map((item) => (
+                  <li key={item} className="flex items-start gap-2">
+                    <Icon name="shield-check" width={14} height={14} className="mt-1 shrink-0 text-muted" />
+                    <span>{item}</span>
+                  </li>
+                ))}
+              </ul>
+              {/* Surfaced because a stale consent version is exactly the thing a
+                  person would want to know before deciding whether to keep the
+                  data on file: it means what they agreed to is no longer what
+                  currently applies. */}
+              {(status?.face?.stale || status?.id_card?.stale) && (
+                <p className="mb-4 rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-warning">
+                  This was collected under an older version of the proctoring terms. Your institution
+                  may ask you to re-consent before your next exam.
+                </p>
+              )}
+            </>
+          )}
+
+          {notice && (
+            <p role="status" className="mt-4 rounded-xl border border-success/30 bg-success/5 px-4 py-3 text-sm text-success">
+              {notice}
+            </p>
+          )}
+          {error && state === "ready" && (
+            <p role="alert" className="mt-4 text-sm text-danger">{error}</p>
+          )}
+
+          {held.length > 0 && !confirming && (
+            <button type="button" onClick={() => setConfirming(true)}
+                    className={`${btnGhost} mt-5 px-4 py-2 text-sm !text-danger !border-danger/30 hover:!bg-danger/5`}>
+              Delete my biometric data
+            </button>
+          )}
+
+          {confirming && (
+            <div className="mt-5 rounded-xl border border-danger/30 bg-danger/5 p-4">
+              <p className="text-sm font-semibold text-ink mb-1">Delete your face and ID data?</p>
+              <p className="text-sm text-muted leading-relaxed mb-4">
+                Your exam results, attempts and proctoring history are <strong>not</strong> deleted —
+                those are assessment records, not biometric data. You will need to register your face
+                again before your next proctored exam.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" onClick={erase} disabled={busy}
+                        className={`${btnPrimary.replace("px-5 py-3", "px-4 py-2")} text-sm !bg-danger disabled:opacity-60`}>
+                  {busy ? "Deleting…" : "Yes, delete it"}
+                </button>
+                <button type="button" onClick={() => setConfirming(false)} disabled={busy}
+                        className={`${btnGhost} px-4 py-2 text-sm`}>
+                  Keep my data
+                </button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+
 function VerifiedPhotos({ studentId, faceDone, idDone }) {
   if (!studentId) return null;
   return (
@@ -351,6 +513,10 @@ function ChangePasswordCard() {
       });
       setResult({ tone: "success", message: res.message || "Password updated." });
       setForm({ current: "", next: "", confirm: "" });
+      // The password is now one only they know, so the "an administrator set
+      // this" banner must stop. Cleared here rather than waiting for the next
+      // login, which could be days away.
+      clearMustChangePassword();
     } catch (err) {
       setResult({ tone: "error", message: err instanceof ApiError ? err.message : "Couldn't update your password." });
     } finally {

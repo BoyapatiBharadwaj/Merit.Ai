@@ -126,3 +126,43 @@ def admin_token(client, seed_roles, db_session):
 
 def auth_headers(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def outbox(monkeypatch):
+    """Every message the app tried to send, in order, with one shape.
+
+    Both delivery paths are captured. `send` is the SMTP choke point every
+    helper funnels through; `queue` is patched too because BackgroundTasks
+    defers the call past the point TestClient returns, which would make
+    assertions depend on timing.
+
+    Normalised to the same keys either way ("text", "html"). They previously
+    were not -- the queue path recorded raw kwargs (text_body) and the send path
+    recorded normalised ones -- so an assertion read a different key depending
+    on which route the message took, and would silently stop checking anything
+    if the route changed.
+
+    Exists so that activation and reset tests can recover a token the only way a
+    real recipient can: out of the message body. The database stores nothing but
+    the digest, which is precisely the property under test.
+    """
+    from app.services import email_service
+
+    sent = []
+
+    def _record(*, to, subject, text_body, html_body=None):
+        sent.append({"to": to, "subject": subject, "text": text_body, "html": html_body})
+        return True
+
+    monkeypatch.setattr(email_service, "send", _record)
+    monkeypatch.setattr(email_service, "queue", lambda background, **kw: _record(**kw) and None)
+    return sent
+
+
+@pytest.fixture
+def email_on(monkeypatch):
+    """Pretend this deployment has working SMTP configured."""
+    from app.services import email_service
+
+    monkeypatch.setattr(email_service, "is_enabled", lambda: True)
