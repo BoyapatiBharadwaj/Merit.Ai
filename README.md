@@ -206,7 +206,7 @@ running migrations below.
 ```bash
 cd backend
 python -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # includes requirements.txt, plus pytest/httpx/etc. for section 11 below
 
 cp .env.example .env          # then edit DATABASE_URL if it doesn't match your Postgres setup
 
@@ -572,7 +572,7 @@ system would want a container pool or a queue-based worker.
 
 ```bash
 cd backend
-pip install -r requirements.txt   # includes pytest + httpx
+pip install -r requirements-dev.txt   # requirements.txt plus pytest/httpx/fakeredis (and optionally pgserver)
 pytest
 ```
 

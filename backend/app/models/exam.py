@@ -113,17 +113,37 @@ class Exam(Base):
         return self.proctoring_enabled if override is None else bool(override)
 
     @property
+    def answer_key_released(self) -> bool:
+        """Whether the answer KEY (correct options, correct-answer text,
+        explanations) may be shown yet -- release_results_at alone, exactly
+        the original behaviour. Deliberately independent of results_released
+        below: an examiner can show a candidate their score immediately while
+        still holding back which specific answers were correct until
+        release_results_at, or (per results_released) withhold the score
+        itself entirely regardless of this setting.
+        """
+        if self.release_results_at is None:
+            return True
+        moment = self.release_results_at
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) >= moment
+
+    @property
     def results_released(self) -> bool:
-        """Whether a candidate may see their own score/pass-fail yet.
+        """Whether a candidate may see their own score/pass-fail outcome at
+        all yet -- show_results and results_release_mode (see
+        ResultsReleaseMode), unrelated to release_results_at/
+        answer_key_released above.
 
         show_results=False is absolute: never, for anyone sitting this exam,
-        however long they wait. Otherwise the release moment depends on
-        results_release_mode -- AFTER_END_TIME waits for the exam's own
-        end_time (so the answer key/score can never circulate while others
-        are still writing) and ignores release_results_at entirely; IMMEDIATE
-        preserves the original behaviour (release_results_at is an optional
-        extra delay, and no release time at all means immediately, which is
-        every exam created before either of these settings existed).
+        however long they wait. Otherwise: AFTER_END_TIME waits for the
+        exam's own end_time (so the first candidate to finish can never hand
+        around their result while others are still writing) and treats no
+        end_time as "not yet, since there is no line to wait for"; IMMEDIATE
+        (the default) releases the score as soon as that candidate submits,
+        which combined with show_results defaulting True is the original
+        behaviour for every exam created before either setting existed.
         """
         if not self.show_results:
             return False
@@ -131,13 +151,10 @@ class Exam(Base):
             if self.end_time is None:
                 return False
             moment = self.end_time
-        elif self.release_results_at is not None:
-            moment = self.release_results_at
-        else:
-            return True
-        if moment.tzinfo is None:
-            moment = moment.replace(tzinfo=timezone.utc)
-        return datetime.now(timezone.utc) >= moment
+            if moment.tzinfo is None:
+                moment = moment.replace(tzinfo=timezone.utc)
+            return datetime.now(timezone.utc) >= moment
+        return True
 
     examiner = relationship("Examiner", back_populates="exams")
     organization = relationship("Organization")

@@ -30,8 +30,13 @@ FROM base AS builder
 WORKDIR /build
 COPY ai_worker/requirements.txt .
 # See backend/Dockerfile for why the timeout/retry values are raised: the same
-# large wheels, the same failure mode on a slow link.
-RUN pip install --no-cache-dir --user --timeout 120 --retries 10 -r requirements.txt
+# large wheels, the same failure mode on a slow link. Same reasoning for the
+# cache mount in place of `--no-cache-dir` too: it makes every build after the
+# first reuse whatever wheels haven't changed instead of re-downloading the
+# ~1-2GB ML stack (torch-cpu, onnxruntime, mediapipe, ultralytics) from
+# scratch every time, at zero cost to the final image size.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --user --timeout 120 --retries 10 -r requirements.txt
 
 # ------------------------------------------------------------------------------
 # Runtime

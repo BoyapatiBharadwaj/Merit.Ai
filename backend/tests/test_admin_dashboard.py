@@ -272,15 +272,32 @@ def test_violations_overview_and_admin_decision_update(client, seed_roles, admin
     assert event["admin_decision"] == "pending"
     assert event["severity"] == "high"  # phone_detected is mapped High in proctor_service.SEVERITY_MAP
 
-    # Examiner cannot set the decision -- admin-only action.
+    # A DIFFERENT examiner (not this exam's owner) cannot set the decision --
+    # violations now live only inside the owning examiner's own per-attempt
+    # review, and this is the ownership boundary that protects it.
+    other_examiner_token = _create_examiner_and_login(client, admin_token, email="other-violations-examiner@example.com")
     forbidden = client.patch(f"/api/v1/proctoring/events/{event['id']}/decision", json={"decision": "confirmed"},
-                             headers=auth_headers(examiner_token))
+                             headers=auth_headers(other_examiner_token))
     assert forbidden.status_code == 403
+
+    # The exam's OWNING examiner can, though -- this is exactly the action
+    # they take from their per-student attempt review (see
+    # GET /attempts/{id}/staff-report and PATCH .../decision no longer being
+    # admin-only).
+    updated = client.patch(f"/api/v1/proctoring/events/{event['id']}/decision", json={"decision": "confirmed"},
+                           headers=auth_headers(examiner_token))
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["admin_decision"] == "confirmed"
+
+    # And so can an admin, on any exam.
+    admin_updated = client.patch(f"/api/v1/proctoring/events/{event['id']}/decision", json={"decision": "pending"},
+                                 headers=auth_headers(admin_token))
+    assert admin_updated.status_code == 200, admin_updated.text
+    assert admin_updated.json()["admin_decision"] == "pending"
 
     updated = client.patch(f"/api/v1/proctoring/events/{event['id']}/decision", json={"decision": "confirmed"},
                            headers=auth_headers(admin_token))
     assert updated.status_code == 200, updated.text
-    assert updated.json()["admin_decision"] == "confirmed"
 
     only_confirmed = client.get("/api/v1/admin/violations", params={"decision": "confirmed"},
                                 headers=auth_headers(admin_token)).json()["items"]

@@ -1,0 +1,35 @@
+# Test-only dependencies -- never installed into a deployed image.
+#
+# Moved out of requirements.txt because that file is exactly what
+# `backend/Dockerfile` and `backend/ai_worker/Dockerfile` run
+# `pip install -r requirements.txt` against to build the images this project
+# actually deploys (core-api, scheduler, worker). Every one of these was
+# previously being downloaded and installed into every one of those
+# production images despite never being imported outside `backend/tests/` --
+# pgserver in particular bundles a full embedded PostgreSQL binary distribution,
+# which is one of the larger single downloads in this project.
+#
+# Local dev / CI: `pip install -r requirements.txt -r requirements-dev.txt`
+# (see README.md section 11 and .github/workflows/backend-tests.yml).
+-r requirements.txt
+
+pytest==8.2.2
+httpx==0.27.0
+# An in-memory Redis stand-in so the suite needs no real Redis server, the
+# same reasoning SQLite-in-memory exists for Postgres. conftest.py installs
+# one via app.core.redis_client.set_client_for_tests before each test.
+fakeredis==2.23.3
+# Boots a throwaway PostgreSQL from a prebuilt binary wheel -- no system
+# package, no Docker, no root. Used only by tests/test_migrations_postgres.py,
+# which runs the real Alembic chain against a real server; the rest of the suite
+# is SQLite and cannot see migration bugs at all (that blind spot is what let
+# both the 0017 enum gap and 0016's DuplicateObject through).
+#
+# Optional by design: those tests skip cleanly when it isn't installed, so a
+# plain `pip install -r requirements-dev.txt && pytest` still passes
+# everywhere. CI never installs it purposefully -- the migrations job uses a
+# real postgres service container (TEST_POSTGRES_URL) instead, and the fast
+# SQLite job excludes postgres-marked tests entirely (`-m "not postgres"`) --
+# it's here purely for a developer running the full suite locally with zero
+# setup.
+pgserver>=0.1.4; sys_platform != "win32"

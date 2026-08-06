@@ -563,16 +563,16 @@ def build_full_report(db: Session, attempt, *, for_candidate: bool = False) -> d
     # could simply send it to them -- the platform handing out the answers to
     # its own live exam. Staff are unaffected: an examiner reviewing a paper
     # needs the key, and always has.
-    withhold_key = for_candidate and not (exam.results_released and exam.show_answers_on_release)
     # Whether THIS reader may see the score/pass-fail outcome at all -- the
     # examiner's show_results / results_release_mode settings (see
-    # Exam.results_released). Coarser than withhold_key: this also hides the
-    # marks, percentage and pass/fail, not just the answer key, and -- unlike
-    # withhold_key -- is completely unaffected by show_answers_on_release, so
-    # an examiner can still choose "show the score now, but not which options
-    # were right" (withhold_key only) independently of "show nothing yet"
-    # (withhold_results).
+    # Exam.results_released). Checked first because it is the coarser gate:
+    # if the score itself is withheld, the answer key must be too (there is
+    # no sense in which "you can't see whether you passed, but here's which
+    # options were correct" is a sensible state).
     withhold_results = for_candidate and not exam.results_released
+    withhold_key = withhold_results or (
+        for_candidate and not (exam.answer_key_released and exam.show_answers_on_release)
+    )
 
     questions_report = []
     # No per-question breakdown at all while results are withheld -- outcome

@@ -18,14 +18,22 @@ FROM python:3.11-slim AS base
 
 # libgl1/libglib2.0-0: mediapipe's native graph needs these even when it's
 # only ever used as a *fallback* path here (see the module docstring above).
-# docker.io: the `docker` CLI code_runner_service.py shells out to for
-# sandboxed coding-question execution (Docker-outside-of-Docker -- this
-# container talks to the *host's* Docker daemon via a mounted socket, see
-# docker-compose.yml, rather than running its own nested daemon).
+# curl: the HEALTHCHECK below.
+#
+# The `docker` CLI code_runner_service.py shells out to for sandboxed
+# coding-question execution (Docker-outside-of-Docker -- this container talks
+# to the *host's* Docker daemon via a mounted socket, see docker-compose.yml,
+# rather than running its own nested daemon) used to come from apt's
+# `docker.io` package. On Debian that package is the FULL engine --
+# dockerd, containerd, runc, and the CLI together -- to get a client binary
+# that only ever runs `docker run`/`docker exec` against a socket this
+# container doesn't even own the server side of. The daemon and containerd
+# are pure dead weight here and were a meaningful share of this image's
+# install time. Copied as just the CLI binary from Docker's own official
+# image below instead (see the COPY --from=docker-cli stage).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libgl1 \
         libglib2.0-0 \
-        docker.io \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
@@ -52,7 +60,17 @@ COPY requirements.txt .
 # ReadTimeoutError rather than as "you are downloading 2GB you cannot use".
 # Generous values here cost nothing on a fast connection and turn a transient
 # stall into a retry instead of a failed build.
-RUN pip install --no-cache-dir --user --timeout 120 --retries 10 -r requirements.txt
+#
+# The cache mount (not `--no-cache-dir`, which this used to use) is what makes
+# every build after the first fast: it persists pip's downloaded wheels
+# (torch-cpu, onnxruntime, mediapipe, ...) across builds on this same Docker
+# host, keyed by the mount target rather than by this layer -- so editing
+# requirements.txt (invalidating this RUN) only re-downloads whatever actually
+# changed, instead of every unchanged multi-hundred-MB wheel along with it.
+# It costs nothing in final image size: BuildKit cache mounts are never part
+# of any committed layer, unlike pip's default cache directory would be.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --user --timeout 120 --retries 10 -r requirements.txt
 
 # ------------------------------------------------------------------------------
 # Runtime
@@ -68,6 +86,11 @@ RUN groupadd --gid 1000 appuser && useradd --uid 1000 --gid appuser --create-hom
 
 WORKDIR /app
 COPY --from=builder /root/.local /home/appuser/.local
+# Just the `docker` client binary -- see the note above the apt-get install
+# above for why this replaces the `docker.io` apt package (dockerd +
+# containerd + runc this container never runs, for a client it only ever
+# points at the host's socket).
+COPY --from=docker:27-cli /usr/local/bin/docker /usr/local/bin/docker
 ENV PATH=/home/appuser/.local/bin:$PATH \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
@@ -75,11 +98,14 @@ ENV PATH=/home/appuser/.local/bin:$PATH \
 # Application code. Alembic + its config travel with the image so the
 # entrypoint can run migrations against whatever DATABASE_URL the environment
 # supplies, without a separate "migrations" image to keep in sync.
+#
+# Deliberately NOT tests/ or pytest.ini: pytest isn't even installed here
+# anymore (moved to requirements-dev.txt, never part of this image's
+# requirements.txt install), so a copy of the test suite alongside it could
+# never run -- it was dead weight in every deployed image.
 COPY app ./app
 COPY alembic ./alembic
 COPY alembic.ini .
-COPY pytest.ini .
-COPY tests ./tests
 # Operator diagnostics, run with `docker compose exec core-api python
 # scripts/check_email.py`. Small, and worth having inside the image: the whole
 # point is to observe the configuration and network the container actually has,
