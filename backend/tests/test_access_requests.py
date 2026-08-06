@@ -5,6 +5,8 @@ minting a real examiner account.
 import re
 from urllib.parse import unquote
 
+import pytest
+
 from tests.conftest import auth_headers
 from tests.test_exam_workflow import _create_examiner_and_login, _register_student_and_login
 
@@ -473,3 +475,110 @@ def test_reissuing_an_activation_link_kills_the_previous_one(client, seed_roles,
                     OtpCode.consumed_at.is_(None))
             .count())
     assert live == 1
+
+
+# ------------------------------------------------------------------------------
+# Re-notification
+#
+# The de-dupe that protects the admin queue used to be permanent: once a pending
+# row existed, no further email was ever sent for that address. A request made
+# while email was misconfigured therefore stayed unannounced forever, and
+# resubmitting -- the obvious remedy -- silently did nothing.
+# ------------------------------------------------------------------------------
+
+def _requests_mailed(outbox):
+    return [m for m in outbox if m["subject"].startswith("New examiner access request")]
+
+
+@pytest.fixture
+def admin_inbox(monkeypatch):
+    """Configure the shared operational mailbox these notifications go to.
+
+    Without it the tests below exercise the no-recipient path instead of the
+    one under test -- which is itself worth knowing, and is covered separately.
+    """
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ADMIN_NOTIFICATION_EMAIL", "ops@institute.edu")
+
+
+def test_a_first_submission_notifies_the_admin(client, seed_roles, email_on, outbox, admin_inbox):
+    submit(client)
+    assert len(_requests_mailed(outbox)) == 1
+
+
+def test_a_double_click_does_not_send_two_emails(client, seed_roles, email_on, outbox, admin_inbox):
+    """The behaviour the de-dupe exists for, and which must survive the fix."""
+    submit(client)
+    submit(client)
+    submit(client)
+    assert len(_requests_mailed(outbox)) == 1
+
+
+def test_resubmitting_after_the_cooldown_notifies_again(client, seed_roles, db_session,
+                                                        email_on, outbox, admin_inbox):
+    """The bug: this used to stay at one email forever.
+
+    Someone whose first request was submitted while SMTP was misconfigured had
+    no way to make the notification happen -- the queue showed the request, the
+    inbox never did, and submitting again did nothing at all.
+    """
+    from datetime import timedelta
+
+    from app.models.access_request import AccessRequest
+
+    submit(client)
+    assert len(_requests_mailed(outbox)) == 1
+
+    # Wind the clock back past the cooldown, as if this were an hour later.
+    row = db_session.query(AccessRequest).filter(AccessRequest.email == VALID["email"]).one()
+    row.last_notified_at = row.last_notified_at - timedelta(hours=1)
+    db_session.commit()
+
+    submit(client)
+    assert len(_requests_mailed(outbox)) == 2
+    # Still exactly one request in the queue -- re-notifying must not duplicate
+    # the row an admin has to review.
+    assert db_session.query(AccessRequest).count() == 1
+
+
+def test_a_request_that_was_never_notified_gets_notified(client, seed_roles, db_session,
+                                                         email_on, outbox, admin_inbox):
+    """NULL means 'never told', not 'told at the beginning of time'.
+
+    This is the row migration 0027 is written for: a request already sitting in
+    the queue from before the column existed, or one whose notification failed.
+    It must break out of the permanent silence, not stay in it.
+    """
+    from app.models.access_request import AccessRequest
+
+    submit(client)
+    row = db_session.query(AccessRequest).filter(AccessRequest.email == VALID["email"]).one()
+    row.last_notified_at = None
+    db_session.commit()
+    outbox.clear()
+
+    submit(client)
+    assert len(_requests_mailed(outbox)) == 1
+
+
+def test_no_admin_recipient_is_logged_rather_than_silently_dropped(client, seed_roles, db_session,
+                                                                   email_on, outbox, monkeypatch, caplog):
+    """Silence here looks exactly like the platform working.
+
+    With no ADMIN_NOTIFICATION_EMAIL and no admin account, the request is still
+    recorded -- but somebody has to be able to find out that nobody was told.
+    """
+    import logging
+
+    from app.core.config import settings
+    from app.services import access_request_service
+
+    monkeypatch.setattr(settings, "ADMIN_NOTIFICATION_EMAIL", "")
+    monkeypatch.setattr(access_request_service.user_repository, "list_admin_emails", lambda db: [])
+
+    with caplog.at_level(logging.WARNING, logger="app"):
+        submit(client)
+
+    assert _requests_mailed(outbox) == []
+    assert any("no admin recipient is configured" in r.message for r in caplog.records)

@@ -20,8 +20,7 @@ from app.schemas.auth import AdminResetPasswordRequest, ChangePasswordRequest, U
 from app.schemas.user import UserOut, StudentOut, StudentProfileOut, ExaminerOut
 from app.models.enums import RoleName
 from app.models.activity_log import ActivityType
-from app.services import (activity_service, auth_service, biometric_service,
-                          identity_service, organization_service)
+from app.services import (activity_service, admin_service, auth_service, biometric_service, identity_service, organization_service)
 from app.models.user import User
 
 router = APIRouter(prefix="/users", tags=["Users"])
@@ -238,6 +237,12 @@ def delete_user(user_id: int, request: Request, db: Session = Depends(get_db), a
     email and the administrator responsible.
     """
     target = _load_managed_user(db, user_id, admin)
+    # Checked here, not only on the Examiners page. The guard used to live
+    # solely on DELETE /admin/examiners/{id}, so which route you happened to
+    # use decided whether an account with real exam history could be destroyed
+    # -- and the candidate path had no guard at all, meaning submitted answers,
+    # marks and proctoring evidence could be deleted with one click.
+    admin_service.assert_deletable(db, target)
     activity_service.record(
         db, activity_type=ActivityType.ACCOUNT_DELETED, subject=target, actor=admin, request=request,
         description=f"Account deleted by {admin.email}",

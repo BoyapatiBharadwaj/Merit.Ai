@@ -97,6 +97,28 @@ export default function Profile() {
           </div>
         )}
 
+        {isStudent && me?.reverification_required && (
+          <div role="status" className="rounded-2xl border border-warning/40 bg-warning/5 p-5">
+            <div className="flex items-start gap-3">
+              <span className="inline-flex items-center justify-center w-9 h-9 rounded-xl bg-warning/15 text-warning shrink-0">
+                <Icon name="shield-check" width={17} height={17} />
+              </span>
+              <div className="min-w-0">
+                <p className="font-bold text-ink mb-1">Your institution has asked you to verify again</p>
+                <p className="text-sm text-muted leading-relaxed mb-2">
+                  Complete <strong>both</strong> steps below again — register your face, and capture
+                  your ID card. Doing only one will not restore your access.
+                </p>
+                {me.reverification_reason && (
+                  <p className="text-sm text-ink bg-page border border-border rounded-lg px-3 py-2">
+                    <span className="font-semibold">Reason given:</span> {me.reverification_reason}
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {me && <AccountCard me={me} locked={locked} isStudent={isStudent} />}
 
         {isStudent && (

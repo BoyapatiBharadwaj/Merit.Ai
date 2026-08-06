@@ -80,6 +80,11 @@ COPY alembic ./alembic
 COPY alembic.ini .
 COPY pytest.ini .
 COPY tests ./tests
+# Operator diagnostics, run with `docker compose exec core-api python
+# scripts/check_email.py`. Small, and worth having inside the image: the whole
+# point is to observe the configuration and network the container actually has,
+# which you cannot do from the host.
+COPY scripts ./scripts
 
 RUN mkdir -p /app/uploads/faces /app/uploads/id_cards /app/uploads/violations /app/models \
     && chown -R appuser:appuser /app

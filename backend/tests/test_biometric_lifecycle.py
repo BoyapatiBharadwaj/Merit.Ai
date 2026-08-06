@@ -195,7 +195,14 @@ def test_a_student_can_see_and_erase_their_own_biometrics(client, seed_roles, db
     token = registered.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
 
-    student = db_session.query(Student).join(User).filter(User.email == "self@example.com").first()
+    # Explicit onclause: students now hold two foreign keys into users -- the
+    # owner, and the administrator who asked for re-verification -- so an
+    # unqualified join is genuinely ambiguous and SQLAlchemy refuses it rather
+    # than guessing.
+    student = (db_session.query(Student)
+               .join(User, Student.user_id == User.id)
+               .filter(User.email == "self@example.com")
+               .first())
     _with_face(db_session, student, tmp_path)
 
     status = client.get("/api/v1/users/me/biometrics", headers=headers)

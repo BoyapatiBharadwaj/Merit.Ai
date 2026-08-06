@@ -37,6 +37,20 @@ class AccessRequest(Base):
     review_note = Column(String(255), nullable=True)
     created_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
+    # When the admin notification for this request was last sent.
+    #
+    # The de-dupe that protects the admin queue used to be permanent: once a
+    # pending row existed for an address, submit() returned it early and no
+    # further email was ever sent, however long ago that was. So a request made
+    # while mail was misconfigured stayed invisible in the inbox forever, and
+    # resubmitting -- the obvious thing to try -- silently did nothing. Nobody
+    # could tell that apart from a broken mail server.
+    #
+    # Nullable because rows created before this column existed genuinely do not
+    # know, and guessing a value for them would misreport history. A NULL is
+    # treated as "never notified", so an old stuck request re-notifies once.
+    last_notified_at = Column(DateTime(timezone=True), nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
     reviewed_by = relationship("User", foreign_keys=[reviewed_by_id])

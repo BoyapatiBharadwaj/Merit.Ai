@@ -49,6 +49,51 @@ def _admin_recipients(db: Session) -> list[str]:
     return user_repository.list_admin_emails(db)
 
 
+def _as_utc(value: datetime | None) -> datetime | None:
+    """SQLite returns naive datetimes even for timezone=True columns, so a
+    direct comparison against an aware _now() raises TypeError. Postgres
+    returns aware ones and this is a no-op there -- the same normalisation
+    otp_service and attempt_service already do, for the same reason."""
+    if value is None:
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def _notification_is_due(request: AccessRequest) -> bool:
+    """Has the cooldown elapsed since admins were last told about this request?
+
+    A NULL last_notified_at means "never told" -- either a row created before
+    the column existed, or one whose notification failed to send. Both should
+    notify on the next submission rather than stay silent forever.
+    """
+    last = _as_utc(request.last_notified_at)
+    if last is None:
+        return True
+    elapsed = (_now() - last).total_seconds()
+    return elapsed >= settings.ACCESS_REQUEST_RENOTIFY_SECONDS
+
+
+def _notify_admins(db: Session, request: AccessRequest,
+                   background: BackgroundTasks | None) -> None:
+    """Mail every admin recipient about one request."""
+    subject, text, html = email_service.access_request_message(
+        first_name=request.first_name, last_name=request.last_name,
+        email=request.email, organization_name=request.organization_name,
+        purpose=request.purpose,
+    )
+    recipients = _admin_recipients(db)
+    if not recipients:
+        # Worth saying out loud. Silence here means a request landed in the
+        # queue and nobody was told, which looks from the outside exactly like
+        # the platform working.
+        logger.warning("Access request %s recorded but no admin recipient is configured; "
+                       "set ADMIN_NOTIFICATION_EMAIL or create an admin account.", request.email)
+        return
+    for recipient in recipients:
+        email_service.queue(background, to=recipient, subject=subject,
+                            text_body=text, html_body=html)
+
+
 def submit(db: Session, *, first_name: str, last_name: str, email: str,
            organization_name: str, purpose: str,
            background: BackgroundTasks | None = None) -> AccessRequest:
@@ -62,11 +107,23 @@ def submit(db: Session, *, first_name: str, last_name: str, email: str,
     """
     existing = access_request_repository.get_pending_by_email(db, email)
     if existing:
-        # No email on this branch, on purpose. A repeat submission is usually a
-        # double-click or a refresh, and re-notifying every admin each time
-        # would turn the de-dupe that protects their queue into a way to spam
-        # their inbox instead -- the same abuse this function's account-
-        # enumeration defence already anticipates, through a different door.
+        # Re-notify, but no more often than the cooldown.
+        #
+        # This branch used to return here unconditionally, sending nothing. The
+        # intent was right -- a double-click must not spam the admin's inbox --
+        # but "never again" is the wrong duration. A request submitted while
+        # email was misconfigured stayed permanently unannounced, and the one
+        # thing a person naturally tries, submitting again, silently did
+        # nothing. That is indistinguishable from a broken mail server, which
+        # is exactly what it gets mistaken for.
+        #
+        # A cooldown keeps the double-click protection (two clicks a second
+        # apart send one email) while making the situation recoverable
+        # (resubmitting later gets through). It also bounds the abuse: the
+        # worst an attacker achieves is one message per address per cooldown.
+        if _notification_is_due(existing):
+            _notify_admins(db, existing, background)
+            access_request_repository.mark_notified(db, existing, when=_now())
         return existing
 
     request = access_request_repository.create(
@@ -78,12 +135,8 @@ def submit(db: Session, *, first_name: str, last_name: str, email: str,
         purpose=purpose,
     )
 
-    subject, text, html = email_service.access_request_message(
-        first_name=first_name, last_name=last_name, email=email,
-        organization_name=organization_name, purpose=purpose,
-    )
-    for recipient in _admin_recipients(db):
-        email_service.queue(background, to=recipient, subject=subject, text_body=text, html_body=html)
+    _notify_admins(db, request, background)
+    access_request_repository.mark_notified(db, request, when=_now())
 
     return request
 

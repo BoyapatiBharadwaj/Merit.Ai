@@ -81,7 +81,12 @@ class User(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     role = relationship("Role", back_populates="users")
-    student_profile = relationship("Student", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    # foreign_keys is required, not optional: students now hold a second FK
+    # into users (reverification_requested_by_id, the admin who asked), so
+    # "the student profile belonging to this user" is genuinely ambiguous
+    # without it -- exactly as it already was for Examiner.user_id below.
+    student_profile = relationship("Student", back_populates="user", uselist=False,
+                                   cascade="all, delete-orphan", foreign_keys="Student.user_id")
     examiner_profile = relationship("Examiner", back_populates="user", uselist=False, cascade="all, delete-orphan", foreign_keys="Examiner.user_id")
 
     def set_name(self, first_name: str, last_name: str) -> None:

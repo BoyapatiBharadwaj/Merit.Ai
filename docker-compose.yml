@@ -203,6 +203,20 @@ services:
       # 0 = never auto-delete. Deliberate default -- see .env.example.
       BIOMETRIC_RETENTION_DAYS: ${BIOMETRIC_RETENTION_DAYS:-0}
       BIOMETRIC_PURGE_INTERVAL_HOURS: ${BIOMETRIC_PURGE_INTERVAL_HOURS:-24}
+      # Fail-closed signup gates. These were set in .env and never reached the
+      # container, because this file lists every variable explicitly rather than
+      # using env_file -- so the process fell back to the code defaults and .env
+      # appeared to do nothing. Both default to true in config.py, so the
+      # behaviour happened to be correct; setting either to false in .env would
+      # silently have had no effect, which is the dangerous half.
+      REQUIRE_EMAIL_VERIFICATION: ${REQUIRE_EMAIL_VERIFICATION:-true}
+      PASSWORD_MIN_LENGTH: ${PASSWORD_MIN_LENGTH:-10}
+      # Which hops may set X-Forwarded-For. Rate limiting reads the rightmost
+      # UNTRUSTED address from it, so getting this wrong means either every
+      # request shares one bucket (the proxy's IP) or a caller can spoof their
+      # way out of the limit.
+      TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-172.16.0.0/12,10.0.0.0/8,192.168.0.0/16,127.0.0.1/32}
+      REQUIRE_CONSENT_ON_SIGNUP: ${REQUIRE_CONSENT_ON_SIGNUP:-true}
       OTP_LENGTH: ${OTP_LENGTH:-6}
       OTP_TTL_MINUTES: ${OTP_TTL_MINUTES:-10}
       OTP_MAX_ATTEMPTS: ${OTP_MAX_ATTEMPTS:-5}
@@ -217,6 +231,10 @@ services:
       REGISTRATION_MODE: ${REGISTRATION_MODE:-open}
       # Examiner/admin sign-ins get an email; candidate sign-ins do not.
       NOTIFY_STAFF_ON_LOGIN: ${NOTIFY_STAFF_ON_LOGIN:-true}
+      # Minimum gap between two admin notifications about the same pending
+      # access request. Stops a double-click sending two emails without making
+      # the suppression permanent.
+      ACCESS_REQUEST_RENOTIFY_SECONDS: ${ACCESS_REQUEST_RENOTIFY_SECONDS:-900}
       EXAM_REMINDER_ENABLED: ${EXAM_REMINDER_ENABLED:-true}
       EXAM_REMINDER_MINUTES_BEFORE: ${EXAM_REMINDER_MINUTES_BEFORE:-5}
       EXAM_REMINDER_POLL_SECONDS: ${EXAM_REMINDER_POLL_SECONDS:-60}

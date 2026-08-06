@@ -226,7 +226,41 @@ export default function StudentDashboard() {
           </div>
         )}
 
-        {identityState === "ok" && identity && !identity.exam_ready && (
+        {/* Checked BEFORE the generic verification banner. A candidate whose
+            face and ID are both on file is not "incomplete", and telling them
+            so sends them to a Profile page showing two green ticks -- from
+            which the only reasonable conclusion is that the platform is
+            broken. This is a different situation and says so. */}
+        {identityState === "ok" && identity?.reverification_required && (
+          <div role="status"
+               className="mb-6 rounded-2xl border border-warning/40 bg-warning/5 p-5 animate-fade-in">
+            <div className="flex items-start gap-3">
+              <span className="inline-flex items-center justify-center w-9 h-9 rounded-xl bg-warning/15 text-warning shrink-0">
+                <Icon name="shield-check" width={17} height={17} />
+              </span>
+              <div className="min-w-0">
+                <p className="font-bold text-ink mb-1">Verify your identity again</p>
+                <p className="text-sm text-muted leading-relaxed mb-2">
+                  Your institution has asked you to re-register your face and re-submit your ID
+                  card. Until both are done you can&apos;t start a proctored exam.
+                </p>
+                {identity.reverification_reason && (
+                  <p className="text-sm text-ink bg-page border border-border rounded-lg px-3 py-2 mb-3">
+                    <span className="font-semibold">Reason given:</span>{" "}
+                    {identity.reverification_reason}
+                  </p>
+                )}
+                <button type="button" onClick={() => navigate("/profile")}
+                        className={`${btnPrimary.replace("px-5 py-3", "px-4 py-2")} text-sm`}>
+                  Go to my Profile
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {identityState === "ok" && identity && !identity.exam_ready
+          && !identity.reverification_required && (
           <VerificationBanner identity={identity} />
         )}
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-8">

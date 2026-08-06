@@ -47,9 +47,37 @@ class Student(Base):
     identity_locked = Column(Boolean, default=False, nullable=False)
     identity_locked_at = Column(DateTime(timezone=True), nullable=True)
 
+    # An administrator has asked this candidate to prove who they are again.
+    #
+    # Deliberately NOT the same thing as erasing their biometrics, which
+    # already exists. The two answer different questions and destroying data is
+    # the wrong tool for this one:
+    #
+    #   * Erasure is a privacy action. Someone asked for their data to be
+    #     removed, and it goes.
+    #   * Re-verification is an integrity action. Somebody looked at the
+    #     enrolled face or ID and doubted it -- which is exactly when the
+    #     existing photos must be KEPT, because they are the evidence that
+    #     prompted the doubt and may be needed in a review. Wiping them first
+    #     would destroy the record of what the candidate originally presented.
+    #
+    # So the stored face and ID stay on file until the candidate replaces them.
+    # This flag is what closes the exam gate in the meantime.
+    reverification_required_at = Column(DateTime(timezone=True), nullable=True)
+    # Shown to the candidate verbatim. A re-verification demand with no stated
+    # reason is indistinguishable, from the receiving end, from a malfunction.
+    reverification_reason = Column(String(500), nullable=True)
+    reverification_requested_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"),
+                                            nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    user = relationship("User", back_populates="student_profile")
+    user = relationship("User", back_populates="student_profile", foreign_keys=[user_id])
+    # The administrator who asked for re-verification. Deliberately no
+    # back_populates: an admin does not need a collection of "candidates I have
+    # doubted" hanging off their user row, and adding one would load it on
+    # every admin fetch.
+    reverification_requested_by = relationship("User", foreign_keys=[reverification_requested_by_id])
     organization = relationship("Organization", back_populates="students")
     memberships = relationship("OrganizationMember", back_populates="student")
     exam_participations = relationship("ExamParticipant", back_populates="student",

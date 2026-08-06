@@ -1,4 +1,6 @@
 """Data access for the AccessRequest table."""
+from datetime import datetime
+
 from sqlalchemy.orm import Session
 
 from app.models.access_request import AccessRequest
@@ -31,6 +33,21 @@ def get_pending_by_email(db: Session, email: str) -> AccessRequest | None:
         .filter(AccessRequest.email == email.strip().lower(), AccessRequest.status == AccessRequestStatus.PENDING)
         .first()
     )
+
+
+def mark_notified(db: Session, request: AccessRequest, *, when: datetime,
+                  commit: bool = True) -> AccessRequest:
+    """Stamp when admins were last told about this request.
+
+    Committed separately from the row's creation on purpose: the notification
+    is a side effect, and a mail-server problem must not roll back a request
+    somebody legitimately submitted.
+    """
+    request.last_notified_at = when
+    if commit:
+        db.commit()
+        db.refresh(request)
+    return request
 
 
 def list_all(db: Session, status: AccessRequestStatus | None = None) -> list[AccessRequest]:

@@ -175,11 +175,26 @@ active backend/frontend development with hot-reload.
 ```bash
 cd backend
 docker run -d --name merit-ai-postgres -p 5432:5432 \
-  -e POSTGRES_USER=exam_user -e POSTGRES_PASSWORD=exam_pass -e POSTGRES_DB=exam_proctor \
+  -e POSTGRES_USER=merit_ai -e POSTGRES_PASSWORD=change_this_password -e POSTGRES_DB=merit_ai \
   postgres:16-alpine
 ```
 
-This matches the credentials in `backend/.env.example`. **If your local
+This matches the credentials in `backend/.env.example`, and the ones the
+Docker Compose stack uses (`POSTGRES_USER` / `POSTGRES_PASSWORD` /
+`POSTGRES_DB` in the root `.env`), so the same client settings work either way.
+
+> **Connecting a database client to the Compose stack?** Use the values above,
+> not `localhost:5432` — the `postgres` service publishes no host port on
+> purpose, so nothing outside Docker can reach it. Either
+> `docker compose exec postgres psql -U merit_ai -d merit_ai`, or open a
+> temporary tunnel:
+>
+> ```bash
+> docker run --rm -d --name pgproxy --network meritai_data-net -p 15432:5432 \
+>   alpine/socat tcp-listen:5432,fork,reuseaddr tcp-connect:postgres:5432
+> ```
+>
+> then connect to `localhost:15432`, and `docker rm -f pgproxy` when done. **If your local
 `backend/.env` points at different credentials or a different database
 name** (e.g. a Postgres you installed directly instead of via Docker),
 that's fine — just make sure whichever Postgres is actually running has a

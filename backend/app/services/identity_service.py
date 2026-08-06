@@ -51,6 +51,7 @@ def maybe_lock_identity(db: Session, student: Student) -> bool:
 
 def record_face_registration(db: Session, student: Student) -> None:
     """Called after a FaceProfile is successfully written."""
+    clear_reverification(db, student, commit=True)
     maybe_lock_identity(db, student)
 
 
@@ -78,7 +79,53 @@ def record_id_verification(db: Session, student: Student, name_matched: bool, ex
     if changed:
         db.commit()
         db.refresh(student)
+    clear_reverification(db, student, commit=True)
     maybe_lock_identity(db, student)
+
+
+def require_reverification(db: Session, student: Student, *, reason: str | None,
+                            requested_by_id: int | None, commit: bool = True) -> Student:
+    """Ask a candidate to prove their identity again before their next exam.
+
+    Does not touch the stored face embedding or ID image -- see the model
+    comment on Student.reverification_required_at for why keeping them is the
+    whole point. `unlock_identity` is also left alone: this is about the
+    biometric evidence, not about whether the account's name may be edited,
+    and conflating them would silently hand back a permission nobody asked to
+    grant.
+    """
+    student.reverification_required_at = _now()
+    student.reverification_reason = (reason or "").strip()[:500] or None
+    student.reverification_requested_by_id = requested_by_id
+    # Both halves must be redone, so both are marked outstanding again. The old
+    # photo stays on disk until the new one overwrites it.
+    student.id_verified = False
+    if commit:
+        db.commit()
+        db.refresh(student)
+    return student
+
+
+def clear_reverification(db: Session, student: Student, *, commit: bool = False) -> bool:
+    """Drop the flag once BOTH halves have actually been redone.
+
+    Called after each verification step, not from the endpoint that asks for
+    re-verification -- the request is satisfied by the candidate's work, not by
+    anyone declaring it satisfied. Requiring both halves is deliberate: clearing
+    after only the face would let a candidate whose ID card was the problem walk
+    straight back through the gate.
+    """
+    if student.reverification_required_at is None:
+        return False
+    if not (student.id_verified and has_face_profile(db, student)):
+        return False
+    student.reverification_required_at = None
+    student.reverification_reason = None
+    student.reverification_requested_by_id = None
+    if commit:
+        db.commit()
+        db.refresh(student)
+    return True
 
 
 def verification_state(db: Session, student: Student | None, *,
@@ -92,17 +139,30 @@ def verification_state(db: Session, student: Student | None, *,
     stay unchanged and can't accidentally pass a stale set.
     """
     if student is None:
-        return {"face_registered": False, "id_verified": False, "identity_locked": False, "exam_ready": False}
+        return {"face_registered": False, "id_verified": False, "identity_locked": False,
+                "exam_ready": False, "reverification_required": False,
+                "reverification_reason": None, "reverification_required_at": None}
     face_registered = (
         student.id in face_registered_ids
         if face_registered_ids is not None
         else has_face_profile(db, student)
     )
+    # An outstanding re-verification request closes the gate on its own, even
+    # though the stored face and ID are still technically present and valid.
+    # That is the point: the administrator is saying "I do not currently accept
+    # this evidence", and the candidate must supply new evidence before sitting
+    # anything. Keeping the old records readable while refusing to rely on them
+    # is what lets a reviewer compare the two afterwards.
+    reverification_required = student.reverification_required_at is not None
+
     return {
         "face_registered": face_registered,
         "id_verified": bool(student.id_verified),
         "identity_locked": bool(student.identity_locked),
-        "exam_ready": face_registered and bool(student.id_verified),
+        "exam_ready": face_registered and bool(student.id_verified) and not reverification_required,
+        "reverification_required": reverification_required,
+        "reverification_reason": student.reverification_reason,
+        "reverification_required_at": student.reverification_required_at,
     }
 
 
@@ -112,6 +172,21 @@ def require_exam_ready(db: Session, student: Student) -> None:
     state = verification_state(db, student)
     if state["exam_ready"]:
         return
+
+    # Named separately rather than folded into "incomplete". Telling somebody
+    # whose face and ID are both on file that their verification is incomplete
+    # is simply false, and sends them to a Profile page that shows two green
+    # ticks -- so they conclude the platform is broken rather than that
+    # something was asked of them.
+    if state["reverification_required"]:
+        reason = (student.reverification_reason or "").strip()
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Your institution has asked you to verify your identity again before your next "
+            "proctored exam. Please re-register your face and re-submit your ID card on your "
+            "Profile page."
+            + (f" Reason given: {reason}" if reason else ""),
+        )
 
     missing = []
     if not state["face_registered"]:

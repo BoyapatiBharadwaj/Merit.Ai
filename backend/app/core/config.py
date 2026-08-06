@@ -24,7 +24,20 @@ class Settings(BaseSettings):
     # an Enum so an unrecognised value is treated as non-production and
     # simply warns, instead of crashing the app on a config typo.
     ENVIRONMENT: str = "development"
-    DATABASE_URL: str = "postgresql://exam_user:exam_pass@localhost:5432/exam_proctor"
+    # Only ever used when DATABASE_URL is unset -- running the app or the tests
+    # straight from backend/ with no environment. Every containerised service is
+    # given an explicit DATABASE_URL by docker-compose.yml, built from
+    # POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB in the root .env, so this
+    # string is never what the stack connects with.
+    #
+    # It used to read `exam_user:exam_pass@localhost:5432/exam_proctor`, left
+    # over from the project's first name. Nothing had used those credentials in
+    # a long time, but they were the most authoritative-looking connection
+    # details in the repository -- so anyone reaching for a database client read
+    # them, tried them, and got "password authentication failed for user
+    # exam_user" against whichever Postgres happened to answer on localhost.
+    # A default that is wrong is worse than no default, because it is believed.
+    DATABASE_URL: str = "postgresql://merit_ai:change_this_password@localhost:5432/merit_ai"
     SECRET_KEY: str = PLACEHOLDER_SECRET_KEY
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 120
@@ -230,6 +243,11 @@ class Settings(BaseSettings):
     # unexpected "you signed in from..." is worth an inbox interruption; doing
     # the same for every candidate login would be noise.
     NOTIFY_STAFF_ON_LOGIN: bool = True
+    # Minimum gap between two admin notifications about the SAME pending access
+    # request. Protects the admin inbox from a double-click without making the
+    # de-dupe permanent -- a request submitted while mail was misconfigured used
+    # to stay unannounced forever, and resubmitting silently did nothing.
+    ACCESS_REQUEST_RENOTIFY_SECONDS: int = 900
 
     # --- Database pool (app/database/session.py) -----------------------------
     # PER PROCESS. Total connections to Postgres are

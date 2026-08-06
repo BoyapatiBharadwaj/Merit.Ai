@@ -45,6 +45,13 @@ class ActivityType(str, enum.Enum):
     ID_VERIFICATION_FAILED = "id_verification_failed"
     IDENTITY_LOCKED = "identity_locked"
     IDENTITY_UNLOCKED = "identity_unlocked"
+    # An administrator asked a candidate to re-prove their identity. Kept
+    # distinct from BIOMETRICS_ERASED because the two mean opposite things
+    # about the stored evidence -- one preserves it, the other destroys it --
+    # and an auditor reading "biometrics erased" would draw the wrong
+    # conclusion about what is still available to review.
+    REVERIFICATION_REQUIRED = "reverification_required"
+    REVERIFICATION_COMPLETED = "reverification_completed"
     BIOMETRICS_ERASED = "biometrics_erased"
 
     PASSWORD_CHANGED = "password_changed"
@@ -56,6 +63,7 @@ class ActivityType(str, enum.Enum):
     # but not changes -- so "who moved this examiner into our organization?" had
     # no answer, which is exactly the question a surprise tenancy change raises.
     EXAMINER_UPDATED = "examiner_updated"
+    CANDIDATE_UPDATED = "candidate_updated"
     # An export is the moment a slice of this platform's data leaves it. "Who
     # took a copy of the candidate list, and when?" had no answer before.
     DATA_EXPORTED = "data_exported"

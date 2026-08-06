@@ -486,6 +486,54 @@ def activation_message(*, full_name: str, email: str, activation_url: str,
     return subject, text, html
 
 
+def reverification_message(*, full_name: str, reason: str | None) -> tuple[str, str, str]:
+    """Tells a candidate their institution has asked them to verify again.
+
+    The reason is included verbatim and given its own visual block, because a
+    demand to re-prove your identity with no explanation attached reads, from
+    the receiving end, as either an accusation or a malfunction. Neither is
+    what was meant, and both make the person less likely to just go and do it.
+
+    Sent when the request is made rather than discovered at the exam gate: the
+    entire value of asking early is that the candidate has time to act. A
+    candidate who first learns of this ten minutes before a paper starts has
+    effectively been blocked from it.
+    """
+    subject = "Action needed: verify your identity again"
+    profile_url = f"{settings.APP_BASE_URL.rstrip('/')}/profile"
+    reason_text = (reason or "").strip()
+    text = (
+        f"Hello {full_name},\n\n"
+        "Your institution has asked you to verify your identity again before your next "
+        "proctored exam on Merit.Ai.\n\n"
+        + (f"Reason given: {reason_text}\n\n" if reason_text else "")
+        + "What to do:\n"
+        "  1. Sign in and open your Profile page.\n"
+        "  2. Register your face again.\n"
+        "  3. Capture your ID card again.\n\n"
+        f"Profile page: {profile_url}\n\n"
+        "Until both steps are complete you will not be able to start a proctored exam, so "
+        "please do this before your next one rather than on the day.\n"
+    )
+    html = _wrap(
+        "Verify your identity again",
+        _paragraph(f"Hello {full_name}, your institution has asked you to verify your identity "
+                   "again before your next proctored exam.")
+        + (f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+           f'style="background-color:{_PAGE};border:1px solid {_BORDER};border-radius:12px;margin:0 0 22px;">'
+           f'<tr><td style="padding:16px 20px;font-family:{_FONT};font-size:14px;line-height:1.6;color:#1f2937;">'
+           f'<strong>Reason given:</strong> {reason_text}</td></tr></table>' if reason_text else "")
+        + _paragraph("Open your Profile page, register your face again, and capture your ID card "
+                     "again. Both steps are needed.")
+        + _button("Go to my Profile", profile_url)
+        + f'<p style="margin:22px 0 0;font-family:{_FONT};font-size:13px;line-height:1.6;color:#b45309;">'
+          "Until both steps are complete you cannot start a proctored exam \u2014 please do this "
+          "before your next one rather than on the day.</p>",
+        preheader="Your institution has asked you to verify your identity again.",
+    )
+    return subject, text, html
+
+
 def staff_login_message(*, full_name: str, role_label: str, when: str,
                         ip: str | None, user_agent: str | None) -> tuple[str, str, str]:
     """Tells a staff member their account was just signed into.

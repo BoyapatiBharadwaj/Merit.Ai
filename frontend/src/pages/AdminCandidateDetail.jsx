@@ -26,7 +26,10 @@ export default function AdminCandidateDetail() {
   const [busyAction, setBusyAction] = useState(null);
   const [actionResult, setActionResult] = useState(null); // { tone, message }
   const [confirmText, setConfirmText] = useState("");
-  const [confirming, setConfirming] = useState(null); // "delete" | "biometrics" | null
+  const [confirming, setConfirming] = useState(null); // "delete" | "biometrics" | "reverify" | null
+  const [reverifyReason, setReverifyReason] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [editForm, setEditForm] = useState(null);
   const [revealedPassword, setRevealedPassword] = useState("");
 
   useEffect(() => {
@@ -236,6 +239,44 @@ export default function AdminCandidateDetail() {
 
               <button
                 type="button" disabled={busyAction !== null}
+                onClick={() => {
+                  setEditForm({
+                    first_name: candidate.first_name || "",
+                    last_name: candidate.last_name || "",
+                    email: candidate.email || "",
+                    roll_number: candidate.roll_number || "",
+                  });
+                  setEditing(true);
+                  setActionResult(null);
+                }}
+                className={`${btnGhost} px-4 py-2 text-sm disabled:opacity-60`}
+              >
+                Edit details
+              </button>
+
+              {/* Separate from "Erase biometric data" on purpose, and worded so
+                  the difference is visible: this one KEEPS the photos. The two
+                  actions pull in opposite directions on the same data, and an
+                  administrator picking the wrong one either destroys the
+                  evidence they were about to review, or fails to remove data
+                  somebody asked to have removed. */}
+              <button
+                type="button"
+                disabled={busyAction !== null || candidate.reverification_required
+                          || !(candidate.face_registered || candidate.id_verified)}
+                onClick={() => { setConfirming("reverify"); setReverifyReason(""); setActionResult(null); }}
+                title={candidate.reverification_required
+                  ? "Already asked — waiting for the candidate"
+                  : !(candidate.face_registered || candidate.id_verified)
+                    ? "Nothing verified yet, so there is nothing to re-verify"
+                    : undefined}
+                className={`${btnGhost} px-4 py-2 text-sm disabled:opacity-60`}
+              >
+                Require re-verification
+              </button>
+
+              <button
+                type="button" disabled={busyAction !== null}
                 onClick={() => { setConfirming("biometrics"); setConfirmText(""); setActionResult(null); }}
                 className={`${btnGhost} px-4 py-2 text-sm disabled:opacity-60`}
               >
@@ -251,7 +292,128 @@ export default function AdminCandidateDetail() {
               </button>
             </div>
 
-            {confirming && (
+            {/* Re-verification is not destructive, so it gets a normal panel
+                rather than the red typed-email ceremony. Asking for a reason
+                is the only friction, and it earns its place: the reason is
+                shown to the candidate verbatim, and a demand to re-prove your
+                identity with nothing attached reads as either an accusation or
+                a malfunction. */}
+            {confirming === "reverify" && (
+              <div className="mt-4 rounded-xl border border-border bg-page px-4 py-4">
+                <p className="text-sm font-semibold text-ink mb-1">
+                  Ask this candidate to verify their identity again?
+                </p>
+                <p className="text-sm text-muted mb-3 leading-relaxed">
+                  Their existing face photo and ID card stay on file — this does not delete
+                  anything. They will be blocked from proctored exams until they have re-registered
+                  their face <em>and</em> re-submitted their ID card.
+                </p>
+                <label htmlFor="reverify-reason" className="block text-xs font-semibold text-muted mb-1.5">
+                  Reason (shown to the candidate)
+                </label>
+                <input
+                  id="reverify-reason"
+                  value={reverifyReason}
+                  onChange={(e) => setReverifyReason(e.target.value)}
+                  maxLength={500}
+                  className={`${fieldInput} !mb-3`}
+                  placeholder="e.g. The registered photo did not match at the last sitting."
+                  autoComplete="off"
+                />
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button" disabled={busyAction !== null || !reverifyReason.trim()}
+                    onClick={() => runAction("reverify",
+                      () => Api.post(`/admin/candidates/${studentId}/require-reverification`,
+                                     { reason: reverifyReason.trim(), notify: true }),
+                      "Re-verification requested. The candidate has been emailed.")}
+                    className={`${btnPrimary.replace("px-5 py-3", "px-4 py-2")} text-sm disabled:opacity-40`}
+                  >
+                    {busyAction ? "Working…" : "Request re-verification"}
+                  </button>
+                  <button type="button" onClick={() => { setConfirming(null); setReverifyReason(""); }}
+                          className={`${btnGhost} px-4 py-2 text-sm`}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {editing && editForm && (
+              <form
+                className="mt-4 rounded-xl border border-border bg-page px-4 py-4"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  runAction("edit",
+                    () => Api.patch(`/admin/candidates/${studentId}`, {
+                      first_name: editForm.first_name.trim(),
+                      last_name: editForm.last_name.trim(),
+                      email: editForm.email.trim(),
+                      roll_number: editForm.roll_number.trim() || null,
+                    }),
+                    "Details updated.").then((result) => {
+                      if (result) {
+                        setEditing(false);
+                        if (result.reverification_required) {
+                          setActionResult({
+                            tone: "success",
+                            message: "Details updated. Because their name or email was verified "
+                              + "against their ID card, their identity has been unlocked and they "
+                              + "must verify again before their next proctored exam.",
+                          });
+                        }
+                      }
+                    });
+                }}
+              >
+                <p className="text-sm font-semibold text-ink mb-3">Edit candidate details</p>
+
+                {candidate.identity_locked && (
+                  <p className="mb-3 rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-xs leading-relaxed text-warning">
+                    This candidate&apos;s name was matched against their ID card. Changing the name
+                    or email will unlock their identity and require them to verify again — otherwise
+                    a &ldquo;verified&rdquo; badge would be attached to details nobody has checked.
+                    Changing only the roll number has no such effect.
+                  </p>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {[
+                    ["first_name", "First name"],
+                    ["last_name", "Last name"],
+                    ["email", "Email"],
+                    ["roll_number", "Roll number"],
+                  ].map(([key, label]) => (
+                    <div key={key}>
+                      <label htmlFor={`edit-${key}`} className="block text-xs font-semibold text-muted mb-1.5">
+                        {label}
+                      </label>
+                      <input
+                        id={`edit-${key}`}
+                        value={editForm[key]}
+                        onChange={(e) => setEditForm({ ...editForm, [key]: e.target.value })}
+                        className={fieldInput}
+                        type={key === "email" ? "email" : "text"}
+                        autoComplete="off"
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex flex-wrap gap-2 mt-3">
+                  <button type="submit" disabled={busyAction !== null}
+                          className={`${btnPrimary.replace("px-5 py-3", "px-4 py-2")} text-sm disabled:opacity-60`}>
+                    {busyAction === "edit" ? "Saving…" : "Save changes"}
+                  </button>
+                  <button type="button" onClick={() => { setEditing(false); setEditForm(null); }}
+                          className={`${btnGhost} px-4 py-2 text-sm`}>
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {(confirming === "delete" || confirming === "biometrics") && (
               <div className="mt-4 rounded-xl border border-danger/30 bg-danger/5 px-4 py-4">
                 <p className="text-sm text-ink mb-1 font-semibold">
                   {confirming === "delete"

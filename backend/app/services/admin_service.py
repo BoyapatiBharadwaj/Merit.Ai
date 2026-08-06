@@ -628,6 +628,13 @@ def candidate_detail(db: Session, student_id: int) -> dict:
         "is_active": student.user.is_active,
         "face_registered": identity["face_registered"], "id_verified": identity["id_verified"],
         "identity_locked": identity["identity_locked"],
+        # Surfaced so the admin detail page can show an outstanding request
+        # instead of two green ticks that no longer mean the candidate can sit
+        # anything -- the state that made this feature necessary in the first
+        # place.
+        "reverification_required": identity["reverification_required"],
+        "reverification_reason": identity["reverification_reason"],
+        "reverification_required_at": identity["reverification_required_at"],
         "total_exams": len(history),
         "completed_exams": sum(1 for h in history if h["score"] is not None),
         "in_progress_exams": sum(1 for h in history if h["status"] == AttemptStatus.IN_PROGRESS.value),
@@ -757,3 +764,228 @@ def export_rows(db: Session, kind: str, **filters) -> tuple[list[str], list[dict
         rows, _ = violations_overview(db, **filters)
         return VIOLATION_EXPORT_COLUMNS, rows
     raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown export '{kind}'.")
+
+
+# ==============================================================================
+# Candidate account administration
+#
+# Deleting, deactivating and resetting a candidate's password already live in
+# api/v1/users.py, which owns those verbs for every role. What was missing was
+# the two things that are specific to a CANDIDATE: editing the details their
+# identity was verified against, and asking them to verify again.
+# ==============================================================================
+
+def _candidate(db: Session, student_id: int):
+    student = user_repository.get_student_by_id(db, student_id)
+    if not student:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Candidate not found.")
+    return student
+
+
+def candidate_user(db: Session, student_id: int):
+    """The User row behind a candidate, for activity_service.record.
+
+    Mirrors examiner_user. The audit trail is keyed on users, not on role
+    profiles, so that "everything that happened to this person" is one query
+    rather than a union across profile tables.
+    """
+    student = user_repository.get_student_by_id(db, student_id)
+    return student.user if student else None
+
+
+def update_candidate(db: Session, student_id: int, *, first_name: str | None = None,
+                     last_name: str | None = None, email: str | None = None,
+                     roll_number: str | None = None) -> dict:
+    """Edit a candidate's account, and report the consequence honestly.
+
+    The delicate part is not the write, it is what the write means. A verified
+    candidate's name was matched against the name printed on their ID card, and
+    `identity_locked` records that this happened. Quietly renaming such an
+    account would leave a "verified" badge attached to a name nobody has ever
+    checked -- which is worse than no badge, because the badge is what an
+    examiner relies on when deciding whether the person on the webcam is the
+    person enrolled.
+
+    So editing a locked account unlocks it AND flags it for re-verification,
+    and the return value says so. The caller is expected to surface that; the
+    admin UI does. The alternative designs were both worse: refusing the edit
+    entirely makes a genuine typo unfixable without a second ceremony, and
+    editing silently is the failure described above.
+
+    Returns the previous values alongside the new ones so the audit entry can
+    record what actually changed rather than what was submitted.
+    """
+    student = _candidate(db, student_id)
+    user = student.user
+    if user is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Candidate has no user account.")
+
+    previous = {
+        "first_name": user.first_name, "last_name": user.last_name,
+        "email": user.email, "roll_number": student.roll_number,
+    }
+
+    identity_fields_changed = False
+
+    if first_name is not None or last_name is not None:
+        new_first = (first_name if first_name is not None else user.first_name) or ""
+        new_last = (last_name if last_name is not None else user.last_name) or ""
+        if (new_first, new_last) != (user.first_name, user.last_name):
+            user.set_name(new_first, new_last)
+            identity_fields_changed = True
+
+    if email is not None:
+        new_email = email.strip().lower()
+        if new_email != (user.email or "").lower():
+            existing = user_repository.get_user_by_email(db, new_email)
+            if existing and existing.id != user.id:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "That email is already in use.")
+            # set_email clears email_verified_at, which is correct: the proof
+            # was about the OLD address.
+            user.set_email(new_email)
+            identity_fields_changed = True
+
+    if roll_number is not None:
+        new_roll = roll_number.strip() or None
+        if new_roll != student.roll_number:
+            if new_roll:
+                clash = user_repository.get_student_by_roll_number(db, new_roll)
+                if clash and clash.id != student.id:
+                    raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                        "That roll number belongs to another candidate.")
+            student.roll_number = new_roll
+
+    # Only name and email were matched against the ID card. A roll number was
+    # not, so changing it alone must not cost the candidate a re-verification
+    # they did nothing to deserve.
+    unlocked = False
+    reverification_required = False
+    if identity_fields_changed and student.identity_locked:
+        student.identity_locked = False
+        student.identity_locked_at = None
+        unlocked = True
+        identity_service.require_reverification(
+            db, student, reason="Your name or email was corrected by an administrator.",
+            requested_by_id=None, commit=False,
+        )
+        reverification_required = True
+
+    try:
+        db.commit()
+        db.refresh(student)
+        db.refresh(user)
+    except Exception:
+        db.rollback()
+        raise
+
+    return {
+        "student_id": student.id,
+        "user_id": user.id,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "full_name": user.full_name,
+        "email": user.email,
+        "roll_number": student.roll_number,
+        "identity_unlocked": unlocked,
+        "reverification_required": reverification_required,
+        "previous": previous,
+    }
+
+
+def require_candidate_reverification(db: Session, student_id: int, *, reason: str | None,
+                                     requested_by_id: int | None) -> dict:
+    """Ask a candidate to re-register their face and re-submit their ID card.
+
+    Refuses when there is nothing to re-verify. A candidate who has never
+    completed verification is already blocked by the ordinary gate, and marking
+    them would produce a confusing second message about redoing something they
+    have not done once.
+    """
+    student = _candidate(db, student_id)
+    state = identity_service.verification_state(db, student)
+    if not (state["face_registered"] or state["id_verified"]):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "This candidate has not completed identity verification yet, so there is nothing to "
+            "re-verify. They are already blocked from proctored exams until they do.",
+        )
+    if state["reverification_required"]:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "This candidate has already been asked to verify again.")
+
+    identity_service.require_reverification(
+        db, student, reason=reason, requested_by_id=requested_by_id,
+    )
+    return {
+        "student_id": student.id,
+        "user_id": student.user_id,
+        "email": student.user.email if student.user else None,
+        "full_name": student.user.full_name if student.user else None,
+        "reason": student.reverification_reason,
+        "requested_at": student.reverification_required_at,
+    }
+
+
+def assert_deletable(db: Session, target) -> None:
+    """Refuse to delete an account whose assessment record would go with it.
+
+    This guard existed only on DELETE /admin/examiners/{id}. The admin UI also
+    deletes through DELETE /users/{id} -- the route that handles both roles --
+    which had no such check, so the protection was route-dependent: the same
+    examiner the Examiners page refused to delete could be deleted from the
+    candidate/user path, and a candidate with graded results could always be
+    deleted from anywhere.
+
+    Candidates are the more important half. An examiner's departure costs the
+    platform an author; a candidate's deletion destroys submitted answers,
+    marks and the proctoring evidence behind them -- the assessment record
+    itself, which is the one thing an examination platform exists to keep. The
+    cascade is deliberate and correct for a genuine erasure request; it is the
+    wrong default for "this person left".
+
+    Deactivating is offered instead because it achieves what the administrator
+    almost always actually wants (the account stops working) without destroying
+    what nobody asked to destroy.
+    """
+    # Local import, matching delete_examiner above: attempt.py imports from
+    # this module's dependency graph, so a top-level import reintroduces a
+    # module-load cycle.
+    from app.models.attempt import StudentExamAttempt
+
+    role = getattr(getattr(target, "role", None), "name", None)
+
+    if role == "student":
+        student = target.student_profile
+        if student is None:
+            return
+        has_attempts = (
+            db.query(StudentExamAttempt.id)
+            .filter(StudentExamAttempt.student_id == student.id)
+            .first() is not None
+        )
+        if has_attempts:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "This candidate has sat at least one exam, so deleting the account would destroy "
+                "their answers, marks and proctoring record along with it. Disable the account "
+                "instead. If this is a data-erasure request, remove their biometric data first "
+                "— that is deletable on its own and leaves the assessment record intact.",
+            )
+        return
+
+    if role == "examiner":
+        examiner = target.examiner_profile
+        if examiner is None:
+            return
+        has_attempts = (
+            db.query(StudentExamAttempt.id)
+            .join(Exam, StudentExamAttempt.exam_id == Exam.id)
+            .filter(Exam.examiner_id == examiner.id)
+            .first() is not None
+        )
+        if has_attempts:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "This examiner has exams with real candidate attempts and cannot be deleted. "
+                "Disable the account instead.",
+            )

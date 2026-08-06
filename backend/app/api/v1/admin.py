@@ -12,7 +12,7 @@ import csv
 import io
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request, Response
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_admin
@@ -21,8 +21,8 @@ from app.models.user import User
 from app.core.config import settings
 from app.database.session import get_db
 from app.schemas.pagination import Page, PageParams, build_page
-from app.schemas.admin import ExaminerUpdateRequest
-from app.services import activity_service, admin_service, organization_service
+from app.schemas.admin import CandidateUpdateRequest, ExaminerUpdateRequest, ReverificationRequest
+from app.services import activity_service, admin_service, email_service, organization_service
 
 router = APIRouter(prefix="/admin", tags=["Admin Dashboard"])
 
@@ -131,6 +131,79 @@ def get_candidate_detail(student_id: int, db: Session = Depends(get_db), _=Depen
 # ---------------------------------------------------------------------------
 # Exams
 # ---------------------------------------------------------------------------
+
+@router.patch("/candidates/{student_id}")
+def update_candidate(student_id: int, payload: CandidateUpdateRequest, request: Request,
+                     db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    """Correct a candidate's name, email or roll number.
+
+    Editing the name or email of a VERIFIED candidate unlocks their identity
+    and flags them for re-verification -- see admin_service.update_candidate for
+    why that is not optional. The response reports it so the UI can say so
+    rather than letting the administrator discover it from a support ticket.
+    """
+    result = admin_service.update_candidate(db, student_id, **payload.model_dump(exclude_unset=True))
+    before = result.pop("previous", {})
+
+    # Record what actually changed, not what was submitted. An audit entry
+    # listing every field on the form tells a later reader nothing.
+    changes = [
+        f"{label}: {before.get(key) or 'none'} -> {result.get(key) or 'none'}"
+        for key, label in (("first_name", "First name"), ("last_name", "Last name"),
+                           ("email", "Email"), ("roll_number", "Roll number"))
+        if before.get(key) != result.get(key)
+    ]
+    if changes:
+        activity_service.record(
+            db, activity_type=ActivityType.CANDIDATE_UPDATED,
+            subject=admin_service.candidate_user(db, student_id), actor=admin, request=request,
+            description="; ".join(changes),
+        )
+    if result.get("reverification_required"):
+        activity_service.record(
+            db, activity_type=ActivityType.REVERIFICATION_REQUIRED,
+            subject=admin_service.candidate_user(db, student_id), actor=admin, request=request,
+            description="Identity unlocked and re-verification required after an admin edit",
+        )
+    return result
+
+
+@router.post("/candidates/{student_id}/require-reverification")
+def require_candidate_reverification(student_id: int, payload: ReverificationRequest,
+                                     request: Request, background: BackgroundTasks,
+                                     db: Session = Depends(get_db),
+                                     admin: User = Depends(require_admin)):
+    """Ask a candidate to re-register their face and re-submit their ID card.
+
+    Deliberately NOT the same as erasing their biometrics, which already exists
+    at DELETE /users/{id}/biometrics. The stored face and ID stay on file:
+    the moment you doubt the evidence is exactly the moment you need to keep
+    it, because it is what any review will look at.
+    """
+    result = admin_service.require_candidate_reverification(
+        db, student_id, reason=payload.reason, requested_by_id=admin.id,
+    )
+    activity_service.record(
+        db, activity_type=ActivityType.REVERIFICATION_REQUIRED,
+        subject=admin_service.candidate_user(db, student_id), actor=admin, request=request,
+        description=(result.get("reason") or "No reason given"),
+    )
+
+    emailed = False
+    if payload.notify and result.get("email") and email_service.is_enabled():
+        subject, text, html = email_service.reverification_message(
+            full_name=result.get("full_name") or "there",
+            reason=result.get("reason"),
+        )
+        email_service.queue(background, to=result["email"], subject=subject,
+                            text_body=text, html_body=html)
+        emailed = True
+
+    # Reported rather than assumed. "We told them" and "we recorded it and told
+    # nobody" must not look the same to the administrator who pressed the
+    # button -- they will act very differently depending on which happened.
+    return {**result, "emailed": emailed}
+
 
 @router.get("/exams/{exam_id}")
 def get_exam_detail(exam_id: int, db: Session = Depends(get_db), _=Depends(require_admin)):
