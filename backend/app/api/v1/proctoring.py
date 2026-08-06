@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.deps import (
-    attempt_student, exam_student, get_current_user, rate_limit_user, require_admin, require_student,
+    attempt_student, exam_student, get_current_user, rate_limit_user, require_student,
 )
 from app.database.session import get_db
 from app.schemas.pagination import Page, PageParams, build_page
@@ -319,10 +319,27 @@ def get_violation_screenshot(event_id: int, db: Session = Depends(get_db), user:
 
 @router.patch("/events/{event_id}/decision")
 def update_violation_decision(event_id: int, payload: ViolationDecisionUpdate,
-                              db: Session = Depends(get_db), _: User = Depends(require_admin)):
-    """Sets an admin's review verdict on one logged violation -- the
-    "Admin Decision" column in the candidate exam report's violation
-    timeline. Admin-only: this is a review action, not something the exam's
-    own examiner grants themselves (they already left their read of it, if
-    any, via PATCH /attempts/{id}/comment)."""
+                              db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Sets a reviewer's verdict (pending / confirmed / misleading -- stored
+    as AdminDecision.DISMISSED) on one logged violation, in the candidate
+    exam report's violation timeline.
+
+    Opened up to the exam's own owning examiner, not just an admin: every
+    violation for their candidates now lives only inside that per-attempt
+    review (see GET /attempts/{id}/staff-report), and there is no separate
+    admin-only worklist for them to hand adjudication off to. Same ownership
+    check as every other staff-scoped endpoint here (get_events_for_exam,
+    get_violation_screenshot) -- an examiner may only decide on violations
+    from an exam they themselves own; an admin may decide on any.
+    """
+    event = proctor_repository.get_event(db, event_id)
+    if not event:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Violation not found.")
+    is_staff = user.role.name == RoleName.ADMIN.value or (
+        user.role.name == RoleName.EXAMINER.value
+        and user.examiner_profile
+        and user.examiner_profile.id == event.attempt.exam.examiner_id
+    )
+    if not is_staff:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to this violation.")
     return admin_service.set_violation_decision(db, event_id, payload.decision)

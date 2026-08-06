@@ -14,17 +14,16 @@ registered addresses.
 import logging
 from datetime import datetime, timezone
 
-import secrets
-
 from fastapi import BackgroundTasks, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.locks import distributed_lock
 from app.models.access_request import AccessRequest
 from app.models.enums import AccessRequestStatus
 from app.models.user import User
 from app.repositories import access_request_repository, user_repository
-from app.services import auth_service, email_service, otp_service
+from app.services import email_service, examiner_provisioning_service
 
 logger = logging.getLogger("app")
 
@@ -74,8 +73,21 @@ def _notification_is_due(request: AccessRequest) -> bool:
 
 
 def _notify_admins(db: Session, request: AccessRequest,
-                   background: BackgroundTasks | None) -> None:
-    """Mail every admin recipient about one request."""
+                   background: BackgroundTasks | None) -> bool:
+    """Queue one admin-notification email per recipient and enqueue the job
+    that delivers them and stamps `last_notified_at` only once every one of
+    them has actually gone out. Returns whether anything was queued at all
+    (i.e. there was at least one recipient) -- NOT whether delivery
+    succeeded, since delivery is now asynchronous (Redis + RQ, see
+    app/worker/jobs.py); the caller (submit()/approve(), below) must not
+    stamp `last_notified_at` itself any more, because it cannot know the
+    outcome yet. That side effect now lives entirely inside
+    jobs.notify_access_request, which is the only code that ever sets it.
+
+    `background` is accepted for call-site compatibility but no longer used:
+    delivery goes through the same durable, retried queue every other
+    transactional email in this app uses.
+    """
     subject, text, html = email_service.access_request_message(
         first_name=request.first_name, last_name=request.last_name,
         email=request.email, organization_name=request.organization_name,
@@ -88,10 +100,33 @@ def _notify_admins(db: Session, request: AccessRequest,
         # the platform working.
         logger.warning("Access request %s recorded but no admin recipient is configured; "
                        "set ADMIN_NOTIFICATION_EMAIL or create an admin account.", request.email)
-        return
+        return False
+
+    from app.repositories import email_outbox_repository
+    from app.worker import jobs
+
+    outbox_ids = []
     for recipient in recipients:
-        email_service.queue(background, to=recipient, subject=subject,
-                            text_body=text, html_body=html)
+        row = email_outbox_repository.create(
+            db, to_address=recipient, subject=subject, text_body=text, html_body=html,
+            max_attempts=settings.EMAIL_OUTBOX_MAX_ATTEMPTS,
+        )
+        outbox_ids.append(row.id)
+
+    # One lock per request id: a resubmission racing the worker's own retry of
+    # an earlier notification for the SAME request must not enqueue two
+    # overlapping notification jobs that could both eventually try to stamp
+    # last_notified_at (harmless on its own, since both would just set the
+    # same field to close timestamps, but the lock is what makes "exactly one
+    # notification job in flight per request at a time" a guarantee rather
+    # than a usually-true accident of timing).
+    with distributed_lock(f"access-request-notify:{request.id}", blocking_timeout=0) as acquired:
+        if acquired:
+            jobs.enqueue_access_request_notification(request.id, outbox_ids)
+        else:
+            logger.info("A notification job for access request %s is already queued; "
+                       "not enqueueing a second one.", request.id)
+    return True
 
 
 def submit(db: Session, *, first_name: str, last_name: str, email: str,
@@ -122,8 +157,13 @@ def submit(db: Session, *, first_name: str, last_name: str, email: str,
         # (resubmitting later gets through). It also bounds the abuse: the
         # worst an attacker achieves is one message per address per cooldown.
         if _notification_is_due(existing):
+            # last_notified_at is stamped by jobs.notify_access_request itself,
+            # only once every recipient has actually been delivered -- see
+            # _notify_admins. A delivery that never completes leaves the field
+            # exactly as it was (most likely NULL, or older than the cooldown),
+            # so the very next submission gets another real chance rather than
+            # the platform believing an admin was told when nobody was.
             _notify_admins(db, existing, background)
-            access_request_repository.mark_notified(db, existing, when=_now())
         return existing
 
     request = access_request_repository.create(
@@ -136,7 +176,6 @@ def submit(db: Session, *, first_name: str, last_name: str, email: str,
     )
 
     _notify_admins(db, request, background)
-    access_request_repository.mark_notified(db, request, when=_now())
 
     return request
 
@@ -168,6 +207,23 @@ def approve(db: Session, request_id: int, admin: User, review_note: str | None,
     changes or, on failure, rolls back both -- no orphaned account, no
     permanently stuck request.
     """
+    # Locked per request id for the life of the approval: two admins clicking
+    # "approve" on the same request within milliseconds of each other (or one
+    # click double-firing) must never both pass _load_pending's PENDING check
+    # and both mint an examiner account for the same email. The lock's window
+    # covers the whole approve, not just the account creation, because the
+    # status check itself is the thing being raced.
+    with distributed_lock(f"access-request-approve:{request_id}", blocking_timeout=2.0) as acquired:
+        if not acquired:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "This request is already being approved. Refresh the page in a moment.",
+            )
+        return _approve_locked(db, request_id, admin, review_note, background)
+
+
+def _approve_locked(db: Session, request_id: int, admin: User, review_note: str | None,
+                    background: BackgroundTasks | None) -> AccessRequest:
     request = _load_pending(db, request_id)
 
     if user_repository.get_user_by_email(db, request.email.lower()):
@@ -176,30 +232,20 @@ def approve(db: Session, request_id: int, admin: User, review_note: str | None,
             "An account already exists for this email. Reject this request instead.",
         )
 
-    # A password nobody has, nobody typed and nobody will ever use.
+    # Account creation and the request's status flip happen in ONE commit, via
+    # commit=False + this function's own commit below. Two separate commits
+    # would mean a crash between them leaves an examiner account that exists
+    # while the request stays "pending" forever, with no way to re-approve it
+    # (the email-already-exists check above would now block a retry) and no
+    # record of who it belonged to.
     #
-    # The approving admin used to choose this and it was mailed to the new
-    # examiner in plain text. Two things were wrong with that beyond the email
-    # itself: the admin knew the password, so "only this examiner could have
-    # done that" was never true of anything the account did; and the credential
-    # outlived its usefulness in an inbox indefinitely. Now the account is born
-    # with 256 bits of noise as its password and the only way in is the
-    # activation link -- which expires, works once, and is stored as a hash.
-    placeholder = secrets.token_urlsafe(32)
-
-    user, examiner = auth_service.create_examiner(
-        db,
-        admin.id,
-        request.first_name,
-        request.last_name,
-        request.email,
-        placeholder,
-        request.organization_name,
-        commit=False,
+    # examiner_provisioning_service is the one place that creates an examiner
+    # account -- see its module docstring for why the password is never one an
+    # admin chose or ever sees.
+    user, examiner, token = examiner_provisioning_service.create_examiner_pending_activation(
+        db, admin_id=admin.id, first_name=request.first_name, last_name=request.last_name,
+        email=request.email, organization_name=request.organization_name, commit=False,
     )
-    # Flagged from the start: nothing this account does is attributable to its
-    # owner until they have set their own password.
-    user.must_change_password = True
 
     try:
         request.status = AccessRequestStatus.APPROVED
@@ -207,10 +253,6 @@ def approve(db: Session, request_id: int, admin: User, review_note: str | None,
         request.reviewed_by_id = admin.id
         request.review_note = review_note
         request.created_user_id = user.id
-        # Minted inside the transaction so an approval that rolls back leaves no
-        # usable link behind; handed to the mailer strictly after the commit,
-        # because an email cannot be rolled back.
-        token, expires_at = otp_service.issue_activation_token(db, email=request.email)
         db.commit()
         db.refresh(request)
         db.refresh(user)
@@ -219,18 +261,15 @@ def approve(db: Session, request_id: int, admin: User, review_note: str | None,
         db.rollback()
         raise
 
-    # Strictly AFTER the commit. Queuing the mail inside the try block would
-    # mean a rollback still sends someone a working-looking link for an account
-    # that does not exist -- and unlike the database, an email cannot be rolled
-    # back once it is on its way.
-    subject, text, html = email_service.activation_message(
-        full_name=request.full_name,
-        email=request.email,
-        activation_url=otp_service.activation_link(token, request.email),
-        expires_hours=settings.ACTIVATION_TTL_HOURS,
-        organization_name=request.organization_name,
+    # Strictly AFTER the commit. Sending inside the try block would mean a
+    # rollback still sends someone a working-looking link for an account that
+    # does not exist -- and unlike the database, an email cannot be rolled
+    # back once it is on its way. Tracked delivery (see email_service's
+    # outbox): a failed send here is retried by the `worker` service rather
+    # than lost, and an admin can also trigger a resend explicitly.
+    examiner_provisioning_service.send_activation_email(
+        user, organization_name=request.organization_name, token=token, background=background,
     )
-    email_service.queue(background, to=request.email, subject=subject, text_body=text, html_body=html)
 
     return request
 

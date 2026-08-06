@@ -4,16 +4,66 @@ import pytest
 from tests.conftest import auth_headers
 
 
-def _create_examiner_and_login(client, admin_token, email="examiner@example.com"):
-    client.post(
-        "/api/v1/auth/examiners",
-        json={"first_name": "Test", "last_name": "Examiner", "email": email,
-              "organization_name": "Acme Institute", "password": "Sup3rSecret!"},
-        headers=auth_headers(admin_token),
-    )
-    login = client.post("/api/v1/auth/login", json={"email": email, "password": "Sup3rSecret!"})
-    assert login.status_code == 200
-    return login.json()["access_token"]
+def _create_examiner_and_login(client, admin_token, email="examiner@example.com",
+                               organization_name="Acme Institute"):
+    """Create an examiner and return a token it can act with.
+
+    Examiner accounts are no longer created with an admin-chosen password (see
+    examiner_provisioning_service): POST /auth/examiners mails a single-use
+    activation link instead. This helper is used by dozens of unrelated tests
+    across the suite purely to get "a logged-in examiner" for setup, so it
+    completes that real flow itself -- captured the same way a genuine
+    recipient would recover the link, straight out of the message body --
+    rather than asking every call site to know about activation.
+    """
+    import re
+    from urllib.parse import unquote
+
+    from app.services import email_service
+
+    password = "Sup3rSecret!123"
+
+    sent = []
+
+    def _record(*, to, subject, text_body, html_body=None):
+        sent.append({"to": to, "text": text_body})
+        return True
+
+    original_send, original_queue = email_service.send, email_service.queue
+    email_service.send = _record
+    email_service.queue = lambda background, **kw: _record(**kw) and None
+    try:
+        created = client.post(
+            "/api/v1/auth/examiners",
+            json={"first_name": "Test", "last_name": "Examiner", "email": email,
+                  "organization_name": organization_name},
+            headers=auth_headers(admin_token),
+        )
+    finally:
+        email_service.send, email_service.queue = original_send, original_queue
+
+    if created.status_code == 400:
+        # Several call sites in this suite reuse the same default email within
+        # one test to get "an examiner" more than once -- previously harmless,
+        # because the old flow re-created the account with the same fixed
+        # password every time. An email already registered means this exact
+        # helper already created and activated it earlier in this same test,
+        # with the password above, so signing in directly is the equivalent
+        # of what the old code did, done correctly rather than by accident.
+        login = client.post("/api/v1/auth/login", json={"email": email, "password": password})
+        assert login.status_code == 200, login.text
+        return login.json()["access_token"]
+
+    assert created.status_code == 201, created.text
+    message = next(m for m in reversed(sent) if m["to"] == email)
+    match = re.search(r"[?&]token=([A-Za-z0-9_\-%]+)", message["text"])
+    assert match, message["text"]
+    token = unquote(match.group(1))
+
+    activated = client.post("/api/v1/auth/activate",
+                            json={"email": email, "token": token, "password": password})
+    assert activated.status_code == 200, activated.text
+    return activated.json()["access_token"]
 
 
 def enrol_email(email: str, organization_id: int | None = None) -> None:

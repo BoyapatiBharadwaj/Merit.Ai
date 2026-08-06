@@ -1,74 +1,55 @@
 """
-Lightweight, dependency-free per-IP rate limiting for the unauthenticated
-auth endpoints (login, student self-registration), where there is no
-account or session yet to throttle on -- the client's source IP is all
-there is.
+Per-IP (and per-user) rate limiting, shared across every core-api worker and
+replica via Redis -- the one place in this application where "shared across
+workers" and "backed by Postgres" stop being the same thing.
 
-Fixed-window counter per (bucket, client_ip): a deque of request timestamps
-is kept per key and trimmed to the current window on every check, so a given
-key's memory use stays bounded by its own recent traffic. A single
-process-wide lock guards the shared dict, because FastAPI runs each sync
-`def` endpoint on its own worker thread -- the same reasoning (and the same
-kind of bug if skipped) as the locks added around the shared MediaPipe/
-ArcFace model instances in app/ai/face_service.py and app/ai/pose_service.py.
+A fixed-window counter per (bucket, identity, window), incremented atomically
+with `INCR` + a one-time `EXPIRE` on the first increment of each window. Redis
+gives this for free in a way a second Postgres round trip cannot improve on:
+`INCR` is O(1) and atomic without a transaction, and the key's own TTL is the
+window's lifetime, so there is nothing to sweep -- unlike the Postgres-backed
+version this replaces, which needed a periodic DELETE over a
+`rate_limit_counters` table that only ever grew.
 
-Two storage backends, chosen at runtime:
-
-  * **Redis**, when REDIS_URL is set. Every API worker and replica then counts
-    against one shared budget. This is required once core-api runs more than a
-    single uvicorn worker -- N processes with N private counters means an
-    attacker gets N times the limit, and nothing about the system looks wrong
-    while it happens.
-  * **In-process**, otherwise. Exactly correct for one worker, and what the
-    test suite and any Redis-less deployment use. A Redis outage also falls
-    back here rather than failing the request: looser limits for a moment beat
-    nobody being able to sign in.
-
-One scope limit that remains:
-
-  * The in-process `_buckets` dict is never pruned of long-idle keys, only
-    the timestamps inside each one. An attacker rotating through a very
-    large number of distinct source IPs could grow it unboundedly. Doing
-    that at meaningful scale needs real distributed infrastructure (a
-    botnet), which is a fundamentally different threat than the
-    single-source credential-stuffing this exists to stop; a TTL-evicting
-    store is the right answer if that ever becomes a real concern here.
+Deliberately fails CLOSED, not open, when Redis cannot be reached: earlier
+versions of this module (both the original Redis-or-in-process design and the
+Postgres-backed one that came after it) fell back to a per-process counter so
+a rate limiter outage could never block a login. This rewrite's brief is
+explicit that rate-limited operations must return a controlled
+service-unavailable response when their backing store is down rather than
+silently letting every request through unthrottled -- a credential-stuffing
+run timed to a Redis blip is exactly the case a silent fallback would miss.
+See app/core/redis_client.py's RedisUnavailableError and its handler in
+app/main.py for what "controlled" means here: a clean 503, not a crash.
 """
 import ipaddress
 import logging
-import threading
-import time
-from collections import defaultdict, deque
 from functools import lru_cache
 
 from fastapi import HTTPException, Request, status
 
-from app.core import shared_state
 from app.core.config import settings
+from app.core.redis_client import get_client, translate_errors
 
 logger = logging.getLogger("app")
 
-_lock = threading.Lock()
-_buckets: dict[tuple[str, str], deque] = defaultdict(deque)
+_KEY_PREFIX = "ratelimit:"
 
 
 def _client_ip(request: Request) -> str:
     """The caller's address: the TCP peer, or the forwarded one if a trusted
     proxy put it there.
 
-    The comment that used to live here argued that request.client.host is the
-    right key because rotating it costs an attacker a real new source rather
-    than a different header value. That reasoning is correct and the code was
-    still wrong in deployment, because behind the bundled nginx the TCP peer is
-    the PROXY -- one address for every candidate in the building. Ten wrong
-    passwords from one person exhausted the login budget for the entire exam
-    hall, and the symptom would have been "the login page is broken" during a
-    live sitting.
+    request.client.host alone is wrong in this deployment because, behind the
+    bundled nginx, the TCP peer is the PROXY -- one address for every candidate
+    in the building. Ten wrong passwords from one person would exhaust the
+    login budget for the entire exam hall, and the symptom would have been
+    "the login page is broken" during a live sitting.
 
-    Reading X-Forwarded-For unconditionally would have been worse: any client
-    can set that header, so it would hand out a fresh budget per request to
-    exactly the attacker the limit exists to stop. Both halves are needed --
-    believe the header, but only from a peer inside TRUSTED_PROXY_IPS.
+    Reading X-Forwarded-For unconditionally would be worse: any client can set
+    that header, so it would hand out a fresh budget per request to exactly the
+    attacker the limit exists to stop. Both halves are needed -- believe the
+    header, but only from a peer inside TRUSTED_PROXY_IPS.
     """
     peer = request.client.host if request.client else None
     if not peer:
@@ -122,7 +103,9 @@ def rate_limit(bucket: str, max_requests: int | None = None, window_seconds: int
 
 def consume(bucket: str, identity: str, *, limit: int, window: int,
             message: str = "Too many attempts. Please wait a moment before trying again.") -> None:
-    """Count one request against (bucket, identity) and raise 429 if over budget.
+    """Count one request against (bucket, identity) and raise 429 if over
+    budget, or 503 (via RedisUnavailableError) if the shared counter itself
+    cannot be reached.
 
     Split out of `rate_limit` so the same fixed-window counter can be keyed on
     something other than a source IP. The authenticated proctoring endpoints key
@@ -131,90 +114,43 @@ def consume(bucket: str, identity: str, *, limit: int, window: int,
     is both the more precise key and the harder one to rotate -- and keying those
     endpoints by IP would throttle an entire exam hall behind one NAT as though
     it were a single abuser.
-
-    Backed by Redis when it is configured, so every API worker and replica
-    counts against ONE budget. Without Redis it falls back to the per-process
-    deque below, which is correct for a single worker and quietly wrong for
-    several -- see _consume_in_process.
     """
-    if _consume_in_redis(bucket, identity, limit=limit, window=window, message=message):
-        return
-    _consume_in_process(bucket, identity, limit=limit, window=window, message=message)
-
-
-def _consume_in_redis(bucket: str, identity: str, *, limit: int, window: int, message: str) -> bool:
-    """Shared counter. Returns False if Redis isn't available, so the caller falls back.
-
-    INCR + EXPIRE in one pipeline, not a read-modify-write. Reading the count and
-    then writing it back would let two workers both see `limit - 1` and both
-    proceed, which is precisely the race a shared counter exists to remove.
-    INCR is atomic server-side, so the Nth caller always gets N.
-
-    The window is a fixed bucket keyed on the current interval rather than a
-    sliding log of timestamps: it costs one integer per key instead of a list,
-    and the difference in fairness at a boundary is not worth per-request memory
-    proportional to traffic.
-    """
-    client = shared_state.get_client()
-    if client is None:
-        return False
-
-    now = int(time.time())
-    slot = now // window
-    key = f"ratelimit:{bucket}:{identity}:{slot}"
-
-    try:
-        pipe = client.pipeline()
-        pipe.incr(key)
-        # Set on every call rather than only on creation: a key that somehow
-        # loses its TTL would otherwise count forever and permanently lock the
-        # caller out. Re-setting an equal TTL is free.
-        pipe.expire(key, window)
-        count, _ = pipe.execute()
-    except Exception:
-        # A Redis blip must never turn into a 500 on a login. Fall through to
-        # the in-process counter, which is strictly more permissive but always
-        # available -- the failure mode is "limits are looser for a moment",
-        # not "nobody can sign in".
-        logger.warning("Rate-limit check against Redis failed; using per-process counters", exc_info=True)
-        return False
+    key = f"{_KEY_PREFIX}{bucket}:{identity}:{int(_window_start(window))}"
+    with translate_errors("check the rate limit"):
+        client = get_client()
+        count = client.incr(key)
+        if count == 1:
+            # Only set on the window's first hit -- INCR on every later hit in
+            # the same window must never slide the key's expiry outward, or a
+            # steady trickle of requests would keep the window open forever.
+            # PEXPIRE (milliseconds), not EXPIRE: `window` is normally a whole
+            # number of seconds in production, but the unit tests exercise
+            # sub-second windows directly to keep the suite fast, and EXPIRE
+            # itself rejects a fractional argument outright.
+            client.pexpire(key, max(int(window * 1000), 1))
 
     if count > limit:
-        retry_after = max(1, window - (now % window))
+        ttl = _seconds_left_in_window(window)
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,
             message,
-            headers={"Retry-After": str(retry_after)},
+            headers={"Retry-After": str(max(1, ttl))},
         )
-    return True
 
 
-def _consume_in_process(bucket: str, identity: str, *, limit: int, window: int, message: str) -> None:
-    """The original per-process sliding window.
+def _window_start(window: int) -> int:
+    import time
+    return int(time.time() // window) if window > 0 else 0
 
-    Correct for one worker. With several, each process keeps its own deque, so
-    the effective limit is `limit x worker_count` -- which is why main.py warns
-    at startup if workers > 1 and Redis is absent.
-    """
-    key = (bucket, identity)
-    now = time.monotonic()
-    with _lock:
-        timestamps = _buckets[key]
-        cutoff = now - window
-        while timestamps and timestamps[0] < cutoff:
-            timestamps.popleft()
-        if len(timestamps) >= limit:
-            retry_after = max(1, int(window - (now - timestamps[0])))
-            raise HTTPException(
-                status.HTTP_429_TOO_MANY_REQUESTS,
-                message,
-                headers={"Retry-After": str(retry_after)},
-            )
-        timestamps.append(now)
+
+def _seconds_left_in_window(window: int) -> int:
+    import time
+    now = time.time()
+    return max(1, int(window - (now % window))) if window > 0 else 1
 
 
 def _reset_all() -> None:
-    """Test-only: clear every counter.
+    """Test-only: clear every rate-limit key.
 
     Starlette's TestClient sends every request from the same fake source IP
     for the life of the pytest process, so without a reset between tests the
@@ -222,20 +158,15 @@ def _reset_all() -> None:
     rejecting their login/register calls with spurious 429s. See the
     autouse fixture in tests/conftest.py.
     """
-    with _lock:
-        _buckets.clear()
-    # The trusted-proxy answer is memoised per address, and a test that changes
-    # TRUSTED_PROXY_IPS would otherwise keep getting the previous verdict.
+    client = get_client()
+    cursor = 0
+    while True:
+        cursor, keys = client.scan(cursor=cursor, match=f"{_KEY_PREFIX}*", count=500)
+        if keys:
+            client.delete(*keys)
+        if cursor == 0:
+            break
     _is_trusted_proxy.cache_clear()
-    # Redis keys as well, when it is in play -- otherwise a test that exhausts a
-    # limit leaves it exhausted for every test after it.
-    client = shared_state.get_client()
-    if client is not None:
-        try:
-            for key in client.scan_iter("ratelimit:*", count=500):
-                client.delete(key)
-        except Exception:
-            logger.warning("Could not clear Redis rate-limit keys", exc_info=True)
 
 
 def client_ip(request: Request) -> str | None:

@@ -32,6 +32,7 @@ const Activate = lazy(() => import("./pages/Activate.jsx"));
 const Register = lazy(() => import("./pages/Register.jsx"));
 const RequestAccess = lazy(() => import("./pages/RequestAccess.jsx"));
 const ExaminerDashboard = lazy(() => import("./pages/ExaminerDashboard.jsx"));
+const ExaminerAttemptReport = lazy(() => import("./pages/examiner/AttemptReport.jsx"));
 const Privacy = lazy(() => import("./pages/Privacy.jsx"));
 const Terms = lazy(() => import("./pages/Terms.jsx"));
 const SystemCheck = lazy(() => import("./pages/SystemCheck.jsx"));
@@ -62,7 +63,6 @@ const AdminCandidates = lazy(() => import("./pages/AdminCandidates.jsx"));
 const AdminCandidateDetail = lazy(() => import("./pages/AdminCandidateDetail.jsx"));
 const AdminAttemptReport = lazy(() => import("./pages/AdminAttemptReport.jsx"));
 const AdminLiveSessions = lazy(() => import("./pages/AdminLiveSessions.jsx"));
-const AdminViolations = lazy(() => import("./pages/AdminViolations.jsx"));
 const AdminReviewQueue = lazy(() => import("./pages/AdminReviewQueue.jsx"));
 const AdminOrganizations = lazy(() => import("./pages/AdminOrganizations.jsx"));
 
@@ -134,6 +134,11 @@ export default function App() {
               URL an examiner can bookmark or share. */}
           <Route path="/examiner" element={<ExaminerDashboard />} />
           <Route path="/examiner/exams/:examId" element={<ExaminerDashboard />} />
+          {/* Every violation an examiner can see, for one candidate at a
+              time -- see AttemptReport.jsx. There is no examiner-facing
+              cross-exam violations list; reviewing conduct is inherently a
+              per-candidate judgement. */}
+          <Route path="/examiner/attempts/:attemptId" element={<ExaminerAttemptReport />} />
           <Route path="/profile" element={<Profile />} />
           <Route path="/exam/:examId" element={<Exam />} />
           <Route path="/results/:attemptId" element={<Results />} />
@@ -150,7 +155,13 @@ export default function App() {
           <Route path="/admin/candidates/:studentId" element={<AdminCandidateDetail />} />
           <Route path="/admin/attempts/:attemptId" element={<AdminAttemptReport />} />
           <Route path="/admin/live-sessions" element={<AdminLiveSessions />} />
-          <Route path="/admin/violations" element={<AdminViolations />} />
+          {/* No standalone "every violation across every exam" page anymore --
+              an admin reviewing violations goes exam -> student, the same as
+              an examiner does (see AdminExamDetail.jsx's "View Report" link
+              into AdminAttemptReport.jsx, which already shows every
+              violation for that one candidate). The review queue below is a
+              distinct triage worklist for undecided flags, not a browsing
+              list, and stays. */}
           {/* The reviewer's worklist, and the tenancy boundary every access
               decision runs through -- neither had a page. */}
           <Route path="/admin/review-queue" element={<AdminReviewQueue />} />

@@ -211,6 +211,19 @@ class Settings(BaseSettings):
     # Where "an examiner requested access" notifications go. Falls back to
     # every active admin account's email when blank.
     ADMIN_NOTIFICATION_EMAIL: str = ""
+
+    # --- Email outbox (app/services/email_service.py, app/models/email_outbox.py) ---
+    # Bounded retry budget for a message queued through enqueue_tracked() --
+    # an admin notification, an activation link, an OTP code. A mailbox that
+    # is simply broken (typo, full, hard-bounces everything) must eventually
+    # stop retrying and become something a human looks at, rather than retry
+    # forever and hide a configuration problem. Also drives RQ's retry
+    # backoff curve for the "emails" queue -- see app/core/queues.py.
+    EMAIL_OUTBOX_MAX_ATTEMPTS: int = 5
+    # Exponential backoff base for retries: attempt N waits roughly
+    # base * 2^(N-1) seconds, capped at EMAIL_OUTBOX_RETRY_MAX_SECONDS.
+    EMAIL_OUTBOX_RETRY_BASE_SECONDS: int = 60
+    EMAIL_OUTBOX_RETRY_MAX_SECONDS: int = 3600
     # Used to build absolute links in emails (a relative /login is meaningless
     # in an inbox). Should match the origin students actually load the app on.
     APP_BASE_URL: str = "http://localhost"
@@ -259,31 +272,56 @@ class Settings(BaseSettings):
     DB_POOL_TIMEOUT_SECONDS: int = 30
     DB_POOL_RECYCLE_SECONDS: int = 1800
 
-    # --- Shared state / Redis (app/core/shared_state.py) ---------------------
-    # Needed only once this app runs as more than one process. A single uvicorn
-    # worker has nothing to share state WITH, so this stays optional and empty
-    # by default -- the test suite and a fresh clone must not require a Redis.
-    #
-    # Set it, and rate-limit counters become shared across every API worker and
-    # replica. Leave it unset while running several workers and each keeps its
-    # own counters, which quietly multiplies every limit by the worker count.
-    # main.py warns loudly about exactly that combination at startup.
-    REDIS_URL: str = ""
-    # Bounded so a wedged Redis cannot hold a request thread. Everything Redis
-    # is used for here has a working fallback, so waiting is never worth it.
-    REDIS_TIMEOUT_SECONDS: float = 2.0
+    # --- Redis (app/core/redis_client.py) -------------------------------------
+    # The shared, ephemeral-state backend for ONLY four things: cross-worker
+    # rate limiting (app/core/rate_limit.py), one-time-passcode state for
+    # signup/password-reset (app/services/otp_redis_store.py), distributed
+    # locks (app/core/locks.py), and the background job/email queue
+    # (app/core/queues.py, app/worker/). PostgreSQL stays the permanent source
+    # of truth for everything else -- users, exams, attempts, results,
+    # violations, credentials, audit logs and email delivery history are never
+    # stored only in Redis. If Redis is unreachable, those four things return a
+    # controlled 503 (see app/core/redis_client.py's RedisUnavailableError and
+    # its handler in app/main.py) rather than silently bypassing what it
+    # protects -- an OTP check that quietly passed with Redis down, or a rate
+    # limit that quietly stopped counting, would be worse than the endpoint
+    # being briefly unavailable.
+    REDIS_URL: str = "redis://localhost:6379/0"
+    # Kept separate from REDIS_URL (rather than embedded as redis://:pass@host)
+    # so docker-compose.yml can pass the same POSTGRES-style secret pattern --
+    # one required env var, never a default, never interpolated into a URL a
+    # stray log line might print.
+    REDIS_PASSWORD: str = ""
+    # Bounded so a Redis instance that is down (not just slow) fails a rate
+    # limit check, an OTP verification or a lock acquisition in around two
+    # seconds, not however long TCP takes to notice a dead peer.
+    REDIS_SOCKET_TIMEOUT_SECONDS: float = 2.0
 
-    # --- Background job queue (app/worker/) ----------------------------------
-    # Work that must not block a request: PDF report generation, bulk email,
-    # post-exam analysis. Requires REDIS_URL; without it these run inline
-    # exactly as they do today.
-    JOB_QUEUE_NAME: str = "meritai:jobs"
-    # Wall-clock ceiling on one job. Generous because a PDF for a large cohort
-    # is legitimately slow, but finite so a wedged job cannot occupy a worker
-    # slot forever.
-    JOB_TIMEOUT_SECONDS: int = 600
-    # How long a finished job's result is kept for the caller to collect.
-    JOB_RESULT_TTL_SECONDS: int = 3600
+    # --- Distributed locks (app/core/locks.py) --------------------------------
+    # Default hold time for a lock whose caller doesn't specify one. Long
+    # enough for the operations that use the default (an examiner-creation
+    # transaction, an access-request approval) to finish under ordinary load;
+    # short enough that a crashed holder blocks the next attempt for seconds,
+    # not minutes.
+    LOCK_DEFAULT_TTL_SECONDS: float = 30.0
+
+    # --- Background job queue (app/core/queues.py, app/worker/) ---------------
+    # RQ over Redis. Three queues (emails, reports, default -- see
+    # app/core/queues.py) rather than one, so a burst of OTP/notification
+    # emails never queues behind a slow PDF report job.
+    #
+    # Bounded retry budget per job, same reasoning EMAIL_OUTBOX_MAX_ATTEMPTS
+    # always had: a job that can never succeed (bad input, a permanently
+    # missing record) must eventually stop retrying rather than loop forever.
+    # Drives both generic jobs and the email queue's retry curve (see
+    # app/core/queues.py::backoff_intervals, which reuses
+    # EMAIL_OUTBOX_RETRY_BASE_SECONDS / _MAX_SECONDS below for the actual
+    # wait between attempts).
+    JOB_MAX_RETRIES: int = 3
+    # Ceiling on how long the Worker lets one job run before treating it as
+    # stuck and killing it -- a wedged SMTP handshake or a report generation
+    # that hangs must not pin a worker slot forever.
+    JOB_TIMEOUT_SECONDS: int = 300
 
     # --- Proctoring signal kill switches -------------------------------------
     # Each AI signal can be switched off independently, without a redeploy and

@@ -56,16 +56,23 @@ def test_examiner_creation_requires_admin(client, seed_roles):
 
 
 def test_admin_can_create_examiner(client, seed_roles, admin_token):
+    """No password field: the account is created with an unusable random
+    secret and activated later through a single-use emailed link -- see
+    examiner_provisioning_service. The response confirms what was created
+    rather than handing back a session for an account nobody can use yet."""
     response = client.post(
         "/api/v1/auth/examiners",
         json={
             "first_name": "Jane", "last_name": "Examiner", "email": "jane@example.com",
-            "organization_name": "Acme Institute", "password": "Sup3rSecret!",
+            "organization_name": "Acme Institute",
         },
         headers=auth_headers(admin_token),
     )
     assert response.status_code == 201, response.text
-    assert response.json()["role"] == "examiner"
+    body = response.json()
+    assert body["email"] == "jane@example.com"
+    assert "password" not in body
+    assert "access_token" not in body
 
 
 def test_examiner_creation_requires_organization_name(client, seed_roles, admin_token):

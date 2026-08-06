@@ -6,8 +6,7 @@ import Icon from "../components/Icon.jsx";
 import EmptyState from "../components/EmptyState.jsx";
 import Breadcrumbs from "../components/Breadcrumbs.jsx";
 import Pagination, { paginate } from "../components/Pagination.jsx";
-import { TextField, PasswordField } from "../components/FormField.jsx";
-import CredentialsHandoff, { generatePassword } from "../components/CredentialsHandoff.jsx";
+import { TextField } from "../components/FormField.jsx";
 import { Api, ApiError } from "../lib/api.js";
 import { btnPrimary, fieldInput, fieldLabel } from "../lib/ui.js";
 import { badgeClass } from "../lib/adminUi.js";
@@ -76,8 +75,11 @@ export default function AdminExaminers() {
   const [pageCount, setPageCount] = useState(1);
 
   const [formOpen, setFormOpen] = useState(false);
-  const [form, setForm] = useState({ firstName: "", lastName: "", email: "", organizationName: "", password: "" });
-  const [newCredentials, setNewCredentials] = useState(null);
+  const [form, setForm] = useState({ firstName: "", lastName: "", email: "", organizationName: "" });
+  // Confirms what was created and whether the activation email actually went
+  // out -- never a password, since the account no longer has one anybody
+  // but its eventual owner will ever type.
+  const [created, setCreated] = useState(null);
   const [formError, setFormError] = useState("");
   const [creating, setCreating] = useState(false);
 
@@ -143,15 +145,17 @@ export default function AdminExaminers() {
     setFormError("");
     setCreating(true);
     try {
-      await Api.post("/auth/examiners", {
+      const result = await Api.post("/auth/examiners", {
         first_name: form.firstName.trim(),
         last_name: form.lastName.trim(),
         email: form.email.trim(),
         organization_name: form.organizationName.trim(),
-        password: form.password,
       });
-      setNewCredentials({ email: form.email.trim(), password: form.password });
-      setForm({ firstName: "", lastName: "", email: "", organizationName: "", password: "" });
+      // No password to hand over: the account was created with an unusable
+      // random one, and the examiner sets their own through the activation
+      // email this just triggered.
+      setCreated({ email: result.email, activationSent: result.activation_sent });
+      setForm({ firstName: "", lastName: "", email: "", organizationName: "" });
       await load();
       Api.get("/admin/organizations")
       .then((data) => { setOrganizations(data); setOrganizationsFailed(false); })
@@ -195,9 +199,16 @@ export default function AdminExaminers() {
                 <span>{formError}</span>
               </div>
             )}
-            {newCredentials && (
-              <div className="mb-4">
-                <CredentialsHandoff email={newCredentials.email} password={newCredentials.password} onDismiss={() => setNewCredentials(null)} />
+            {created && (
+              <div className={`mb-4 flex items-start gap-2.5 rounded-xl border px-4 py-3 text-sm ${
+                created.activationSent ? "border-success/30 bg-success/5 text-success" : "border-warning/30 bg-warning/5 text-warning"
+              }`}>
+                <Icon name={created.activationSent ? "check" : "alert"} width={16} height={16} className="mt-0.5 shrink-0" />
+                <span>
+                  {created.activationSent
+                    ? <>Account created. An activation email was sent to <strong>{created.email}</strong> — the examiner sets their own password from that link.</>
+                    : <>Account created for <strong>{created.email}</strong>, but the activation email could not be delivered. Use "Resend activation" on their row once your mail settings are fixed.</>}
+                </span>
               </div>
             )}
             <form onSubmit={handleCreate}>
@@ -212,15 +223,10 @@ export default function AdminExaminers() {
               <TextField id="examinerOrganization" label="Organization name" icon="briefcase" required
                 placeholder="e.g. Acme Institute of Technology"
                 value={form.organizationName} onChange={(e) => setForm((f) => ({ ...f, organizationName: e.target.value }))} />
-              <div>
-                <PasswordField id="examinerPassword" label="Temporary password" required minLength={8}
-                  value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
-                  hint="At least 8 characters. Share this with the examiner — only an admin can reset it later." />
-                <button type="button" onClick={() => setForm((f) => ({ ...f, password: generatePassword() }))}
-                  className="mt-1.5 text-xs font-semibold text-primary hover:underline">
-                  Generate a strong password
-                </button>
-              </div>
+              <p className="text-xs text-muted leading-relaxed mb-4 -mt-1">
+                No password to set here — the examiner receives a single-use activation link by email and
+                chooses their own password from it.
+              </p>
               <button type="submit" disabled={creating} className={`${btnPrimary} w-full ${creating ? "opacity-70 pointer-events-none" : ""}`}>
                 {creating && <Icon name="spinner" width={16} height={16} className="animate-spin" />}
                 {creating ? "Creating…" : "Create Examiner Account"}
@@ -294,6 +300,7 @@ function ExaminerRow({ examiner, onChanged }) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [busy, setBusy] = useState(false);
   const [rowError, setRowError] = useState("");
+  const [resendNotice, setResendNotice] = useState("");
 
   function goToDetail() {
     navigate(`/admin/examiners/${examiner.id}`);
@@ -332,6 +339,23 @@ function ExaminerRow({ examiner, onChanged }) {
     }
   }
 
+  async function handleResendActivation(e) {
+    e.stopPropagation();
+    setBusy(true);
+    setRowError("");
+    setResendNotice("");
+    try {
+      const result = await Api.post(`/auth/examiners/${examiner.user_id}/resend-activation`);
+      setResendNotice(result.activation_sent
+        ? "Activation email sent."
+        : "Could not deliver it — check the server's email configuration and try again.");
+    } catch (err) {
+      setRowError(err instanceof ApiError ? err.message : "Couldn't resend the activation email.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleDelete(e) {
     e.stopPropagation();
     setBusy(true);
@@ -358,18 +382,30 @@ function ExaminerRow({ examiner, onChanged }) {
         <td className="px-4 py-3 text-right tabular-nums">{examiner.completed_exams}</td>
         <td className="px-4 py-3 text-right tabular-nums">{examiner.candidate_count}</td>
         <td className="px-4 py-3">
-          <span className={badgeClass(examiner.is_active ? "success" : "muted")}>{examiner.is_active ? "Active" : "Disabled"}</span>
+          <div className="flex flex-col items-start gap-1">
+            <span className={badgeClass(examiner.is_active ? "success" : "muted")}>{examiner.is_active ? "Active" : "Disabled"}</span>
+            {examiner.pending_activation && (
+              <span className={badgeClass("warning")}>Activation pending</span>
+            )}
+          </div>
         </td>
         <td className="px-4 py-3">
           <div className="flex flex-col items-start gap-1.5">
             <Link to={`/admin/examiners/${examiner.id}`} onClick={(e) => e.stopPropagation()} className="text-xs font-semibold text-primary hover:underline">
               View Details
             </Link>
+            {resendNotice && <span className="text-xs text-muted">{resendNotice}</span>}
             <div className="flex flex-wrap gap-2">
               <button type="button" disabled={busy} onClick={(e) => { e.stopPropagation(); setEditing((v) => !v); }}
                       className="text-xs font-semibold text-muted hover:text-ink disabled:opacity-50">
                 Edit
               </button>
+              {examiner.pending_activation && (
+                <button type="button" disabled={busy} onClick={handleResendActivation}
+                        className="text-xs font-semibold text-primary hover:underline disabled:opacity-50">
+                  Resend activation
+                </button>
+              )}
               <button type="button" disabled={busy} onClick={handleToggleActive}
                       className="text-xs font-semibold text-muted hover:text-ink disabled:opacity-50">
                 {examiner.is_active ? "Disable" : "Enable"}

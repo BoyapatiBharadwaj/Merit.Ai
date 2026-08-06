@@ -37,7 +37,6 @@ export default function Register() {
   // there are only two states and one of them is "we have sent a code".
   const [codeSent, setCodeSent] = useState(false);
   const [code, setCode] = useState("");
-  const [otpUnavailable, setOtpUnavailable] = useState(false);
 
   // Everything about the code comes from the server's own response rather than
   // being guessed here. The screen used to hard-code a six-digit placeholder, a
@@ -137,50 +136,22 @@ export default function Register() {
       return;
     }
 
-    // A LOCAL copy, not the state variable.
-    //
-    // The bug this replaces: the 503 branch below called setOtpUnavailable(true)
-    // and the very next statement read `otpUnavailable` to decide which endpoint
-    // to call. React state updates are asynchronous, so that read still saw
-    // `false` -- the fallback called the verified endpoint again, failed again,
-    // and the candidate had to submit a second time for the fallback to take
-    // effect. Whether the fallback works cannot depend on a re-render that has
-    // not happened yet.
-    let useUnverifiedSignup = otpUnavailable;
-
     setLoading(true);
     try {
       // Phase 1: ask for a code, if we haven't already.
-      if (!codeSent && !useUnverifiedSignup) {
-        try {
-          const res = await Api.post("/auth/otp/signup/request", { email: form.email.trim() });
-          setCodeShape({
-            length: res.code_length ?? 6,
-            expiresIn: res.expires_in_minutes ?? 10,
-            resendAfter: res.resend_after_seconds ?? 60,
-          });
-          setCooldown(res.resend_after_seconds ?? 60);
-          setCodeSent(true);
-          return;
-        } catch (err) {
-          // 503 means this deployment has no mail configured. Falling back to
-          // unverified signup rather than blocking the person entirely: the
-          // server is the authority on whether email works, and a candidate
-          // should not be locked out of an exam platform by its SMTP settings.
-          //
-          // If the server REQUIRES verification it refuses that fallback with a
-          // 403, which surfaces as a normal error -- the client asking nicely
-          // does not decide whether verification is optional.
-          if (err instanceof ApiError && err.status === 503) {
-            useUnverifiedSignup = true;
-            setOtpUnavailable(true);
-          } else {
-            throw err;
-          }
-        }
+      if (!codeSent) {
+        const res = await Api.post("/auth/otp/signup/request", { email: form.email.trim() });
+        setCodeShape({
+          length: res.code_length ?? 6,
+          expiresIn: res.expires_in_minutes ?? 10,
+          resendAfter: res.resend_after_seconds ?? 60,
+        });
+        setCooldown(res.resend_after_seconds ?? 60);
+        setCodeSent(true);
+        return;
       }
 
-      if (!useUnverifiedSignup && code.trim().length !== codeShape.length) {
+      if (code.trim().length !== codeShape.length) {
         setErrors((prev) => ({ ...prev, code: `Enter the ${codeShape.length}-digit code we emailed you.` }));
         setTouched((t) => ({ ...t, code: true }));
         return;
@@ -188,6 +159,14 @@ export default function Register() {
 
       // Phase 2: create the account. The verified endpoint checks the code
       // first, so a wrong code never leaves a half-made account behind.
+      //
+      // There used to be a fallback here: if requesting the code came back
+      // 503 (this deployment has no mail configured), the form silently
+      // registered the account without ever asking for a code at all. That
+      // meant OTP verification was optional in practice, not mandatory --
+      // exactly the outcome REQUIRE_EMAIL_VERIFICATION exists to prevent. If
+      // email is genuinely unavailable, the honest thing is to say so and stop,
+      // not to quietly skip the step the server was configured to require.
       const payload = {
         first_name: form.firstName.trim(),
         last_name: form.lastName.trim(),
@@ -202,9 +181,7 @@ export default function Register() {
         accepted_proctoring: form.agreeProctoring,
         terms_version: TERMS_VERSION,
       };
-      const data = useUnverifiedSignup
-        ? await Api.registerStudent(payload)
-        : await Api.post("/auth/register/student/verified", { ...payload, code: code.trim() });
+      const data = await Api.post("/auth/register/student/verified", { ...payload, code: code.trim() });
       setSession(data);
       // Straight to the dashboard. Identity verification used to be a second
       // signup step, which put a camera prompt in front of someone who had not
@@ -471,7 +448,7 @@ export default function Register() {
         >
           {loading && <Icon name="spinner" width={16} height={16} className="animate-spin" />}
           {loading
-            ? (codeSent || otpUnavailable ? "Creating account…" : "Sending code…")
+            ? (codeSent ? "Creating account…" : "Sending code…")
             : (
               <>
                 {codeSent ? "Verify & create account" : "Continue"}

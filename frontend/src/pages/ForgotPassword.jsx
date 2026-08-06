@@ -29,7 +29,14 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  */
 export default function ForgotPassword() {
   const navigate = useNavigate();
-  const [step, setStep] = useState("request"); // request -> verify -> done
+  // request -> notfound | verify -> done
+  //
+  // "notfound" is its own step, not just an inline error on "request": the
+  // product decision here (see the backend's AccountExistsOut docstring) is to
+  // tell someone with no account plainly, with a way straight to registering,
+  // rather than sending them into a code-entry screen for a message that will
+  // never arrive.
+  const [step, setStep] = useState("request");
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
   const [password, setPassword] = useState("");
@@ -43,6 +50,21 @@ export default function ForgotPassword() {
   // rejected anyway explains the wait far better than letting them press it and
   // handing back a 429.
   const [cooldown, setCooldown] = useState(0);
+
+  // The rules the SERVER enforces, fetched the same way Register.jsx does.
+  // This screen used to hard-code "at least 8 characters", independent of
+  // PASSWORD_MIN_LENGTH -- so a deployment that raised the floor to, say, 12
+  // would let someone submit a 9-character password here, have the server
+  // reject it, and never learn why 8 wasn't actually the rule.
+  const [policy, setPolicy] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    Api.get("/auth/password-policy")
+      .then((res) => { if (!cancelled) setPolicy(res); })
+      .catch(() => { /* the server still enforces it; this only affects the hint */ });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     if (cooldown <= 0) return undefined;
@@ -67,10 +89,21 @@ export default function ForgotPassword() {
     }
     setLoading(true);
     try {
+      // Check existence FIRST. Every other email-driven flow in this app
+      // (OTP, activation) deliberately never answers this question, to avoid
+      // becoming an account-enumeration oracle -- this screen is the one
+      // deliberate, product-required exception (see the backend schema's
+      // docstring for AccountExistsOut).
+      const { exists } = await Api.post("/auth/password-reset/check-account", { email: email.trim() });
+      if (!exists) {
+        setStep("notfound");
+        return;
+      }
+
       const res = await Api.post("/auth/password-reset/request", { email: email.trim() });
       setExpiresIn(res.expires_in_minutes ?? 10);
       setCooldown(60);
-      setNotice(res.message || "If an account exists for that address, a reset code is on its way.");
+      setNotice(res.message || "A reset code is on its way.");
       setStep("verify");
     } catch (err) {
       setError(describe(err));
@@ -79,6 +112,8 @@ export default function ForgotPassword() {
     }
   }
 
+  const minLength = policy?.min_length ?? 10;
+
   async function submitReset(e) {
     e.preventDefault();
     setError("");
@@ -86,8 +121,8 @@ export default function ForgotPassword() {
       setError("Enter the code from your email.");
       return;
     }
-    if (password.length < 8) {
-      setError("Your new password must be at least 8 characters.");
+    if (password.length < minLength) {
+      setError(`Your new password must be at least ${minLength} characters.`);
       return;
     }
     if (password !== confirm) {
@@ -101,6 +136,11 @@ export default function ForgotPassword() {
         code: code.trim(),
         new_password: password,
       });
+      // Setting a new password stamps password_changed_at, which invalidates
+      // every access token issued before this moment (see
+      // api/deps.py::_reject_if_password_changed) -- so every other signed-in
+      // session is logged out by this same call. The OTP code itself is
+      // single-use and already consumed by password-reset/confirm above.
       setStep("done");
     } catch (err) {
       setError(describe(err));
@@ -137,6 +177,38 @@ export default function ForgotPassword() {
 
         <button type="button" onClick={() => navigate("/login")} className={`${btnPrimary} w-full justify-center mt-5`}>
           Go to Log In
+        </button>
+      </AuthLayout>
+    );
+  }
+
+  if (step === "notfound") {
+    return (
+      <AuthLayout
+        variant="login"
+        eyebrow="Account recovery"
+        title="Account not found"
+        subtitle="There's no account for that email address on this server."
+      >
+        <div className="rounded-2xl border border-border bg-surface shadow-card p-6">
+          <span className="inline-flex items-center justify-center w-11 h-11 rounded-xl bg-warning/10 text-warning mb-4">
+            <Icon name="alert" width={20} height={20} />
+          </span>
+          <h2 className="text-base font-bold text-ink mb-2">No account for {email.trim()}</h2>
+          <p className="text-sm text-muted leading-relaxed">
+            Double-check the address, or create a new account if you haven't registered yet.
+          </p>
+        </div>
+
+        <Link to="/register" className={`${btnPrimary} w-full justify-center mt-5`}>
+          Create an account
+        </Link>
+        <button
+          type="button"
+          onClick={() => { setStep("request"); setError(""); }}
+          className={`${btnGhost.replace("px-5 py-3", "px-5 py-4")} w-full justify-center mt-3`}
+        >
+          Try a different email
         </button>
       </AuthLayout>
     );
@@ -184,6 +256,9 @@ export default function ForgotPassword() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             autoComplete="new-password"
+            // The server's actual rules, not a hard-coded "8 characters" --
+            // see the `policy` fetch above.
+            hint={policy?.rules?.join(" · ")}
           />
           <PasswordField
             id="reset-confirm"

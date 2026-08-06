@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 from pydantic import BaseModel, EmailStr, Field, model_validator
 
 # A start/end time within this window of "now" is treated as "now" rather
@@ -57,6 +58,11 @@ class ExamCreate(BaseModel):
     # every exam did before this existed.
     release_results_at: datetime | None = None
     show_answers_on_release: bool = True
+    # Whether a candidate ever sees their own score/pass-fail for this exam,
+    # and if so, when -- see Exam.results_released. Both default to the
+    # original behaviour (shown, as soon as the candidate submits).
+    show_results: bool = True
+    results_release_mode: Literal["immediate", "after_end_time"] = "immediate"
     start_time: datetime | None = None
     end_time: datetime | None = None
     # Optional address told when this exam is published and again shortly
@@ -104,6 +110,8 @@ class ExamDetailsUpdate(BaseModel):
     # attempt_service.build_full_report.
     release_results_at: datetime | None = None
     show_answers_on_release: bool = True
+    show_results: bool = True
+    results_release_mode: Literal["immediate", "after_end_time"] = "immediate"
     notify_email: EmailStr | None = None
 
 
@@ -137,6 +145,10 @@ class ExamOut(BaseModel):
     proctoring_enabled: bool
     start_time: datetime | None
     end_time: datetime | None
+    release_results_at: datetime | None = None
+    show_answers_on_release: bool = True
+    show_results: bool = True
+    results_release_mode: str = "immediate"
     notify_email: str | None = None
 
     class Config:

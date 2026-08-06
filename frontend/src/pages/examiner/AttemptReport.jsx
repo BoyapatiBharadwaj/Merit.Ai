@@ -1,23 +1,23 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
-import RedirectToLogin from "../components/RedirectToLogin.jsx";
-import DashboardHeader from "../components/DashboardHeader.jsx";
-import Icon from "../components/Icon.jsx";
-import Breadcrumbs from "../components/Breadcrumbs.jsx";
-import StatCard from "../components/StatCard.jsx";
-import IdentityPhotoModal, { usePhotoBlob } from "../components/IdentityPhotoModal.jsx";
-import { Api, ApiError } from "../lib/api.js";
-import { btnPrimary, fieldInput } from "../lib/ui.js";
-import { badgeClass, eventTypeLabel, fmtDateTime, fmtPercent, fmtSeconds, proctoringCardCounts, toneFor } from "../lib/adminUi.js";
-import { isLoggedIn, getRole } from "../lib/auth.js";
+import RedirectToLogin from "../../components/RedirectToLogin.jsx";
+import DashboardHeader from "../../components/DashboardHeader.jsx";
+import Icon from "../../components/Icon.jsx";
+import Breadcrumbs from "../../components/Breadcrumbs.jsx";
+import StatCard from "../../components/StatCard.jsx";
+import IdentityPhotoModal, { usePhotoBlob } from "../../components/IdentityPhotoModal.jsx";
+import { Api, ApiError } from "../../lib/api.js";
+import { btnPrimary, fieldInput } from "../../lib/ui.js";
+import { badgeClass, eventTypeLabel, fmtDateTime, fmtPercent, fmtSeconds, proctoringCardCounts, toneFor } from "../../lib/adminUi.js";
+import { isLoggedIn, getRole } from "../../lib/auth.js";
 
 const BROWSER_EVENT_TYPES = new Set([
   "tab_switch", "fullscreen_exit", "right_click_attempt", "copy_paste_attempt", "screenshot_attempt", "screen_share_stopped",
 ]);
 
 // "dismissed" is the stored value (AdminDecision.DISMISSED, unchanged on the
-// backend) but "Misleading" is what the judgement actually means: the flag
-// was looked at and was not genuine misconduct.
+// backend) but "Misleading" is what the judgement actually means here: the
+// flag was looked at and was not genuine misconduct.
 const DECISIONS = [
   { value: "pending", label: "Pending" },
   { value: "confirmed", label: "Confirmed" },
@@ -50,14 +50,31 @@ function EvidenceModal({ eventId, onClose }) {
   );
 }
 
-export default function AdminAttemptReport() {
+/**
+ * The examiner's per-student attempt review: every violation this candidate
+ * triggered, with proof images and the risk score, plus the ability to mark
+ * each one pending/confirmed/misleading.
+ *
+ * Deliberately the ONLY place an examiner can see violations. There used to
+ * also be a "Violations" tab on the exam builder listing every flag across
+ * the whole exam at once -- that's gone (see AttemptsPanel's "Review"
+ * button, which is how you get here) because reviewing a candidate's
+ * conduct is inherently a per-candidate judgement, and a flat cross-exam
+ * list encouraged deciding on rows out of context.
+ *
+ * Reuses the exact endpoint the admin's Candidate Exam Report is built on
+ * (GET /attempts/{id}/staff-report is role-aware: admin or the exam's own
+ * owning examiner) -- nothing here needed a new backend shape, only a
+ * frontend page and an examiner-facing route to reach it from.
+ */
+export default function ExaminerAttemptReport() {
   const { attemptId } = useParams();
   const [report, setReport] = useState(null);
   const [loadError, setLoadError] = useState("");
   const [viewingEvidenceId, setViewingEvidenceId] = useState(null);
   const [viewingIdentity, setViewingIdentity] = useState(false);
 
-  const [adminComment, setAdminComment] = useState("");
+  const [comment, setComment] = useState("");
   const [savingComment, setSavingComment] = useState(false);
   const [commentSaved, setCommentSaved] = useState(false);
 
@@ -67,7 +84,7 @@ export default function AdminAttemptReport() {
     try {
       const data = await Api.get(`/attempts/${attemptId}/staff-report`);
       setReport(data);
-      setAdminComment(data.admin_comment || "");
+      setComment(data.examiner_comment || "");
     } catch (err) {
       setLoadError(err instanceof ApiError ? err.message : "Couldn't load this report.");
     }
@@ -78,7 +95,7 @@ export default function AdminAttemptReport() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [attemptId]);
 
-  if (!isLoggedIn() || getRole() !== "admin") return <RedirectToLogin />;
+  if (!isLoggedIn() || getRole() !== "examiner") return <RedirectToLogin />;
 
   async function handleDecisionChange(eventId, decision) {
     const previous = report.violation_timeline;
@@ -98,8 +115,8 @@ export default function AdminAttemptReport() {
     setSavingComment(true);
     setCommentSaved(false);
     try {
-      const res = await Api.patch(`/attempts/${attemptId}/comment`, { comment: adminComment });
-      setReport((r) => ({ ...r, admin_comment: res.admin_comment }));
+      const res = await Api.patch(`/attempts/${attemptId}/comment`, { comment });
+      setReport((r) => ({ ...r, examiner_comment: res.examiner_comment }));
       setCommentSaved(true);
     } catch (err) {
       setLoadError(err instanceof ApiError ? err.message : "Couldn't save that comment.");
@@ -155,10 +172,8 @@ export default function AdminAttemptReport() {
       <main className="max-w-5xl mx-auto w-full p-4 sm:p-6 pb-16">
         <Breadcrumbs
           trail={[
-            { label: "Dashboard", to: "/dashboard" },
-            { label: "Examiners", to: "/admin/examiners" },
-            { label: report.examiner_name, to: `/admin/examiners/${report.examiner_id}` },
-            { label: report.exam_title, to: `/admin/exams/${report.exam_id}` },
+            { label: "Dashboard", to: "/examiner" },
+            { label: report.exam_title, to: `/examiner/exams/${report.exam_id}?tab=attempts` },
             { label: report.candidate_name },
           ]}
         />
@@ -173,7 +188,7 @@ export default function AdminAttemptReport() {
         <div className="flex flex-wrap items-start justify-between gap-3 mb-6">
           <div>
             <h1 className="text-xl font-extrabold tracking-tight">{report.candidate_name}</h1>
-            <p className="text-sm text-muted mt-0.5">{report.exam_title} · Examiner: {report.examiner_name}</p>
+            <p className="text-sm text-muted mt-0.5">{report.exam_title}</p>
           </div>
           <button type="button" disabled={downloading} onClick={handleDownload}
                   className={`${btnPrimary.replace("px-5 py-3", "px-4 py-2")} text-xs ${downloading ? "opacity-70 pointer-events-none" : ""}`}>
@@ -188,7 +203,6 @@ export default function AdminAttemptReport() {
           <dl className="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-3 text-sm mb-4">
             <div><dt className="text-xs text-muted">Candidate ID</dt><dd className="font-medium">{report.roll_number || "-"}</dd></div>
             <div><dt className="text-xs text-muted">Email</dt><dd className="font-medium break-all">{report.candidate_email}</dd></div>
-            <div><dt className="text-xs text-muted">Examiner</dt><dd className="font-medium">{report.examiner_name}</dd></div>
           </dl>
           <div className="flex flex-wrap items-center gap-2">
             <span className={badgeClass(report.face_registered ? "success" : "muted")}>Face: {report.face_registered ? "Registered" : "Not registered"}</span>
@@ -218,6 +232,11 @@ export default function AdminAttemptReport() {
               <span className={badgeClass(report.passed ? "success" : "danger")}>{report.passed ? "Passed" : "Failed"}</span>
             </div>
           )}
+          {report.results_released === false && (
+            <p className="mt-3 text-xs text-muted">
+              This candidate cannot see these results yet -- results for this exam are held back until you release them.
+            </p>
+          )}
         </div>
 
         {/* Proctoring data */}
@@ -235,22 +254,20 @@ export default function AdminAttemptReport() {
           <StatCard label="Audio Alerts" value={cards.audioAlerts} tone="warning" />
         </div>
 
-        {/* AI-generated proctoring summary */}
+        {/* Automated proctoring summary */}
         <div className="rounded-2xl border border-primary/20 bg-primary/5 p-5 mb-6">
-          {/* Was "AI-Generated Proctoring Summary". The backend builds this
-              from a fixed template over event counts and severities -- there is
-              no model involved. Calling it AI-generated overstated what it is
-              and, worse, lent it an authority a template does not have on a page
-              where an administrator may be deciding whether someone cheated. */}
           <h2 className="text-sm font-bold uppercase tracking-wide text-primary mb-2">Automated Proctoring Summary</h2>
           <p className="text-sm text-ink leading-relaxed">{report.proctoring_summary}</p>
           <p className="text-xs text-muted mt-2">
             Generated from the recorded events by a fixed rule, not by a model. It summarises what was
-            flagged; whether any of it was misconduct is a judgement for a reviewer.
+            flagged; whether any of it was misconduct is a judgement for you to make below.
           </p>
         </div>
 
-        {/* Violation timeline */}
+        {/* Violation timeline -- every violation this candidate triggered,
+            with evidence and a decision you can set. This is the whole point
+            of this page: there is no other place in the examiner portal that
+            lists violations. */}
         <h2 className="text-sm font-bold uppercase tracking-wide text-muted mb-3">Violation Timeline</h2>
         {report.violation_timeline.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-border bg-page/60 px-6 py-8 text-center text-sm text-muted mb-6">
@@ -265,7 +282,7 @@ export default function AdminAttemptReport() {
                   <th className="px-4 py-3 font-semibold">Violation</th>
                   <th className="px-4 py-3 font-semibold">Severity</th>
                   <th className="px-4 py-3 font-semibold">Evidence</th>
-                  <th className="px-4 py-3 font-semibold">Admin Decision</th>
+                  <th className="px-4 py-3 font-semibold">Decision</th>
                 </tr>
               </thead>
               <tbody>
@@ -339,21 +356,13 @@ export default function AdminAttemptReport() {
         {/* Comments */}
         <div className="grid md:grid-cols-2 gap-4 mb-6">
           <div className="rounded-2xl border border-border bg-surface shadow-card p-4">
-            <h3 className="text-sm font-bold mb-2">Examiner Comment</h3>
-            {report.examiner_comment ? (
-              <p className="text-sm text-ink whitespace-pre-wrap leading-relaxed">{report.examiner_comment}</p>
-            ) : (
-              <p className="text-xs text-muted">The exam's examiner hasn't left a comment on this attempt.</p>
-            )}
-          </div>
-          <div className="rounded-2xl border border-border bg-surface shadow-card p-4">
-            <h3 className="text-sm font-bold mb-2">Admin Comment</h3>
+            <h3 className="text-sm font-bold mb-2">Your Comment</h3>
             <textarea
-              value={adminComment}
-              onChange={(e) => { setAdminComment(e.target.value); setCommentSaved(false); }}
+              value={comment}
+              onChange={(e) => { setComment(e.target.value); setCommentSaved(false); }}
               rows={3}
               maxLength={2000}
-              placeholder="Add a private note for other admins…"
+              placeholder="Add a note about this candidate's attempt…"
               className={`${fieldInput} resize-none`}
             />
             <div className="flex items-center gap-3 mt-2">
@@ -363,6 +372,14 @@ export default function AdminAttemptReport() {
               </button>
               {commentSaved && <span className="text-xs text-success font-semibold">Saved.</span>}
             </div>
+          </div>
+          <div className="rounded-2xl border border-border bg-surface shadow-card p-4">
+            <h3 className="text-sm font-bold mb-2">Admin Comment</h3>
+            {report.admin_comment ? (
+              <p className="text-sm text-ink whitespace-pre-wrap leading-relaxed">{report.admin_comment}</p>
+            ) : (
+              <p className="text-xs text-muted">No admin note on this attempt.</p>
+            )}
           </div>
         </div>
       </main>

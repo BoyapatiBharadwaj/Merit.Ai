@@ -29,11 +29,14 @@ os.environ.setdefault("REQUIRE_EMAIL_VERIFICATION", "false")
 # and that the acceptance is persisted with its version.
 os.environ.setdefault("REQUIRE_CONSENT_ON_SIGNUP", "false")
 
+import fakeredis
 import pytest
 from fastapi.testclient import TestClient
 from passlib.context import CryptContext
 
 import app.models  # noqa: F401  registers every mapped model on Base.metadata
+from app.core import queues as _queues
+from app.core import redis_client as _redis_client
 from app.core import security as _security
 from app.core.rate_limit import _reset_all as _reset_rate_limit_counters
 
@@ -65,7 +68,34 @@ def _fresh_database():
 
 
 @pytest.fixture(autouse=True)
-def _reset_rate_limits():
+def _fake_redis():
+    """Every Redis-backed module -- rate limiting, OTP state, distributed
+    locks, the RQ queues (see app/core/rate_limit.py,
+    app/services/otp_redis_store.py, app/core/locks.py, app/core/queues.py)
+    -- talks to an in-memory fake for the life of one test, the same reasoning
+    an in-memory SQLite database exists for Postgres above.
+
+    Queues additionally run EAGERLY: `queue.enqueue_call(...)` executes the
+    job function immediately, in this process, instead of leaving it for a
+    separate worker to pick up. Nothing here spins up an actual RQ Worker, so
+    without this a queued job (an OTP email, an access-request notification)
+    would simply never run during a test -- see app/core/queues.py's module
+    docstring for the full reasoning, including why a job's own code, not RQ's
+    retry machinery, is what tests exercising retry/failure behaviour call
+    directly.
+    """
+    fake_server = fakeredis.FakeServer()
+    decoded = fakeredis.FakeStrictRedis(server=fake_server, decode_responses=True)
+    raw = fakeredis.FakeStrictRedis(server=fake_server, decode_responses=False)
+    _redis_client.set_client_for_tests(decoded, raw_client=raw)
+    _queues.set_eager_for_tests(True)
+    yield decoded
+    _redis_client.reset_for_tests()
+    _queues.set_eager_for_tests(False)
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits(_fake_redis):
     """Starlette's TestClient sends every request from the same fake source
     IP for the life of the pytest process, so the per-IP counters in
     app/core/rate_limit.py would otherwise accumulate across unrelated test

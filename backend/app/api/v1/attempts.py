@@ -263,8 +263,14 @@ def run_code_sample(attempt_id: int, payload: CodeRunRequest, db: Session = Depe
     return attempt_service.run_sample_test_cases(db, student.id, attempt_id, payload.question_id, payload.source_code)
 
 
-def _result_out(attempt_id: int, result) -> ExamResultOut:
-    return ExamResultOut(attempt_id=attempt_id, **{key: getattr(result, key) for key in [
+def _result_out(attempt_id: int, result, *, released: bool = True) -> ExamResultOut:
+    """Shapes an ExamResult into the wire response, withholding every score
+    field when `released` is False -- see Exam.results_released. Callers pass
+    released=False only for a STUDENT caller of an exam whose examiner has
+    chosen not to show results yet; staff always pass released=True."""
+    if not released:
+        return ExamResultOut(attempt_id=attempt_id, results_released=False)
+    return ExamResultOut(attempt_id=attempt_id, results_released=True, **{key: getattr(result, key) for key in [
         "total_marks", "scored_marks", "percentage", "correct_count", "incorrect_count", "unattempted_count",
     ]})
 
@@ -287,7 +293,8 @@ def finalize_attempt(attempt_id: int, payload: FinalizeAttemptRequest,
     result = attempt_service.finalize_attempt(
         db, student.id, attempt_id, final_answers=payload.final_answers,
     )
-    return _result_out(attempt_id, result)
+    attempt = attempt_repository.get_attempt(db, attempt_id)
+    return _result_out(attempt_id, result, released=attempt.exam.results_released)
 
 
 @router.post("/{attempt_id}/submit", response_model=ExamResultOut)
@@ -306,7 +313,8 @@ def submit_attempt(attempt_id: int, db: Session = Depends(get_db), user: User = 
     """
     student = user_repository.get_student_by_user_id(db, user.id)
     result = attempt_service.finalize_attempt(db, student.id, attempt_id)
-    return _result_out(attempt_id, result)
+    attempt = attempt_repository.get_attempt(db, attempt_id)
+    return _result_out(attempt_id, result, released=attempt.exam.results_released)
 
 
 @router.get("/{attempt_id}/result", response_model=ExamResultOut)
@@ -318,7 +326,11 @@ def get_result(attempt_id: int, db: Session = Depends(get_db), user: User = Depe
     result = attempt_repository.get_result(db, attempt_id)
     if not result:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Result not available yet.")
-    return ExamResultOut(attempt_id=attempt_id, **{key: getattr(result, key) for key in ["total_marks", "scored_marks", "percentage", "correct_count", "incorrect_count", "unattempted_count"]})
+    # Staff (admin, or the exam's owning examiner) always see the real score;
+    # only a STUDENT's own view is gated by the exam's results-visibility
+    # settings -- see Exam.results_released.
+    released = True if user.role.name != "student" else attempt.exam.results_released
+    return _result_out(attempt_id, result, released=released)
 
 
 @router.get("/{attempt_id}/report", response_model=AttemptReportOut)
@@ -383,7 +395,22 @@ def set_attempt_comment(attempt_id: int, payload: AttemptCommentRequest,
 def my_attempts(db: Session = Depends(get_db), user: User = Depends(require_student)):
     student = user_repository.get_student_by_user_id(db, user.id)
     attempts = [attempt_service.finalize_if_expired(db, a) for a in attempt_repository.list_attempts_for_student(db, student.id)]
-    return [{"attempt_id": attempt.id, "exam_id": attempt.exam_id, "exam_title": attempt.exam.title, "status": attempt.status.value, "started_at": attempt.started_at, "submitted_at": attempt.submitted_at, "scored_marks": result.scored_marks if (result := attempt_repository.get_result(db, attempt.id)) else None, "total_marks": result.total_marks if result else None, "percentage": result.percentage if result else None} for attempt in attempts]
+    rows = []
+    for attempt in attempts:
+        result = attempt_repository.get_result(db, attempt.id)
+        # Same gate as GET /result and /report: an exam whose examiner hasn't
+        # released results yet must not leak the score into a candidate's OWN
+        # history list either -- see Exam.results_released.
+        released = attempt.exam.results_released
+        rows.append({
+            "attempt_id": attempt.id, "exam_id": attempt.exam_id, "exam_title": attempt.exam.title,
+            "status": attempt.status.value, "started_at": attempt.started_at, "submitted_at": attempt.submitted_at,
+            "results_released": released,
+            "scored_marks": result.scored_marks if (result and released) else None,
+            "total_marks": result.total_marks if (result and released) else None,
+            "percentage": result.percentage if (result and released) else None,
+        })
+    return rows
 
 
 @router.get("/exam/{exam_id}", response_model=Page[dict])
@@ -405,6 +432,7 @@ def attempts_for_exam(exam_id: int, params: PageParams = Depends(), search: str 
     )
     attempts = [attempt_service.finalize_if_expired(db, row) for row in rows]
     results = attempt_repository.results_for_attempts(db, [a.id for a in attempts])
+    violation_counts = admin_repository.violation_counts_for_attempts(db, [a.id for a in attempts])
     items = [{
         "attempt_id": attempt.id,
         "student_id": attempt.student_id,
@@ -414,8 +442,33 @@ def attempts_for_exam(exam_id: int, params: PageParams = Depends(), search: str 
         "submitted_at": attempt.submitted_at,
         "scored_marks": results[attempt.id].scored_marks if attempt.id in results else None,
         "total_marks": results[attempt.id].total_marks if attempt.id in results else None,
+        # So the examiner can see at a glance which attempts need a look --
+        # the actual review (evidence, risk score, decisions) lives one click
+        # away at GET /attempts/{id}/staff-report, not on this list.
+        "violation_count": violation_counts.get(attempt.id, 0),
     } for attempt in attempts]
     return build_page(items, total, params)
+
+
+@router.get("/exam/{exam_id}/export")
+def export_exam_attempts_csv(exam_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """The exam's live results CSV: one row per candidate who has sat it so
+    far (name, violation count, start/end time, result), regenerated fresh
+    from the database on every download -- see attempt_service.build_exam_csv
+    for why that beats a physically maintained file. Same ownership rule as
+    every other exam-scoped attempt endpoint here: the owning examiner, or
+    any admin.
+    """
+    exam = exam_repository.get_exam(db, exam_id)
+    if not exam or (user.role.name != "admin" and (not user.examiner_profile or exam.examiner_id != user.examiner_profile.id)):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Exam not found.")
+    csv_bytes = attempt_service.build_exam_csv(db, exam)
+    safe_title = "".join(c if c.isalnum() or c in "-_" else "_" for c in exam.title)[:60] or "exam"
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{safe_title}_results.csv"'},
+    )
 
 
 @router.get("/exam/{exam_id}/active", response_model=list[dict])
@@ -520,6 +573,11 @@ def _load_attempt_and_result(db: Session, user: User, attempt_id: int):
 @router.get("/{attempt_id}/result/pdf")
 def get_result_pdf(attempt_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     attempt, result = _load_attempt_and_result(db, user, attempt_id)
+    # Staff can always pull the report; a student cannot download the very
+    # numbers /result and /report are withholding from them -- see
+    # Exam.results_released.
+    if user.role.name == "student" and not attempt.exam.results_released:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Results for this exam have not been released yet.")
     violation_count = len(proctor_repository.list_events_for_attempt(db, attempt_id))
     pdf_bytes = pdf_service.build_result_report(
         student_name=attempt.student.user.full_name,

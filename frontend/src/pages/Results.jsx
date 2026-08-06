@@ -108,7 +108,27 @@ export default function Results() {
           </div>
         )}
 
-        {!error && report && (
+        {!error && report && report.results_released === false && (
+          <div className="animate-fade-in rounded-2xl border border-border bg-surface shadow-card p-8 text-center">
+            <span className="inline-flex items-center justify-center w-16 h-16 rounded-2xl mb-4 bg-primary/10 text-primary">
+              <Icon name="clock" width={26} height={26} />
+            </span>
+            <h1 className="text-xl font-extrabold tracking-tight mb-1">{report.exam_title}</h1>
+            <p className="text-sm text-muted mb-1">{report.candidate_name}{report.roll_number ? ` · Roll No. ${report.roll_number}` : ""}</p>
+            <p className="text-sm text-ink mt-4 max-w-md mx-auto">
+              Your submission was received. The examiner hasn't released results for this exam yet -- check back
+              later.
+            </p>
+            <p className="text-xs text-muted mt-3">
+              Submitted {report.submitted_at ? new Date(report.submitted_at).toLocaleString() : "-"}
+            </p>
+            <button onClick={() => navigate("/dashboard")} className={`${btnPrimary} mt-6`}>
+              Back to Dashboard
+            </button>
+          </div>
+        )}
+
+        {!error && report && report.results_released !== false && (
           <div className="animate-fade-in flex flex-col gap-6">
             {autoSubmitted && (
               <div className="flex items-start gap-2.5 rounded-xl border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning font-medium">

@@ -45,15 +45,9 @@ def _student_id_for(email: str) -> int:
 def _two_organizations(client, admin_token):
     """Acme and Globex, each with an examiner and one published exam."""
     acme = auth_headers(_create_examiner_and_login(
-        client, admin_token, email="acme-examiner@example.com"))
-    globex_token = client.post("/api/v1/auth/examiners", json={
-        "first_name": "Glo", "last_name": "Bex", "email": "globex-examiner@example.com",
-        "organization_name": "Globex Corp", "password": "Sup3rSecret!",
-    }, headers=auth_headers(admin_token))
-    assert globex_token.status_code in (200, 201), globex_token.text
-    login = client.post("/api/v1/auth/login", json={
-        "email": "globex-examiner@example.com", "password": "Sup3rSecret!"})
-    globex = auth_headers(login.json()["access_token"])
+        client, admin_token, email="acme-examiner@example.com", organization_name="Acme Institute"))
+    globex = auth_headers(_create_examiner_and_login(
+        client, admin_token, email="globex-examiner@example.com", organization_name="Globex Corp"))
 
     return {
         "acme_headers": acme,
@@ -682,14 +676,9 @@ def test_two_examiners_typing_the_same_organization_name_share_one_tenant(client
     """How a department with several examiners shares one student roster --
     and the reason organization names are matched case-insensitively."""
     first = auth_headers(_create_examiner_and_login(
-        client, admin_token, email="first@example.com"))
-    client.post("/api/v1/auth/examiners", json={
-        "first_name": "Second", "last_name": "Examiner", "email": "second@example.com",
-        "organization_name": "  acme institute ", "password": "Sup3rSecret!",
-    }, headers=auth_headers(admin_token))
-    login = client.post("/api/v1/auth/login", json={
-        "email": "second@example.com", "password": "Sup3rSecret!"})
-    second = auth_headers(login.json()["access_token"])
+        client, admin_token, email="first@example.com", organization_name="Acme Institute"))
+    second = auth_headers(_create_examiner_and_login(
+        client, admin_token, email="second@example.com", organization_name="  acme institute "))
 
     exam_id = _build_published_exam(client, first)
     student = auth_headers(_register_student_and_login(client, email="shared@example.com"))

@@ -289,6 +289,11 @@ def examiners_overview(db: Session, search: str | None = None, organization_id: 
             "active_exams": counts["active"], "upcoming_exams": counts["upcoming"], "completed_exams": counts["completed"],
             "candidate_count": candidate_counts.get(e.id, 0),
             "is_active": e.user.is_active,
+            # True until the examiner has followed their activation link and
+            # chosen a password -- see examiner_provisioning_service. Lets the
+            # Examiners page offer "Resend activation" only where it means
+            # something, instead of on every row.
+            "pending_activation": bool(e.user.must_change_password),
         })
     return rows, total
 

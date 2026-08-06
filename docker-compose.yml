@@ -1,6 +1,12 @@
 
 # ==============================================================================
-# Merit.Ai -- full stack, five services.
+# Merit.Ai -- full stack. PostgreSQL is the permanent source of truth for
+# every durable record (users, exams, attempts, results, violations,
+# credentials, audit logs, email delivery history); Redis is back as the
+# shared, ephemeral-state backend for the things that genuinely benefit from
+# it -- cross-worker rate limiting, one-time-passcode state, distributed
+# locks, and the RQ background job/email queue. See
+# backend/app/core/redis_client.py's module docstring for the exact boundary.
 #
 #   proxy      nginx, the ONLY published port. Routes /api/* to core-api,
 #              everything else to frontend. See deploy/nginx/nginx.conf.
@@ -8,25 +14,47 @@
 #              reachable directly -- only through `proxy`.
 #   core-api   FastAPI: auth, exams, attempts, organizations, admin,
 #              analytics, proctoring orchestration, sandboxed code execution.
-#              Owns the one Postgres database. Falls back to computing face/
-#              object detection locally if `ai-worker` is unreachable -- see
-#              AI_SERVICE_URL below and backend/app/ai/face_service.py.
+#              Owns the Postgres database and the Redis connection. Falls
+#              back to computing face/object detection locally if `ai-worker`
+#              is unreachable -- see AI_SERVICE_URL below and
+#              backend/app/ai/face_service.py.
 #   ai-worker  Dedicated face/object inference microservice. Stateless,
 #              internal-only (no published port), holds no secrets, never
-#              touches Postgres. See backend/ai_worker/main.py.
-#   postgres   The one shared database, owned exclusively by core-api.
+#              touches Postgres or Redis. See backend/ai_worker/main.py.
+#   scheduler  The one process that runs periodic work (exam reminders, OTP
+#              purge, biometric retention). Single replica by design -- see
+#              backend/app/scheduler/main.py.
+#   worker     An RQ worker consuming the emails/reports/default queues over
+#              Redis (transactional email delivery and retry, PDF reports,
+#              bulk email). Scale freely -- RQ workers claim jobs from Redis
+#              atomically. See backend/app/worker/.
+#   postgres   The permanent database: users, exams, attempts, results,
+#              violations, credentials, audit logs, and the email_outbox
+#              delivery-history table. Owned exclusively by core-api (the
+#              other services reach it only through core-api's ORM models
+#              over the same network).
+#   redis      Shared rate-limit counters, one-time-passcode state,
+#              distributed locks, and the RQ job/email queue. Internal-only
+#              (no published port), password-authenticated, persisted with
+#              append-only storage. Holds no permanent record of anything --
+#              losing this container loses in-flight OTP codes and queued
+#              (not-yet-delivered) jobs, never a user, an exam, a result, or
+#              an email's own delivery history (that is in Postgres).
 #
 # Network segmentation (not just "one flat network everything can reach"):
-#   data-net   postgres <-> core-api only. Nothing else can reach the database.
+#   data-net   postgres <-> core-api, scheduler, worker. Nothing else can
+#              reach the database.
+#   cache-net  redis <-> core-api, scheduler, worker. Nothing else can reach
+#              Redis, and Redis publishes no port to the host.
 #   ai-net     ai-worker <-> core-api only.
 #   api-net    core-api <-> proxy only.
 #   web-net    frontend <-> proxy only.
-# frontend can never reach postgres or ai-worker; ai-worker can never reach
-# postgres; proxy can only reach core-api and frontend, never the database or
-# the AI worker directly.
+# frontend can never reach postgres, redis or ai-worker; ai-worker can never
+# reach postgres or redis; proxy can only reach core-api and frontend, never
+# the database, Redis, or the AI worker directly.
 #
 # Quick start:
-#   cp .env.example .env      # then edit SECRET_KEY, POSTGRES_PASSWORD
+#   cp .env.example .env      # then edit SECRET_KEY, POSTGRES_PASSWORD, REDIS_PASSWORD
 #   docker compose up --build
 #   open http://localhost
 # ==============================================================================
@@ -66,30 +94,40 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    # Shared state for processes that must agree with each other: rate-limit
-    # counters across every API worker, and the background job queue. Not a
-    # cache of the database -- nothing here is authoritative, and everything
-    # that uses it degrades to per-process behaviour if it disappears (see
-    # app/core/shared_state.py).
-    #
-    # appendonly yes: the job queue holds work that has been accepted but not
-    # yet run. Losing that on a restart means silently dropping a queued report
-    # or email, which nobody would notice until someone asked where it went.
-    command: >-
-      redis-server
-      --appendonly yes
-      --maxmemory 256mb
-      --maxmemory-policy noeviction
+    # --appendonly yes: durability for the one thing here worth surviving a
+    # container restart -- an in-flight OTP resend cooldown, a queued-but-not
+    # -yet-delivered email/report job. Losing it is a bounded inconvenience
+    # (a code has to be re-requested; a queued job is gone and would need
+    # re-triggering), never a lost permanent record, which is why this is
+    # "where appropriate" durability rather than the synchronous fsync
+    # tuning a primary datastore would need.
+    # --requirepass: no anonymous access, even on the internal-only network
+    # below -- defense in depth against a misconfigured network segment.
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}"]
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
     networks:
       - cache-net
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          # Everything stored here is small (counters, short-lived hashes,
+          # queued job payloads) and TTL-bounded or consumed quickly -- this
+          # is headroom for a burst, not a sizing exercise.
+          memory: 256m
+    # Not published to the host, and not reachable from any network but
+    # cache-net -- nothing outside core-api, scheduler and worker has any
+    # business talking to this instance.
+    # ports:
+    #   - "127.0.0.1:6379:6379"   # uncomment only for local debugging
 
   # ----------------------------------------------------------------------------
   ai-worker:
@@ -139,6 +177,21 @@ services:
       ENVIRONMENT: ${ENVIRONMENT:-production}
       DATABASE_URL: postgresql://${POSTGRES_USER:-merit_ai}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-merit_ai}
       SECRET_KEY: "${SECRET_KEY:?Set SECRET_KEY in .env -- generate one with python3 -c 'import secrets; print(secrets.token_urlsafe(64))'}"
+      # Rate limiting, OTP state and distributed locks -- see
+      # backend/app/core/redis_client.py. REDIS_PASSWORD is passed separately
+      # (rather than embedded in REDIS_URL) so it is never interpolated into a
+      # string a stray log line might print whole.
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+      LOCK_DEFAULT_TTL_SECONDS: ${LOCK_DEFAULT_TTL_SECONDS:-30}
+      JOB_MAX_RETRIES: ${JOB_MAX_RETRIES:-3}
+      JOB_TIMEOUT_SECONDS: ${JOB_TIMEOUT_SECONDS:-300}
+      # Redis-backed, shared across every core-api worker and replica -- see
+      # app/core/rate_limit.py.
+      AUTH_RATE_LIMIT_MAX_REQUESTS: ${AUTH_RATE_LIMIT_MAX_REQUESTS:-10}
+      AUTH_RATE_LIMIT_WINDOW_SECONDS: ${AUTH_RATE_LIMIT_WINDOW_SECONDS:-60}
+      AI_RATE_LIMIT_MAX_REQUESTS: ${AI_RATE_LIMIT_MAX_REQUESTS:-30}
+      AI_RATE_LIMIT_WINDOW_SECONDS: ${AI_RATE_LIMIT_WINDOW_SECONDS:-60}
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-120}
       UPLOAD_DIR: /app/uploads
@@ -157,7 +210,6 @@ services:
       LOCKDOWN_STRIKE_LIMIT: ${LOCKDOWN_STRIKE_LIMIT:-3}
       CODE_EXECUTION_ENABLED: ${CODE_EXECUTION_ENABLED:-true}
       CODE_EXECUTION_MAX_CONCURRENT: ${CODE_EXECUTION_MAX_CONCURRENT:-4}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       # uvicorn worker processes. The default of 1 is what this app ran as
       # before shared state existed; raising it is the single biggest
       # throughput change available, because request handling was previously
@@ -238,6 +290,14 @@ services:
       EXAM_REMINDER_ENABLED: ${EXAM_REMINDER_ENABLED:-true}
       EXAM_REMINDER_MINUTES_BEFORE: ${EXAM_REMINDER_MINUTES_BEFORE:-5}
       EXAM_REMINDER_POLL_SECONDS: ${EXAM_REMINDER_POLL_SECONDS:-60}
+      # Permanent delivery record for tracked transactional email (admin
+      # notification, activation link, OTP codes, exam/report notices) --
+      # see app/services/email_service.py's outbox. The retry TIMING between
+      # attempts is these same base/max seconds, now driving RQ's backoff
+      # curve (app/core/queues.py) instead of a Postgres-polling worker.
+      EMAIL_OUTBOX_MAX_ATTEMPTS: ${EMAIL_OUTBOX_MAX_ATTEMPTS:-5}
+      EMAIL_OUTBOX_RETRY_BASE_SECONDS: ${EMAIL_OUTBOX_RETRY_BASE_SECONDS:-60}
+      EMAIL_OUTBOX_RETRY_MAX_SECONDS: ${EMAIL_OUTBOX_RETRY_MAX_SECONDS:-3600}
     volumes:
       - uploads:/app/uploads
       - core_models:/app/models
@@ -256,9 +316,9 @@ services:
       - "${DOCKER_GID:-999}"
     networks:
       - data-net
+      - cache-net
       - ai-net
       - api-net
-      - cache-net
     depends_on:
       postgres:
         condition: service_healthy
@@ -313,7 +373,6 @@ services:
       ENVIRONMENT: ${ENVIRONMENT:-production}
       DATABASE_URL: postgresql://${POSTGRES_USER:-merit_ai}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-merit_ai}
       SECRET_KEY: "${SECRET_KEY:?Set SECRET_KEY in .env}"
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       UPLOAD_DIR: /app/uploads
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost}
       APP_BASE_URL: ${APP_BASE_URL:-http://localhost}
@@ -334,6 +393,12 @@ services:
       EXAM_REMINDER_POLL_SECONDS: ${EXAM_REMINDER_POLL_SECONDS:-60}
       BIOMETRIC_RETENTION_DAYS: ${BIOMETRIC_RETENTION_DAYS:-0}
       BIOMETRIC_PURGE_INTERVAL_HOURS: ${BIOMETRIC_PURGE_INTERVAL_HOURS:-24}
+      # Each periodic pass takes a Redis lock naming itself before running
+      # (see backend/app/scheduler/main.py) -- belt-and-suspenders alongside
+      # `deploy.replicas: 1` below, not a substitute for it.
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+      LOCK_DEFAULT_TTL_SECONDS: ${LOCK_DEFAULT_TTL_SECONDS:-30}
       # This process never serves a request, so it must never run migrations
       # either -- core-api owns the schema. Two containers racing to migrate the
       # same database at boot is a genuinely nasty way to corrupt a deploy.
@@ -347,19 +412,22 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     deploy:
       replicas: 1
 
   # ----------------------------------------------------------------------------
-  job-worker:
-    # Consumes the background job queue: PDF reports, bulk email, purges.
+  worker:
+    # An RQ worker consuming the emails/reports/default queues over Redis:
+    # transactional email delivery + retry, PDF result reports, bulk email.
+    # See backend/app/worker/main.py and backend/app/worker/jobs.py.
     #
-    # Unlike the scheduler, scale this freely -- RQ hands each job to exactly
-    # one worker, so more replicas simply means more jobs in flight.
-    #
-    # Without REDIS_URL this container exits immediately and those jobs run
-    # inline inside core-api instead (see app/worker/jobs.py). That is a
-    # supported configuration, not a broken one.
+    # Scale this freely -- RQ workers claim jobs from Redis atomically, so
+    # more replicas simply means more throughput. A job queued while every
+    # worker replica is down just waits in Redis until one is available;
+    # PERMANENT records (an email's own final delivery status) are always in
+    # Postgres's email_outbox regardless of how many workers are running.
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -369,7 +437,6 @@ services:
       ENVIRONMENT: ${ENVIRONMENT:-production}
       DATABASE_URL: postgresql://${POSTGRES_USER:-merit_ai}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-merit_ai}
       SECRET_KEY: "${SECRET_KEY:?Set SECRET_KEY in .env}"
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       UPLOAD_DIR: /app/uploads
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost}
       APP_BASE_URL: ${APP_BASE_URL:-http://localhost}
@@ -383,7 +450,14 @@ services:
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       EMAIL_FROM: ${EMAIL_FROM:-}
       EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-Merit.Ai}
-      JOB_QUEUE_NAME: ${JOB_QUEUE_NAME:-meritai:jobs}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+      LOCK_DEFAULT_TTL_SECONDS: ${LOCK_DEFAULT_TTL_SECONDS:-30}
+      JOB_MAX_RETRIES: ${JOB_MAX_RETRIES:-3}
+      JOB_TIMEOUT_SECONDS: ${JOB_TIMEOUT_SECONDS:-300}
+      EMAIL_OUTBOX_MAX_ATTEMPTS: ${EMAIL_OUTBOX_MAX_ATTEMPTS:-5}
+      EMAIL_OUTBOX_RETRY_BASE_SECONDS: ${EMAIL_OUTBOX_RETRY_BASE_SECONDS:-60}
+      EMAIL_OUTBOX_RETRY_MAX_SECONDS: ${EMAIL_OUTBOX_RETRY_MAX_SECONDS:-3600}
       RUN_MIGRATIONS_ON_START: "false"
       AUTO_SEED_ADMIN: "false"
     volumes:
@@ -438,12 +512,10 @@ services:
 
 networks:
   data-net:
+  cache-net:
   ai-net:
   api-net:
   web-net:
-  # redis <-> core-api, scheduler and job-worker only. The frontend and the
-  # proxy have no path to it, same reasoning as data-net for Postgres.
-  cache-net:
 
 volumes:
   pgdata:

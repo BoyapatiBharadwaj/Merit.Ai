@@ -23,7 +23,9 @@ const NAV_ITEMS = [
   { id: "candidates", label: "Candidates", icon: "users", to: "/admin/candidates" },
   { id: "exams", label: "Exams", icon: "doc", to: "/admin/exams" },
   { id: "live", label: "Live Sessions", icon: "eye", to: "/admin/live-sessions" },
-  { id: "violations", label: "Violations", icon: "flag", to: "/admin/violations" },
+  // No standalone violations list -- an admin reviews violations through
+  // exam -> student (Exams -> a candidate's row -> full report), the same
+  // path an examiner uses. Review Queue is a distinct, kept worklist.
   { id: "review", label: "Review Queue", icon: "shield-check", to: "/admin/review-queue" },
   { id: "organizations", label: "Organizations", icon: "briefcase", to: "/admin/organizations" },
   { id: "requests", label: "Access Requests", icon: "mail", anchor: true },
@@ -232,7 +234,11 @@ export default function AdminDashboard() {
               <StatCard label="Upcoming Exams" value={summary ? summary.upcoming_exams : null} tone="primary" to="/admin/exams?status=upcoming" />
               <StatCard label="Completed Exams" value={summary ? summary.completed_exams : null} tone="muted" to="/admin/exams?status=completed" />
               <StatCard label="Live Sessions" value={summary ? summary.live_sessions : null} tone="warning" to="/admin/live-sessions" />
-              <StatCard label="Violations Logged" value={summary ? summary.violations_logged : null} tone="danger" to="/admin/violations"
+              {/* No /admin/violations to link to anymore -- reviewing a flag
+                  means opening that candidate's exam report, so this card
+                  points at the review queue (undecided flags) instead of a
+                  flat browsing list. */}
+              <StatCard label="Violations Logged" value={summary ? summary.violations_logged : null} tone="danger" to="/admin/review-queue"
                              hint="All flags, before review" />
             </div>
 

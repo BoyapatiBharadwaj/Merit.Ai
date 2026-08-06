@@ -25,6 +25,20 @@ export default function AdminExamDetail() {
   const [result, setResult] = useState("");
   const [risk, setRisk] = useState("");
   const [verification, setVerification] = useState("");
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState("");
+
+  async function handleExport() {
+    setExporting(true);
+    setExportError("");
+    try {
+      await Api.downloadFile(`/attempts/exam/${examId}/export`, `exam_${examId}_results.csv`);
+    } catch (err) {
+      setExportError(err instanceof ApiError ? err.message : "Couldn't export results.");
+    } finally {
+      setExporting(false);
+    }
+  }
 
   useEffect(() => {
     Api.get(`/admin/exams/${examId}`)
@@ -102,7 +116,17 @@ export default function AdminExamDetail() {
           <StatCard label="Average Score" value={exam ? fmtPercent(exam.average_score) : null} tone="primary" />
         </div>
 
-        <h2 className="text-lg font-bold mb-3">Enrolled Students</h2>
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+          <h2 className="text-lg font-bold">Enrolled Students</h2>
+          <div className="flex flex-col items-end gap-1">
+            <button type="button" onClick={handleExport} disabled={exporting}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-semibold rounded-xl border border-border text-ink hover:border-primary hover:text-primary transition-colors disabled:opacity-60">
+              <Icon name="doc" width={14} height={14} />
+              {exporting ? "Preparing…" : "Export results (CSV)"}
+            </button>
+            {exportError && <span className="text-xs text-danger">{exportError}</span>}
+          </div>
+        </div>
 
         <div className="flex flex-wrap gap-3 mb-4">
           <div className="relative flex-1 min-w-[200px]">

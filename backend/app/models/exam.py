@@ -8,7 +8,7 @@ from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime, Bool
 from sqlalchemy.orm import relationship
 
 from app.database.session import Base
-from app.models.enums import ExamStatus, db_enum
+from app.models.enums import ExamStatus, ResultsReleaseMode, db_enum
 
 
 class Exam(Base):
@@ -74,6 +74,15 @@ class Exam(Base):
     # writing, and could simply send it to them.
     release_results_at = Column(DateTime(timezone=True), nullable=True)
     show_answers_on_release = Column(Boolean, default=True, nullable=False)
+    # Whether a candidate ever sees their own score/pass-fail at all. False
+    # means never -- staff (the owning examiner, or an admin) can always see
+    # it; only the candidate's own view is affected. Defaults to True so
+    # every exam created before this existed keeps showing results exactly
+    # as it always has.
+    show_results = Column(Boolean, default=True, nullable=False)
+    # Only meaningful when show_results is True -- see ResultsReleaseMode
+    # and Exam.results_released.
+    results_release_mode = Column(db_enum(ResultsReleaseMode), default=ResultsReleaseMode.IMMEDIATE, nullable=False)
     start_time = Column(DateTime(timezone=True), nullable=True)
     end_time = Column(DateTime(timezone=True), nullable=True)
 
@@ -105,11 +114,27 @@ class Exam(Base):
 
     @property
     def results_released(self) -> bool:
-        """Whether marks may be shown yet. No release time means immediately,
-        which is the existing behaviour for every exam already created."""
-        if self.release_results_at is None:
+        """Whether a candidate may see their own score/pass-fail yet.
+
+        show_results=False is absolute: never, for anyone sitting this exam,
+        however long they wait. Otherwise the release moment depends on
+        results_release_mode -- AFTER_END_TIME waits for the exam's own
+        end_time (so the answer key/score can never circulate while others
+        are still writing) and ignores release_results_at entirely; IMMEDIATE
+        preserves the original behaviour (release_results_at is an optional
+        extra delay, and no release time at all means immediately, which is
+        every exam created before either of these settings existed).
+        """
+        if not self.show_results:
+            return False
+        if self.results_release_mode == ResultsReleaseMode.AFTER_END_TIME:
+            if self.end_time is None:
+                return False
+            moment = self.end_time
+        elif self.release_results_at is not None:
+            moment = self.release_results_at
+        else:
             return True
-        moment = self.release_results_at
         if moment.tzinfo is None:
             moment = moment.replace(tzinfo=timezone.utc)
         return datetime.now(timezone.utc) >= moment

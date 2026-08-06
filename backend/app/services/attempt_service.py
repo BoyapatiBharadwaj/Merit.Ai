@@ -1,15 +1,51 @@
 """Business logic for starting, answering, and submitting exam attempts."""
+import csv
+import io
 import json
+import logging
 import random
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.repositories import attempt_repository, exam_repository, proctor_repository
+from app.core.locks import distributed_lock
+from app.core.redis_client import RedisUnavailableError
+from app.repositories import admin_repository, attempt_repository, exam_repository, proctor_repository
 from app.models.enums import AttemptStatus, ExamStatus, QuestionType
 from app.models.student import Student
 from app.services import admin_service, code_runner_service, identity_service, organization_service
+
+logger = logging.getLogger("app")
+
+
+@contextmanager
+def _best_effort_submission_lock(attempt_id: int):
+    """A Redis lock against double-submitting the same attempt -- best-effort,
+    unlike every other lock in this app (see app/core/locks.py), because exam
+    submission's actual correctness does NOT depend on it: `finalize_attempt`
+    already reads the attempt row with `SELECT ... FOR UPDATE`
+    (attempt_repository.get_attempt_for_update) and is written to be
+    idempotent for an already-submitted attempt, and `_compute_and_store_result`
+    catches the IntegrityError a genuine race produces. Those two mechanisms
+    were correct before Redis came back into this stack and remain the actual
+    guarantee.
+
+    So this lock is an optimisation (skip redundant grading work when two
+    requests for the same attempt overlap), not a safety net -- and precisely
+    because of that, Redis being unreachable must not turn into a candidate's
+    submission failing mid-exam with a 503. It logs and proceeds without the
+    lock instead, falling back to the Postgres-level guarantees above.
+    """
+    try:
+        with distributed_lock(f"attempt-submit:{attempt_id}", timeout=30, blocking_timeout=5) as acquired:
+            yield acquired
+    except RedisUnavailableError:
+        logger.warning("Redis unavailable while locking attempt %s submission; proceeding without it -- "
+                       "the row-level lock in get_attempt_for_update is what actually guarantees "
+                       "correctness here.", attempt_id)
+        yield True
 
 
 # An attempt in any of these is over: no further answers, and a result is
@@ -358,31 +394,32 @@ def finalize_attempt(db: Session, student_id: int, attempt_id: int, *, final_ans
     # a submission that succeeded.
     _get_owned_attempt(db, student_id, attempt_id)
 
-    # Re-read under the lock. Between the check above and here, the timer's
-    # auto-submit may have finished this attempt; the locked read is the one
-    # whose answer can be acted on.
-    attempt = attempt_repository.get_attempt_for_update(db, attempt_id)
-    if attempt is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Attempt not found.")
-    if attempt.status != AttemptStatus.IN_PROGRESS:
-        db.commit()  # release the lock; someone else already finalized
-        return ensure_result(db, attempt)
+    with _best_effort_submission_lock(attempt_id):
+        # Re-read under the Postgres row lock. Between the check above and
+        # here, the timer's auto-submit may have finished this attempt; the
+        # locked read is the one whose answer can be acted on.
+        attempt = attempt_repository.get_attempt_for_update(db, attempt_id)
+        if attempt is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Attempt not found.")
+        if attempt.status != AttemptStatus.IN_PROGRESS:
+            db.commit()  # release the lock; someone else already finalized
+            return ensure_result(db, attempt)
 
-    try:
-        for item in (final_answers or []):
-            _apply_final_answer(db, attempt, item)
+        try:
+            for item in (final_answers or []):
+                _apply_final_answer(db, attempt, item)
 
-        expired = remaining_seconds(attempt) <= 0
-        attempt_repository.mark_attempt_submitted(
-            db, attempt,
-            AttemptStatus.AUTO_SUBMITTED if expired else AttemptStatus.SUBMITTED,
-            commit=False,
-        )
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
-    db.refresh(attempt)
+            expired = remaining_seconds(attempt) <= 0
+            attempt_repository.mark_attempt_submitted(
+                db, attempt,
+                AttemptStatus.AUTO_SUBMITTED if expired else AttemptStatus.SUBMITTED,
+                commit=False,
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        db.refresh(attempt)
 
     # Grading runs AFTER the commit, deliberately outside the transaction and
     # the lock. Coding questions execute the candidate's code in a Docker
@@ -418,10 +455,11 @@ def submit_attempt(db: Session, student_id: int, attempt_id: int, auto: bool = F
     client payload -- the expiry sweep and the lockdown terminator. Candidate
     submissions go through finalize_attempt, which carries their final answers.
     """
-    attempt = _get_owned_in_progress_attempt(db, student_id, attempt_id)
-    status_value = AttemptStatus.AUTO_SUBMITTED if auto else AttemptStatus.SUBMITTED
-    attempt = attempt_repository.mark_attempt_submitted(db, attempt, status_value)
-    return _compute_and_store_result(db, attempt)
+    with _best_effort_submission_lock(attempt_id):
+        attempt = _get_owned_in_progress_attempt(db, student_id, attempt_id)
+        status_value = AttemptStatus.AUTO_SUBMITTED if auto else AttemptStatus.SUBMITTED
+        attempt = attempt_repository.mark_attempt_submitted(db, attempt, status_value)
+        return _compute_and_store_result(db, attempt)
 
 
 def _compute_and_store_result(db: Session, attempt):
@@ -526,9 +564,23 @@ def build_full_report(db: Session, attempt, *, for_candidate: bool = False) -> d
     # its own live exam. Staff are unaffected: an examiner reviewing a paper
     # needs the key, and always has.
     withhold_key = for_candidate and not (exam.results_released and exam.show_answers_on_release)
+    # Whether THIS reader may see the score/pass-fail outcome at all -- the
+    # examiner's show_results / results_release_mode settings (see
+    # Exam.results_released). Coarser than withhold_key: this also hides the
+    # marks, percentage and pass/fail, not just the answer key, and -- unlike
+    # withhold_key -- is completely unaffected by show_answers_on_release, so
+    # an examiner can still choose "show the score now, but not which options
+    # were right" (withhold_key only) independently of "show nothing yet"
+    # (withhold_results).
+    withhold_results = for_candidate and not exam.results_released
 
     questions_report = []
-    for question_id in question_ids:
+    # No per-question breakdown at all while results are withheld -- outcome
+    # and marks_awarded are exactly the "results" this setting exists to
+    # delay, and leaving them in the response would defeat it the moment
+    # anyone opened their browser's network tab, even with the summary
+    # numbers below correctly hidden.
+    for question_id in ([] if withhold_results else question_ids):
         question = exam_repository.get_question(db, question_id)
         if not question:
             continue
@@ -605,16 +657,17 @@ def build_full_report(db: Session, attempt, *, for_candidate: bool = False) -> d
         "submitted_at": attempt.submitted_at,
         "time_taken_seconds": time_taken_seconds,
         "status": attempt.status.value,
-        "total_marks": result.total_marks if result else 0,
-        "scored_marks": result.scored_marks if result else 0,
-        "percentage": percentage,
+        "results_released": not withhold_results,
+        "total_marks": None if withhold_results else (result.total_marks if result else 0),
+        "scored_marks": None if withhold_results else (result.scored_marks if result else 0),
+        "percentage": None if withhold_results else percentage,
         "pass_percentage": exam.pass_percentage,
-        "passed": passed,
+        "passed": None if withhold_results else passed,
         "answers_released": not withhold_key,
         "release_results_at": exam.release_results_at,
-        "correct_count": result.correct_count if result else 0,
-        "incorrect_count": result.incorrect_count if result else 0,
-        "unattempted_count": result.unattempted_count if result else 0,
+        "correct_count": None if withhold_results else (result.correct_count if result else 0),
+        "incorrect_count": None if withhold_results else (result.incorrect_count if result else 0),
+        "unattempted_count": None if withhold_results else (result.unattempted_count if result else 0),
         "questions": questions_report,
     }
 
@@ -700,6 +753,52 @@ def set_attempt_comment(db: Session, user, attempt_id: int, comment: str) -> dic
 
     db.commit()
     return {"examiner_comment": attempt.examiner_comment, "admin_comment": attempt.admin_comment}
+
+
+def build_exam_csv(db: Session, exam) -> bytes:
+    """One CSV row per candidate who has taken this exam so far: name,
+    violation count, start/end time, and result.
+
+    Generated fresh from the current database state on every request rather
+    than a physically written-and-appended file. A candidate's row needs to
+    "appear" the moment they submit and their violation count needs to stay
+    correct if a reviewer later re-adjudicates a flag -- both are automatic
+    here, for free, since this is just a query every time, and there is no
+    separate file on disk that could drift from what the database actually
+    holds or that two examiners downloading at once could corrupt each
+    other's writes to.
+    """
+    attempts = sorted(
+        exam.attempts,
+        key=lambda a: a.started_at or datetime.min.replace(tzinfo=timezone.utc),
+    )
+    attempt_ids = [a.id for a in attempts]
+    results_by_attempt = attempt_repository.results_for_attempts(db, attempt_ids)
+    violation_counts = admin_repository.violation_counts_for_attempts(db, attempt_ids)
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow([
+        "Student Name", "Roll Number", "Violations", "Start Time", "End Time",
+        "Status", "Score (%)", "Result",
+    ])
+    for attempt in attempts:
+        student = attempt.student
+        result = results_by_attempt.get(attempt.id)
+        result_label = ""
+        if result is not None:
+            result_label = "Passed" if result.percentage >= exam.pass_percentage else "Failed"
+        writer.writerow([
+            student.user.full_name if student and student.user else "",
+            student.roll_number if student else "",
+            violation_counts.get(attempt.id, 0),
+            attempt.started_at.isoformat() if attempt.started_at else "",
+            attempt.submitted_at.isoformat() if attempt.submitted_at else "",
+            attempt.status.value,
+            f"{result.percentage:.1f}" if result is not None else "",
+            result_label,
+        ])
+    return buffer.getvalue().encode("utf-8")
 
 
 def _grade_mcq_answer(question, answer) -> tuple[int, str]:

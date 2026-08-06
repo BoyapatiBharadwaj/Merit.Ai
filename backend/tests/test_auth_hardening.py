@@ -146,10 +146,23 @@ def _issue_signup_code(client, db_session, monkeypatch, email):
     return captured["code"]
 
 
-def test_a_failed_registration_does_not_burn_the_code(client, seed_roles, db_session, monkeypatch):
-    """The endpoint's own docstring claimed this was already true. It was not:
-    the code was consumed and committed before registration ran, so a duplicate
-    student ID left the candidate with no account and a dead code."""
+def test_a_failed_registration_now_does_burn_the_code(client, seed_roles, db_session, monkeypatch):
+    """Rewritten rather than deleted -- the behaviour this pins flipped on
+    purpose, and a silently-dropped test would leave nothing watching it.
+
+    Signup/password-reset OTP state moved to Redis (see
+    app/services/otp_redis_store.py), and that rewrite's brief is explicit:
+    OTP data is deleted immediately on a successful verification, with no
+    "hold the consumption open until an outer transaction commits" option --
+    Redis has no transaction to defer into the way the Postgres-backed
+    version (`verify_code(..., commit=False)`) did. The consequence is this
+    test's old name: a registration that verifies its code correctly but then
+    fails for an unrelated reason (a duplicate student ID) now DOES lose the
+    code, and the candidate must request a fresh one to retry. That is a
+    real, documented regression from the previous behaviour, accepted
+    because the new storage backend's one-time-use guarantee is stricter, not
+    because the trade-off is free.
+    """
     from app.services import email_service
     monkeypatch.setattr(email_service, "is_enabled", lambda: True)
     monkeypatch.setattr(settings, "REQUIRE_EMAIL_VERIFICATION", False)
@@ -165,10 +178,11 @@ def test_a_failed_registration_does_not_burn_the_code(client, seed_roles, db_ses
         email="second@example.com", roll_number="CS-2026-001", code=code))
     assert failed.status_code == 409, failed.text
 
-    # ...and their code is still good.
+    # ...and their code is gone with it -- the same code cannot be retried,
+    # even against a corrected student ID.
     retried = client.post("/api/v1/auth/register/student/verified", json=_signup_body(
         email="second@example.com", roll_number="CS-2026-002", code=code))
-    assert retried.status_code == 201, "the code was burnt by a failure that was not the candidate's fault"
+    assert retried.status_code == 400, "expected the already-verified code to be burned"
 
 
 def test_a_successful_verified_registration_consumes_the_code(client, seed_roles, db_session, monkeypatch):
@@ -222,8 +236,11 @@ def test_a_token_stops_working_after_a_self_service_change(client, seed_roles, a
     token = _create_examiner_and_login(client, admin_token)
     assert client.get("/api/v1/users/me", headers=auth_headers(token)).status_code == 200
 
+    # "Sup3rSecret!123" is the password _create_examiner_and_login sets while
+    # completing the account's activation link -- there is no admin-chosen
+    # password anymore to assert against (see examiner_provisioning_service).
     changed = client.post("/api/v1/users/me/password", json={
-        "current_password": "Sup3rSecret!", "new_password": "An0therGoodOne!",
+        "current_password": "Sup3rSecret!123", "new_password": "An0therGoodOne!",
     }, headers=auth_headers(token))
     assert changed.status_code == 200, changed.text
 
@@ -526,11 +543,39 @@ def test_a_password_merely_containing_a_common_word_is_fine(client, seed_roles, 
     assert passwords.check_with_context("Sup3rSecret!", email="secret@example.com") is None
 
 
-def test_the_policy_applies_to_examiner_creation(client, seed_roles, admin_token):
+def test_examiner_creation_no_longer_accepts_a_password_at_all(client, seed_roles, admin_token):
+    """POST /auth/examiners used to take an admin-chosen password, and the
+    password policy applied to it right there. That field is gone -- the
+    account is created with an unusable random secret and its owner chooses a
+    password later, through activation (see the next test) -- so an old
+    caller still sending one gets it silently ignored rather than rejected;
+    there is nothing left here for a password policy to apply to.
+    """
     response = client.post("/api/v1/auth/examiners", json={
         "first_name": "New", "last_name": "Examiner", "email": "weak@example.com",
         "organization_name": "Dept", "password": "aaaaaaaa",
     }, headers=auth_headers(admin_token))
+    assert response.status_code == 201, response.text
+    assert "password" not in response.json()
+
+
+def test_the_policy_applies_when_an_examiner_activates_their_account(client, seed_roles, admin_token,
+                                                                      outbox, email_on):
+    """The password policy's new home for this flow: the activation link is
+    where an examiner's password is actually chosen."""
+    import re
+    from urllib.parse import unquote
+
+    client.post("/api/v1/auth/examiners", json={
+        "first_name": "New", "last_name": "Examiner", "email": "weak2@example.com",
+        "organization_name": "Dept",
+    }, headers=auth_headers(admin_token))
+    message = next(m for m in reversed(outbox) if m["to"] == "weak2@example.com")
+    token = unquote(re.search(r"[?&]token=([A-Za-z0-9_\-%]+)", message["text"]).group(1))
+
+    response = client.post("/api/v1/auth/activate", json={
+        "email": "weak2@example.com", "token": token, "password": "aaaaaaaa",
+    })
     assert response.status_code == 422
 
 
@@ -547,7 +592,7 @@ def test_the_policy_applies_to_an_admin_reset(client, seed_roles, admin_token):
 def test_the_policy_applies_to_a_self_service_change(client, seed_roles, admin_token):
     token = _create_examiner_and_login(client, admin_token)
     response = client.post("/api/v1/users/me/password", json={
-        "current_password": "Sup3rSecret!", "new_password": "aaaaaaaa",
+        "current_password": "Sup3rSecret!123", "new_password": "aaaaaaaa",
     }, headers=auth_headers(token))
     assert response.status_code == 422
 

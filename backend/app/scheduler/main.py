@@ -20,12 +20,25 @@ What it runs:
   * exam reminders     -- every EXAM_REMINDER_POLL_SECONDS
   * OTP purge          -- alongside the reminder pass
   * biometric retention -- every BIOMETRIC_PURGE_INTERVAL_HOURS, when enabled
+
+Each pass also takes a short-lived Redis lock naming the pass (see
+app/core/locks.py) before doing anything. Redundant while this service is
+pinned to one replica, but the whole point of a lock here is to make "only one
+of these ever runs at a time" true by construction rather than by a deploy
+config nobody is guaranteed to remember not to change -- the same reasoning
+`deploy.replicas: 1` documents above, enforced a second way. If Redis itself
+is unreachable when a pass tries to acquire its lock, the pass is skipped for
+that tick and retried on the next one (see `_every`'s exception handling) --
+the same "controlled failure, not a silent bypass" this rewrite requires of
+every Redis-backed operation.
 """
 import asyncio
 import logging
 import signal
 
 from app.core.config import settings
+from app.core.locks import distributed_lock
+from app.core.redis_client import RedisUnavailableError
 from app.database.session import SessionLocal
 from app.services import biometric_service, otp_service, reminder_service
 
@@ -37,25 +50,32 @@ _shutdown = asyncio.Event()
 
 def _reminder_pass() -> None:
     """One reminder + OTP-purge sweep. Blocking, so callers use to_thread."""
-    db = SessionLocal()
-    try:
-        sent = reminder_service.send_due_reminders(db)
-        if sent:
-            logger.info("Sent %s exam reminder(s)", sent)
-        otp_service.purge_expired(db)
-    finally:
-        db.close()
+    with distributed_lock("scheduler:reminder-pass", timeout=settings.EXAM_REMINDER_POLL_SECONDS,
+                          blocking_timeout=0) as acquired:
+        if not acquired:
+            return
+        db = SessionLocal()
+        try:
+            sent = reminder_service.send_due_reminders(db)
+            if sent:
+                logger.info("Sent %s exam reminder(s)", sent)
+            otp_service.purge_expired(db)
+        finally:
+            db.close()
 
 
 def _retention_pass() -> None:
     """One biometric retention sweep. A no-op unless BIOMETRIC_RETENTION_DAYS > 0."""
-    db = SessionLocal()
-    try:
-        erased = biometric_service.purge_expired(db)
-        if erased:
-            logger.info("Retention sweep erased biometrics for %s student(s)", erased)
-    finally:
-        db.close()
+    with distributed_lock("scheduler:retention-pass", timeout=60, blocking_timeout=0) as acquired:
+        if not acquired:
+            return
+        db = SessionLocal()
+        try:
+            erased = biometric_service.purge_expired(db)
+            if erased:
+                logger.info("Retention sweep erased biometrics for %s student(s)", erased)
+        finally:
+            db.close()
 
 
 async def _every(seconds: float, work, label: str) -> None:

@@ -21,7 +21,7 @@ def test_examiner_can_change_own_password(client, seed_roles, admin_token):
     examiner_headers = auth_headers(_create_examiner_and_login(client, admin_token))
 
     response = client.post("/api/v1/users/me/password", json={
-        "current_password": "Sup3rSecret!", "new_password": "NewPassw0rd!",
+        "current_password": "Sup3rSecret!123", "new_password": "NewPassw0rd!",
     }, headers=examiner_headers)
     assert response.status_code == 200, response.text
 

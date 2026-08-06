@@ -47,13 +47,31 @@ class RegisterStudentRequest(BaseModel):
 
 
 class CreateExaminerRequest(BaseModel):
-    """Admin-only. Examiners never self-register, so the admin supplies every
-    field including the initial password."""
+    """Admin-only. Examiners never self-register, so the admin supplies the
+    account's identity -- but never its password.
+
+    There used to be a `password` field here, chosen by the admin and mailed
+    (or shown) back in plain text. That meant the admin knew the password, so
+    "only this examiner could have done that" was never true of anything the
+    account did, and the credential sat around indefinitely in an inbox or a
+    browser tab. The account is now created with an unusable random secret and
+    the examiner sets their own password through a single-use activation
+    email -- see app/services/examiner_provisioning_service.py.
+    """
     first_name: NameField
     last_name: NameField
     email: EmailField
     organization_name: str = Field(min_length=1, max_length=150)
-    password: PasswordField
+
+
+class ExaminerProvisionedOut(BaseModel):
+    """What POST /auth/examiners returns: enough to confirm what was created,
+    and nothing that could be used to sign in as it."""
+    user_id: int
+    email: str
+    full_name: str
+    organization_name: str | None = None
+    activation_sent: bool
 
 
 class ChangePasswordRequest(BaseModel):
@@ -131,6 +149,27 @@ class PasswordResetConfirmRequest(BaseModel):
     email: EmailField
     code: str = Field(min_length=4, max_length=12)
     new_password: PasswordField
+
+
+class AccountExistsCheck(BaseModel):
+    email: EmailField
+
+
+class AccountExistsOut(BaseModel):
+    """Whether an active account exists for the address, by product decision.
+
+    Every other email-address endpoint in this app (OTP request, password
+    reset, activation) deliberately answers identically whether or not the
+    address is registered, to avoid becoming an account-enumeration oracle.
+    This endpoint is the one deliberate exception: the forgot-password screen
+    is required to tell a candidate with no account "Account not found, create
+    one" rather than send them through a reset flow for an account that will
+    never receive the code. That is a real product trade-off -- it tells an
+    anonymous caller which email addresses have accounts on this server -- and
+    is accepted here because the alternative is a password-reset screen that
+    silently does nothing for a plausible fraction of the people who use it.
+    """
+    exists: bool
 
 
 class ActivationCheck(BaseModel):

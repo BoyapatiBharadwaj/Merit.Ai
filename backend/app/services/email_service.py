@@ -37,12 +37,14 @@ ceiling worth knowing about before an exam-day broadcast.
 import logging
 import smtplib
 import ssl
+from datetime import datetime, timezone
 from email.message import EmailMessage
 from email.utils import formataddr
 from functools import lru_cache
 from pathlib import Path
 
 from fastapi import BackgroundTasks
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
 
@@ -191,6 +193,54 @@ def queue(background: BackgroundTasks | None, *, to: str, subject: str,
         background.add_task(send, to=to, subject=subject, text_body=text_body, html_body=html_body)
         return
     send(to=to, subject=subject, text_body=text_body, html_body=html_body)
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def enqueue_tracked(db: Session, *, to: str, subject: str, text_body: str,
+                    html_body: str | None = None, max_attempts: int | None = None):
+    """Queue one message for reliable delivery, with a durable Postgres record
+    that never claims success it didn't earn.
+
+    This is the one path every transactional message in this app goes
+    through now -- OTP codes, examiner activation and its resend, exam
+    notifications, report-ready emails, and (via
+    access_request_service._notify_admins) admin access-request notices.
+    `queue()` above is still what it always was, fire-and-forget with no
+    delivery record, for the one message that is genuinely disposable (a
+    staff login notice: losing one to a mail hiccup is a missed FYI, not a
+    broken flow).
+
+    An `email_outbox` row is written FIRST, in this same request's
+    transaction, so a crash between writing it and the queue actually
+    accepting the job still leaves something a human or a retry can find --
+    Postgres is the durable record; Redis/RQ (app/core/queues.py) is only the
+    delivery mechanism, and the row's status/attempts/error/sent_at is the
+    real, final answer to "did this ever send", not whatever RQ's own job
+    state says.
+
+    Returns the created row. The row is `pending` when this function returns
+    -- delivery happens on the `worker` service asynchronously, with
+    exponential-backoff retries, up to JOB_MAX_RETRIES times (see
+    app/worker/jobs.deliver_outbox_email and app/core/queues.py). A caller
+    that must know whether delivery ultimately succeeded (there is
+    deliberately only one: access_request_service, which must not stamp
+    `last_notified_at` on a request nobody was actually told about) uses the
+    dedicated `app/worker/jobs.enqueue_access_request_notification` job
+    instead of this generic one, precisely because that side effect cannot be
+    decided here, before the send has even been attempted.
+    """
+    from app.repositories import email_outbox_repository
+    from app.worker import jobs
+
+    row = email_outbox_repository.create(
+        db, to_address=to, subject=subject, text_body=text_body, html_body=html_body,
+        max_attempts=max_attempts or settings.EMAIL_OUTBOX_MAX_ATTEMPTS,
+    )
+    jobs.enqueue_email(row.id)
+    return row
 
 
 # ------------------------------------------------------------------------------

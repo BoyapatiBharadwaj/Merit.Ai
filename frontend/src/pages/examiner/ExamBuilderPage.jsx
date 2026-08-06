@@ -10,7 +10,7 @@ import {
 import { ExamStatusBadge, toDatetimeLocalValue, hasExamStarted, ErrorState } from "./shared.jsx";
 import { SectionCard, AddSectionForm } from "./QuestionBuilder.jsx";
 import {
-  AttemptsPanel, ActivePanel, ViolationsPanel, AnalyticsPanel, ExamAccessPanel, ResetHistoryPanel,
+  AttemptsPanel, ActivePanel, AnalyticsPanel, ExamAccessPanel, ResetHistoryPanel,
 } from "./panels.jsx";
 
 function ExamScheduleCard({ exam, onUpdated }) {
@@ -146,13 +146,15 @@ function ExamDetailsForm({ exam, onUpdated }) {
     requireScreenShare: exam.require_screen_share,
     requireFullscreen: exam.require_fullscreen,
     releaseResultsAt: toDatetimeLocalValue(exam.release_results_at),
+    showResults: exam.show_results ?? true,
+    resultsReleaseMode: exam.results_release_mode || "immediate",
     duration: String(exam.duration_minutes ?? ""),
     passPercentage: String(exam.pass_percentage ?? 40),
     randomizeQuestions: exam.randomize_questions,
     randomizeOptions: exam.randomize_options,
     proctoring: exam.proctoring_enabled,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [exam.id, exam.title, exam.description, exam.instructions, exam.notify_email, exam.duration_minutes, exam.pass_percentage, exam.randomize_questions, exam.randomize_options, exam.proctoring_enabled]);
+  }), [exam.id, exam.title, exam.description, exam.instructions, exam.notify_email, exam.duration_minutes, exam.pass_percentage, exam.randomize_questions, exam.randomize_options, exam.proctoring_enabled, exam.show_results, exam.results_release_mode]);
 
   const [form, setForm] = useState(fromExam);
   const [error, setError] = useState("");
@@ -185,6 +187,8 @@ function ExamDetailsForm({ exam, onUpdated }) {
         require_screen_share: form.requireScreenShare,
         require_fullscreen: form.requireFullscreen,
         release_results_at: form.releaseResultsAt ? new Date(form.releaseResultsAt).toISOString() : null,
+        show_results: form.showResults,
+        results_release_mode: form.resultsReleaseMode,
         duration_minutes: parseInt(form.duration, 10),
         // parseInt(..) || 40 turned a valid 0 into 40, because 0 is falsy.
         // The server has always accepted a 0% pass mark; the form silently
@@ -238,6 +242,16 @@ function ExamDetailsForm({ exam, onUpdated }) {
           <div>
             <dt className="text-xs text-muted">Randomize answer choices</dt>
             <dd className="font-medium text-ink">{exam.randomize_options ? "Yes" : "No"}</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-muted">Results shown to candidates</dt>
+            <dd className="font-medium text-ink">
+              {exam.show_results === false
+                ? "Never"
+                : exam.results_release_mode === "after_end_time"
+                  ? "After the exam's end date/time"
+                  : "As soon as each candidate submits"}
+            </dd>
           </div>
           {exam.description && (
             <div className="sm:col-span-2">
@@ -345,16 +359,52 @@ function ExamDetailsForm({ exam, onUpdated }) {
           </p>
         </fieldset>
 
-        <div>
-          <label className={fieldLabel}>Release results at (optional)</label>
-          <input type="datetime-local" value={form.releaseResultsAt}
-                 onChange={(e) => update("releaseResultsAt", e.target.value)} className={fieldInput} />
-          <p className="mt-1.5 text-xs text-muted leading-relaxed">
-            Marks and the answer key are held from candidates until this time. Leave blank to release
-            immediately — which means the first candidate to finish holds the complete answer key
-            while everyone else is still writing.
-          </p>
-        </div>
+        <fieldset className="rounded-xl border border-border p-4">
+          <legend className="px-2 text-xs font-semibold text-muted uppercase tracking-wide">
+            Results visibility
+          </legend>
+          <label className="flex items-center gap-2 text-sm text-ink mb-3">
+            <input type="checkbox" checked={form.showResults}
+                   onChange={(e) => update("showResults", e.target.checked)} className="w-4 h-4 accent-primary" />
+            Show candidates their score and pass/fail outcome
+          </label>
+          {form.showResults ? (
+            <>
+              <label className={fieldLabel}>When</label>
+              <select value={form.resultsReleaseMode} onChange={(e) => update("resultsReleaseMode", e.target.value)} className={fieldInput}>
+                <option value="immediate">As soon as each candidate submits</option>
+                <option value="after_end_time">Only after the exam's end date/time</option>
+              </select>
+              {form.resultsReleaseMode === "after_end_time" && !exam.end_time && (
+                <p className="mt-1.5 text-xs text-warning leading-relaxed">
+                  This exam has no end date/time set yet (see the schedule above), so results will stay
+                  held back from every candidate until you set one.
+                </p>
+              )}
+              {form.resultsReleaseMode === "immediate" && (
+                <div className="mt-3">
+                  <label className={fieldLabel}>Also delay until (optional)</label>
+                  <input type="datetime-local" value={form.releaseResultsAt}
+                         onChange={(e) => update("releaseResultsAt", e.target.value)} className={fieldInput} />
+                  <p className="mt-1.5 text-xs text-muted leading-relaxed">
+                    Leave blank to release each candidate's result the moment they submit.
+                  </p>
+                </div>
+              )}
+              <p className="mt-3 text-xs text-muted leading-relaxed">
+                "As soon as each candidate submits" means the first person to finish can, in
+                principle, hand around their result (and, unless disabled below, the answer key)
+                while everyone else is still writing. Choose "after the exam's end date/time" to
+                prevent that.
+              </p>
+            </>
+          ) : (
+            <p className="text-xs text-muted leading-relaxed">
+              Candidates will never see their score or pass/fail outcome for this exam. You and any
+              admin can always see it.
+            </p>
+          )}
+        </fieldset>
 
         <div className="grid sm:grid-cols-3 gap-4">
           <label className="flex items-center gap-2 text-sm text-ink">
@@ -473,7 +523,6 @@ function ExamBuilderView({ examId, onBack }) {
     { id: "access", label: "Who Can Take This" },
     { id: "attempts", label: "Attempts" },
     { id: "active", label: "Active Now" },
-    { id: "violations", label: "Violations" },
     { id: "analytics", label: "Analytics" },
     { id: "resets", label: "Reset History" },
   ];
@@ -612,7 +661,6 @@ function ExamBuilderView({ examId, onBack }) {
             {tab === "access" && <ExamAccessPanel examId={exam.id} />}
             {tab === "attempts" && <AttemptsPanel examId={exam.id} />}
             {tab === "active" && <ActivePanel examId={exam.id} />}
-            {tab === "violations" && <ViolationsPanel examId={exam.id} />}
             {tab === "analytics" && <AnalyticsPanel examId={exam.id} />}
             {tab === "resets" && <ResetHistoryPanel examId={exam.id} />}
           </>

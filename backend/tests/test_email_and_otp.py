@@ -53,19 +53,26 @@ def test_messages_carry_both_a_text_and_an_html_part():
 def _issue(db, email="student@example.com", purpose=OtpPurpose.SIGNUP):
     """Issue a code and dig the plaintext back out.
 
-    The service never returns the code (it only mails it), and the row only
-    holds a digest -- so the test brute-forces the six digits against the same
-    HMAC the service uses. Slightly awkward, and deliberately so: a test helper
-    that could read the code straight out of the database would mean the
-    database held it in the clear, which is exactly what must not be true.
+    The service never returns the code (it only mails it), and its state --
+    now Redis for SIGNUP/PASSWORD_RESET, see otp_redis_store.py -- only holds
+    a digest, so the test brute-forces the six digits against the same HMAC
+    the service uses. Slightly awkward, and deliberately so: a test helper
+    that could read the code straight out of its store would mean the store
+    held it in the clear, which is exactly what must not be true.
+
+    Returns `(code, stored_hash)`. There is no ORM row any more for
+    SIGNUP/PASSWORD_RESET -- callers that need to simulate expiry act on the
+    Redis key directly (see test_an_expired_code_is_rejected below).
     """
     otp_service.request_code(db, email=email, purpose=purpose)
-    from app.repositories import otp_repository
-    row = otp_repository.get_latest(db, email=email, purpose=purpose)
+    from app.core.redis_client import get_client
+    from app.services import otp_redis_store
+
+    stored_hash = get_client().get(otp_redis_store._code_key(purpose, email))
     for candidate in range(10 ** settings.OTP_LENGTH):
         code = str(candidate).zfill(settings.OTP_LENGTH)
-        if otp_service._digest(code) == row.code_hash:
-            return code, row
+        if otp_service._digest(code) == stored_hash:
+            return code, stored_hash
     raise AssertionError("issued code did not match any value in the keyspace")
 
 
@@ -92,9 +99,18 @@ def test_a_code_issued_for_signup_cannot_be_spent_on_a_password_reset(db_session
 
 
 def test_an_expired_code_is_rejected(db_session, outbox):
-    code, row = _issue(db_session)
-    row.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
-    db_session.commit()
+    """Expiry is Redis's own key TTL now (see otp_redis_store.py) -- there is
+    no `expires_at` column to backdate for SIGNUP/PASSWORD_RESET codes, so this
+    simulates the code having already expired by deleting its key outright.
+    A verify against a missing key and a verify against a genuinely-expired
+    one are the exact same code path (otp_redis_store.verify's `stored is
+    None` branch), so this is not a weaker test than backdating a timestamp
+    would have been."""
+    from app.core.redis_client import get_client
+    from app.services import otp_redis_store
+
+    code, _ = _issue(db_session)
+    get_client().delete(otp_redis_store._code_key(OtpPurpose.SIGNUP, "student@example.com"))
 
     with pytest.raises(Exception) as caught:
         otp_service.verify_code(db_session, email="student@example.com",
@@ -143,9 +159,9 @@ def test_resend_cooldown_blocks_an_immediate_second_request(db_session, outbox, 
 
 
 def test_the_code_is_never_stored_in_plaintext(db_session, outbox):
-    code, row = _issue(db_session)
-    assert code not in row.code_hash
-    assert len(row.code_hash) == 64
+    code, stored_hash = _issue(db_session)
+    assert code not in stored_hash
+    assert len(stored_hash) == 64
 
 
 # --- HTTP surface -------------------------------------------------------------

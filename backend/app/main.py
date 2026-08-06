@@ -14,8 +14,8 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.router import api_router
-from app.core import shared_state
 from app.core.config import settings
+from app.core.redis_client import RedisUnavailableError
 from app.database.session import SessionLocal
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -46,21 +46,19 @@ async def lifespan(_app: FastAPI):
     and four copies of it wake up together, racing to send the same reminders.
     Moving it out is what makes scaling this service safe.
 
-    What remains is a startup warning for the one configuration that is silently
-    wrong: several workers with no shared state. Each worker would keep private
-    rate-limit counters, so every limit is quietly multiplied by the worker
-    count, and nothing about the running system looks broken.
+    Rate limiting, OTP state and distributed locks are all backed by Redis
+    (see app/core/rate_limit.py, app/services/otp_redis_store.py,
+    app/core/locks.py), which every worker and every replica shares --
+    counters, codes and locks are visible across all of them unconditionally,
+    with nothing extra to configure to get that. If Redis itself is
+    unreachable, those operations return a controlled 503 rather than
+    degrading to a per-process fallback (see
+    app/core/redis_client.RedisUnavailableError's handler below).
     """
     workers = int(os.getenv("WEB_CONCURRENCY", "1") or 1)
-    if workers > 1 and not shared_state.is_available():
-        logger.warning(
-            "Running %s uvicorn workers with no Redis (REDIS_URL is unset or unreachable). "
-            "Rate-limit counters are PER PROCESS, so every limit is effectively multiplied by %s. "
-            "Set REDIS_URL, or run a single worker.",
-            workers, workers,
-        )
-    elif shared_state.is_available():
-        logger.info("Shared state is available; rate limits are enforced across all workers.")
+    if workers > 1:
+        logger.info("Running %s uvicorn workers; rate limits, OTP state and locks are shared "
+                   "across all of them via Redis.", workers)
 
     yield
 
@@ -168,6 +166,28 @@ def _request_id(request: Request) -> str:
     """Best-effort: the middleware sets this, but an error raised before it
     runs (or in a test calling a handler directly) must not itself crash."""
     return getattr(request.state, "request_id", "-")
+
+
+@app.exception_handler(RedisUnavailableError)
+async def redis_unavailable_handler(request: Request, exc: RedisUnavailableError):
+    """The one place "Redis is down" becomes an HTTP response, for every
+    operation that depends on it: rate limiting, OTP state, distributed locks,
+    and the background job/email queue (see app/core/redis_client.py).
+
+    A clean, logged 503 rather than a crash or a silent bypass -- the same
+    contract database_error_handler already gives Postgres outages, and the
+    controlled failure this rewrite's brief requires specifically for
+    Redis-backed operations (never a quiet "let the request through
+    unprotected" the way an earlier version of the rate limiter did).
+    """
+    request_id = _request_id(request)
+    logger.warning("request_id=%s Redis unavailable handling %s %s: %s",
+                   request_id, request.method, request.url.path, exc)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": str(exc), "request_id": request_id},
+        headers={"X-Request-ID": request_id},
+    )
 
 
 @app.exception_handler(SQLAlchemyError)

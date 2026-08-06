@@ -1,12 +1,13 @@
 /* Split out of ExaminerDashboard.jsx -- see examiner/shared.jsx for why. */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import Icon from "../../components/Icon.jsx";
 import EmptyState from "../../components/EmptyState.jsx";
 import IdentityPhotoModal from "../../components/IdentityPhotoModal.jsx";
 import { Api, ApiError } from "../../lib/api.js";
 import { btnPrimary, btnGhost, fieldInput, fieldLabel, fieldInputCompact, fieldLabelCompact } from "../../lib/ui.js";
 import "../../lib/vendorChart.js";
-import { CHART_PALETTE, SEVERITY_STYLES, AsyncSection, ErrorState, LoadingRows, PageControls } from "./shared.jsx";
+import { CHART_PALETTE, AsyncSection, ErrorState, LoadingRows, PageControls } from "./shared.jsx";
 
 function AttemptsPanel({ examId }) {
   const [attempts, setAttempts] = useState([]);
@@ -19,6 +20,20 @@ function AttemptsPanel({ examId }) {
   const [resetting, setResetting] = useState(false);
   const [resetError, setResetError] = useState(null); // { studentId, message } | null
   const [viewingStudent, setViewingStudent] = useState(null); // { id, name } | null
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState("");
+
+  async function handleExport() {
+    setExporting(true);
+    setExportError("");
+    try {
+      await Api.downloadFile(`/attempts/exam/${examId}/export`, `exam_${examId}_results.csv`);
+    } catch (err) {
+      setExportError(err instanceof ApiError ? err.message : "Couldn't export results.");
+    } finally {
+      setExporting(false);
+    }
+  }
 
   // `.catch(() => setAttempts([]))` rendered a failed request as "No attempts
   // yet" -- indistinguishable from an exam nobody had sat. An examiner checking
@@ -95,7 +110,17 @@ function AttemptsPanel({ examId }) {
 
   return (
     <div className="rounded-2xl border border-border bg-surface shadow-card p-5 mt-6">
-      <div className="font-semibold text-ink mb-3">Student Attempts</div>
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+        <div className="font-semibold text-ink">Student Attempts</div>
+        <div className="flex flex-col items-end gap-1">
+          <button type="button" onClick={handleExport} disabled={exporting}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-border text-ink hover:border-primary hover:text-primary transition-colors disabled:opacity-60">
+            <Icon name="doc" width={13} height={13} />
+            {exporting ? "Preparing…" : "Export results (CSV)"}
+          </button>
+          {exportError && <span className="text-xs text-danger">{exportError}</span>}
+        </div>
+      </div>
       <div className="overflow-x-auto">
         <table className="min-w-full text-sm">
           <thead>
@@ -104,6 +129,7 @@ function AttemptsPanel({ examId }) {
               <th className="py-2 pr-4 font-semibold">Status</th>
               <th className="py-2 pr-4 font-semibold">Score</th>
               <th className="py-2 pr-4 font-semibold">Submitted</th>
+              <th className="py-2 pr-4 font-semibold">Violations</th>
               <th className="py-2 pr-4 font-semibold">Actions</th>
             </tr>
           </thead>
@@ -115,12 +141,27 @@ function AttemptsPanel({ examId }) {
                   <td className="py-2 pr-4 capitalize">{a.status}</td>
                   <td className="py-2 pr-4 tabular-nums">{a.scored_marks !== null ? `${a.scored_marks}/${a.total_marks}` : "-"}</td>
                   <td className="py-2 pr-4 text-muted">{a.submitted_at ? new Date(a.submitted_at).toLocaleString() : "-"}</td>
-                  {/* GET /attempts/{id}/staff-report has existed all along --
-                      the full per-question breakdown, identity check, risk
-                      score and violation timeline -- and nothing in the
-                      examiner UI ever called it. */}
+                  <td className="py-2 pr-4">
+                    {a.violation_count > 0 ? (
+                      <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold bg-danger/10 text-danger">
+                        {a.violation_count}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-muted">—</span>
+                    )}
+                  </td>
+                  {/* GET /attempts/{id}/staff-report -- the full per-question
+                      breakdown, identity check, risk score and every
+                      violation with its evidence -- reached here via
+                      "Review", the only place an examiner sees violations. */}
                   <td className="py-2 pr-4">
                     <div className="flex items-center gap-3 mb-1.5">
+                      <Link
+                        to={`/examiner/attempts/${a.attempt_id}`}
+                        className="text-xs font-semibold text-primary hover:underline"
+                      >
+                        Review
+                      </Link>
                       <button
                         type="button"
                         onClick={() => setViewingStudent({ id: a.student_id, name: a.student_name })}
@@ -167,7 +208,7 @@ function AttemptsPanel({ examId }) {
                 </tr>
               ))
             ) : (
-              <tr><td colSpan={5} className="py-6 text-muted text-center">No attempts yet.</td></tr>
+              <tr><td colSpan={6} className="py-6 text-muted text-center">No attempts yet.</td></tr>
             )}
           </tbody>
         </table>
@@ -287,151 +328,14 @@ function ActivePanel({ examId }) {
   );
 }
 
-function ViolationsPanel({ examId }) {
-  const [events, setEvents] = useState([]);
-  const [pageInfo, setPageInfo] = useState({ page: 1, total: 0, total_pages: 0 });
-  const [page, setPage] = useState(1);
-  const [state, setState] = useState("loading");
-  const [error, setError] = useState("");
-  const [evidenceFor, setEvidenceFor] = useState(null); // event id | null
-
-  const load = useCallback(() => {
-    let cancelled = false;
-    setState("loading");
-    Api.get(`/proctoring/events/exam/${examId}?page=${page}`)
-      .then((data) => {
-        if (cancelled) return;
-        setEvents(data.items || []);
-        setPageInfo({ page: data.page, total: data.total, total_pages: data.total_pages });
-        setState("ready");
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        // NOT setEvents([]). A failed request used to render exactly the same
-        // "No violations recorded." an actually-clean sitting produces, so an
-        // examiner would read it as "nothing happened" when in fact nothing had
-        // been asked. That is the worst possible way for this particular table
-        // to fail.
-        setError(err instanceof ApiError ? err.message : "Couldn't load violations.");
-        setState("error");
-      });
-    return () => { cancelled = true; };
-  }, [examId, page]);
-
-  useEffect(() => load(), [load]);
-
-  return (
-    <div className="rounded-2xl border border-border bg-surface shadow-card p-5 mt-6">
-      <div className="font-semibold text-ink mb-3">Proctoring Violations</div>
-      <AsyncSection
-        state={state}
-        error={error}
-        onRetry={load}
-        isEmpty={events.length === 0}
-        empty={<p className="py-6 text-muted text-center text-sm">No violations recorded.</p>}
-      >
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead>
-              <tr className="text-left text-xs text-muted uppercase tracking-wide border-b border-border">
-                <th className="py-2 pr-4 font-semibold">Candidate</th>
-                <th className="py-2 pr-4 font-semibold">What happened</th>
-                <th className="py-2 pr-4 font-semibold">Severity</th>
-                <th className="py-2 pr-4 font-semibold">Time</th>
-                <th className="py-2 font-semibold">Evidence</th>
-              </tr>
-            </thead>
-            <tbody>
-              {events.map((ev) => (
-                <tr key={ev.id} className="border-b border-border last:border-0 align-top hover:bg-page/60 transition-colors">
-                  {/* The candidate's NAME, not just an attempt id. Reviewing
-                      "attempt 47 flagged for multiple_faces" meant leaving the
-                      page to find out whose attempt 47 was. */}
-                  <td className="py-2.5 pr-4">
-                    <div className="font-medium text-ink">{ev.student_name || `Attempt ${ev.attempt_id}`}</div>
-                    <div className="text-xs text-muted">Attempt {ev.attempt_id}</div>
-                  </td>
-                  <td className="py-2.5 pr-4">
-                    <div className="capitalize text-ink">{ev.event_type.replace(/_/g, " ")}</div>
-                    {/* The description was captured by the proctoring system
-                        and stored, and this table never showed it. */}
-                    {ev.description && <div className="text-xs text-muted mt-0.5">{ev.description}</div>}
-                  </td>
-                  <td className="py-2.5 pr-4">
-                    <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold capitalize ${SEVERITY_STYLES[ev.severity] || "bg-page text-muted border border-border"}`}>
-                      {ev.severity}
-                    </span>
-                  </td>
-                  <td className="py-2.5 pr-4 text-muted whitespace-nowrap">{new Date(ev.created_at).toLocaleString()}</td>
-                  <td className="py-2.5">
-                    {ev.has_screenshot ? (
-                      <button
-                        type="button"
-                        onClick={() => setEvidenceFor(evidenceFor === ev.id ? null : ev.id)}
-                        className="text-xs font-semibold text-primary hover:underline"
-                      >
-                        {evidenceFor === ev.id ? "Hide" : "View"}
-                      </button>
-                    ) : (
-                      <span className="text-xs text-muted">—</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        {evidenceFor !== null && <ViolationEvidence eventId={evidenceFor} onClose={() => setEvidenceFor(null)} />}
-        <PageControls
-          page={pageInfo.page}
-          totalPages={pageInfo.total_pages}
-          total={pageInfo.total}
-          onChange={setPage}
-          noun="violation"
-        />
-      </AsyncSection>
-    </div>
-  );
-}
-
-/** The screenshot the proctoring system captured, fetched through the
- *  authenticated endpoint rather than a public URL. */
-function ViolationEvidence({ eventId, onClose }) {
-  const [url, setUrl] = useState(null);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    let objectUrl = null;
-    let cancelled = false;
-    Api.fetchBlob(`/proctoring/events/${eventId}/screenshot`)
-      .then((blob) => {
-        if (cancelled || !blob) return;
-        objectUrl = URL.createObjectURL(blob);
-        setUrl(objectUrl);
-      })
-      .catch((err) => !cancelled && setError(err?.message || "Couldn't load the screenshot."));
-    return () => {
-      cancelled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [eventId]);
-
-  return (
-    <div className="mt-4 rounded-xl border border-border bg-page p-3">
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-xs font-semibold text-muted uppercase tracking-wide">Captured at the moment of the violation</span>
-        <button type="button" onClick={onClose} className="text-xs font-semibold text-muted hover:text-ink">Close</button>
-      </div>
-      {error ? (
-        <p className="text-sm text-danger">{error}</p>
-      ) : url ? (
-        <img src={url} alt="Violation screenshot" className="max-h-80 rounded-lg border border-border" />
-      ) : (
-        <div className="h-40 rounded-lg bg-border/40 animate-pulse" />
-      )}
-    </div>
-  );
-}
+/* There used to be a ViolationsPanel/ViolationEvidence pair here: a
+ * cross-candidate "every violation in this exam" tab. It's gone -- an
+ * examiner now reviews violations only per student, via the "Review" link
+ * in AttemptsPanel above, which opens examiner/AttemptReport.jsx (every
+ * violation for THAT candidate, with evidence, risk score, and a decision
+ * control). Reviewing conduct is inherently a per-candidate judgement, and
+ * a flat list across the whole exam encouraged deciding on rows out of
+ * context. */
 
 function AnalyticsPanel({ examId }) {
   const [data, setData] = useState(null);
@@ -707,7 +611,7 @@ function ExamAccessPanel({ examId }) {
 /* ===================== Top level ===================== */
 
 
-export { AttemptsPanel, ActivePanel, ViolationsPanel, AnalyticsPanel, ExamAccessPanel };
+export { AttemptsPanel, ActivePanel, AnalyticsPanel, ExamAccessPanel };
 
 
 /**

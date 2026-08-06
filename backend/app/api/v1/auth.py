@@ -15,12 +15,15 @@ from app.database.session import get_db
 from app.models.otp import OtpPurpose
 from app.schemas.auth import (
     ActivationCheck, ActivationRequest,
-    CreateExaminerRequest, LoginRequest, OtpRequest, OtpRequestAccepted,
+    AccountExistsCheck, AccountExistsOut,
+    CreateExaminerRequest, ExaminerProvisionedOut, LoginRequest, OtpRequest, OtpRequestAccepted,
     PasswordPolicyOut, PasswordResetConfirmRequest, RegisterStudentRequest,
     RegisterStudentWithOtpRequest, TokenResponse,
 )
 from app.models.activity_log import ActivityType
-from app.services import activity_service, auth_service, email_service, otp_service
+from app.services import (
+    activity_service, auth_service, email_service, examiner_provisioning_service, otp_service,
+)
 from app.api.deps import require_admin
 from app.models.user import User
 
@@ -85,15 +88,45 @@ def register_student(payload: RegisterStudentRequest, request: Request, db: Sess
     return _token_response(user)
 
 
-@router.post("/examiners", response_model=TokenResponse, status_code=201)
-def create_examiner(payload: CreateExaminerRequest, request: Request, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
-    """Admin-only: create a new examiner account. Examiners never self-register."""
-    user, _ = auth_service.create_examiner(
-        db, admin.id, payload.first_name, payload.last_name, payload.email, payload.password, payload.organization_name
+@router.post("/examiners", response_model=ExaminerProvisionedOut, status_code=201)
+def create_examiner(payload: CreateExaminerRequest, request: Request, background: BackgroundTasks,
+                    db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    """Admin-only: create a new examiner account. Examiners never self-register.
+
+    Goes through the same examiner_provisioning_service as approving an access
+    request: the account is created with an unusable random password and the
+    examiner sets their own through a single-use activation email. This
+    endpoint no longer returns a usable session -- there is nothing to sign in
+    with until that email is acted on -- so the response reports what was
+    created rather than a token.
+    """
+    user, activation_sent = examiner_provisioning_service.provision_examiner(
+        db, admin_id=admin.id, first_name=payload.first_name, last_name=payload.last_name,
+        email=payload.email, organization_name=payload.organization_name, background=background,
     )
     activity_service.record(db, activity_type=ActivityType.ACCOUNT_CREATED_BY_ADMIN,
                             subject=user, actor=admin, request=request)
-    return _token_response(user)
+    return ExaminerProvisionedOut(
+        user_id=user.id, email=user.email, full_name=user.full_name,
+        organization_name=payload.organization_name, activation_sent=activation_sent,
+    )
+
+
+@router.post("/examiners/{user_id}/resend-activation")
+def resend_examiner_activation(user_id: int, request: Request, background: BackgroundTasks,
+                               db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    """Admin-only recovery path for an activation link that expired, or an
+    email that never arrived the first time.
+
+    Issues a fresh token (invalidating any previous outstanding one -- see
+    otp_service.issue_activation_token) and mails it again through the same
+    tracked-delivery path provisioning uses. Refuses for an already-activated
+    account, since a link would have nothing left to do.
+    """
+    sent = examiner_provisioning_service.resend_activation(db, user_id, background=background)
+    activity_service.record(db, activity_type=ActivityType.ACCOUNT_CREATED_BY_ADMIN, actor=admin,
+                            request=request, description=f"Resent an activation email (user {user_id})")
+    return {"activation_sent": sent}
 
 
 _STAFF_ROLES = {"admin", "examiner"}
@@ -221,6 +254,23 @@ def register_student_verified(payload: RegisterStudentWithOtpRequest, request: R
     activity_service.record(db, activity_type=ActivityType.SIGNED_UP, subject=user, request=request,
                             description="Created their account (email verified by code)")
     return _token_response(user)
+
+
+@router.post("/password-reset/check-account", response_model=AccountExistsOut,
+             dependencies=[Depends(rate_limit("otp_request"))])
+def check_account_exists(payload: AccountExistsCheck, db: Session = Depends(get_db)):
+    """Does an active account exist for this address?
+
+    A deliberate, product-required exception to this file's usual
+    account-enumeration caution -- see AccountExistsOut's docstring for why.
+    Used by the forgot-password screen BEFORE it sends a reset code, so
+    someone with no account is told plainly ("Account not found, create one")
+    instead of being walked through a code that will never do anything.
+    """
+    from app.repositories import user_repository
+
+    user = user_repository.get_user_by_email(db, payload.email.strip().lower())
+    return AccountExistsOut(exists=bool(user and user.is_active))
 
 
 @router.post("/password-reset/request", response_model=OtpRequestAccepted,

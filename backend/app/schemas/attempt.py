@@ -125,12 +125,17 @@ class AttemptQuestionView(BaseModel):
 
 class ExamResultOut(BaseModel):
     attempt_id: int
-    total_marks: int
-    scored_marks: int
-    percentage: float
-    correct_count: int
-    incorrect_count: int
-    unattempted_count: int
+    # False (and every field below it None) when the exam's examiner has
+    # chosen not to show results yet -- see Exam.results_released. Staff
+    # (the owning examiner, or an admin) always get released=True; this only
+    # ever withholds a CANDIDATE's view of their own score.
+    results_released: bool = True
+    total_marks: int | None = None
+    scored_marks: int | None = None
+    percentage: float | None = None
+    correct_count: int | None = None
+    incorrect_count: int | None = None
+    unattempted_count: int | None = None
 
     class Config:
         from_attributes = True
@@ -170,14 +175,19 @@ class AttemptReportOut(BaseModel):
     submitted_at: datetime | None
     time_taken_seconds: int | None
     status: str
-    total_marks: int
-    scored_marks: int
-    percentage: float
+    # False (and every score field below None, questions empty) when this
+    # exam's examiner has chosen not to show results yet -- see
+    # Exam.results_released. Only ever affects a CANDIDATE's own view; staff
+    # (the owning examiner, or an admin) always get the full report.
+    results_released: bool = True
+    total_marks: int | None
+    scored_marks: int | None
+    percentage: float | None
     pass_percentage: int
     passed: bool | None
     answers_released: bool = True
     release_results_at: datetime | None = None
-    correct_count: int
-    incorrect_count: int
-    unattempted_count: int
+    correct_count: int | None
+    incorrect_count: int | None
+    unattempted_count: int | None
     questions: list[QuestionReportOut]

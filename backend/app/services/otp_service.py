@@ -1,11 +1,27 @@
 """
 One-time passcode issuance and verification.
 
-Policy lives here; storage lives in otp_repository. The rules a code must
-satisfy to be accepted, all of which are enforced below rather than assumed:
+Two different backends for two different lifetimes, split by purpose:
 
-  1. It is the newest code issued for that (email, purpose).
-  2. It has not expired (OTP_TTL_MINUTES).
+  SIGNUP, PASSWORD_RESET   A typed, six-digit code living minutes. State
+                           (hash, expiry, attempt count, resend cooldown) is
+                           entirely in Redis (app/services/otp_redis_store.py)
+                           -- genuinely transient data with no reason to be
+                           permanent, and TTL-based expiry there needs no
+                           sweep the way a Postgres row would.
+  ACTIVATION               A clicked, 256-bit link token living days, minted
+                           by an admin action rather than requested by the
+                           account's own owner. Stays in the `otp_codes`
+                           Postgres table via otp_repository, unchanged --
+                           this rewrite's Redis-namespacing brief names OTP
+                           codes specifically, not activation links, and nothing
+                           about an activation link benefits from moving.
+
+The rules a code must satisfy to be accepted are the same either way, all
+enforced below rather than assumed:
+
+  1. It is the (one) live code issued for that (email, purpose).
+  2. It has not expired (OTP_TTL_MINUTES / ACTIVATION_TTL_HOURS).
   3. It has not already been consumed.
   4. Its attempt budget (OTP_MAX_ATTEMPTS) is not exhausted.
   5. The digest matches, compared in constant time.
@@ -14,13 +30,13 @@ Two design decisions worth stating explicitly, because both look like
 over-engineering until the thing they prevent happens:
 
 **Codes are stored as HMAC-SHA256 digests, never plaintext.** A one-time
-passcode is a credential. Storing it in the clear means a read-only leak of the
-database -- a stray backup, a log of a query, an over-permissive analytics
-connection -- hands over the ability to complete a password reset for every
-address with a live code. Hashing costs nothing and removes that entirely.
-HMAC keyed with SECRET_KEY rather than a bare SHA-256 because the input space is
-a million six-digit numbers: a bare digest of that is trivially rainbow-tabled,
-whereas an HMAC cannot be precomputed without the key.
+passcode is a credential. Storing it in the clear means a read-only leak of
+wherever it lives -- a stray Postgres backup, an unauthenticated Redis
+instance, a log of a query -- hands over the ability to complete a password
+reset for every address with a live code. Hashing costs nothing and removes
+that entirely. HMAC keyed with SECRET_KEY rather than a bare SHA-256 because
+the input space is a million six-digit numbers: a bare digest of that is
+trivially rainbow-tabled, whereas an HMAC cannot be precomputed without the key.
 
 **Requesting a code never reveals whether the account exists.** `request_code`
 returns the same response, with the same timing characteristics, for a
@@ -41,9 +57,13 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.otp import OtpCode, OtpPurpose
 from app.repositories import otp_repository
-from app.services import email_service
+from app.services import email_service, otp_redis_store
 
 logger = logging.getLogger("app")
+
+# The two purposes whose live state is Redis, not Postgres. ACTIVATION is
+# everything else request_code/verify_code handle.
+_REDIS_BACKED_PURPOSES = (OtpPurpose.SIGNUP, OtpPurpose.PASSWORD_RESET)
 
 _PURPOSE_LABELS = {
     OtpPurpose.SIGNUP: "verify your email address",
@@ -144,30 +164,41 @@ def _seconds_since(value: datetime | None) -> float:
 
 def request_code(db: Session, *, email: str, purpose: OtpPurpose,
                  background: BackgroundTasks | None = None) -> None:
-    """Issue and email a fresh code. Always succeeds from the caller's view.
+    """Issue and email a fresh code. Always succeeds from the caller's view,
+    for SIGNUP and PASSWORD_RESET -- the only two purposes this issues codes
+    for (ACTIVATION tokens are minted by issue_activation_token instead).
 
     The only condition that surfaces as an error is the resend cooldown, and
     that is deliberately about the *address being mailed*, not about whether an
     account exists -- so it leaks nothing. Everything else (unknown address,
     delivery failure) is silent by design.
+
+    `background` is accepted for call-site compatibility but no longer used
+    for the send itself: the message goes through email_service.enqueue_tracked
+    now (Redis+RQ, with a permanent Postgres delivery record), the same queue
+    every other transactional email in this app uses -- see that function's
+    docstring for why a background task is not the right tool for a message
+    whose delivery outcome must be knowable.
     """
+    if purpose not in _REDIS_BACKED_PURPOSES:
+        raise ValueError(f"request_code is for SIGNUP/PASSWORD_RESET only; got {purpose!r}. "
+                         "Activation tokens are issued by issue_activation_token.")
+
     email = email.strip().lower()
 
-    previous = otp_repository.get_latest(db, email=email, purpose=purpose)
-    if previous is not None and _seconds_since(previous.created_at) < settings.OTP_RESEND_COOLDOWN_SECONDS:
-        wait = int(settings.OTP_RESEND_COOLDOWN_SECONDS - _seconds_since(previous.created_at))
+    wait = otp_redis_store.cooldown_remaining_seconds(purpose, email)
+    if wait is not None:
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,
             f"A code was just sent. Please wait {max(wait, 1)} more seconds before requesting another.",
         )
 
     code = _generate_code()
-    otp_repository.create(
-        db,
-        email=email,
-        purpose=purpose,
+    otp_redis_store.issue(
+        purpose, email,
         code_hash=_digest(code),
-        expires_at=_now() + timedelta(minutes=settings.OTP_TTL_MINUTES),
+        ttl_seconds=settings.OTP_TTL_MINUTES * 60,
+        cooldown_seconds=settings.OTP_RESEND_COOLDOWN_SECONDS,
     )
 
     subject, text, html = email_service.otp_message(
@@ -175,7 +206,7 @@ def request_code(db: Session, *, email: str, purpose: OtpPurpose,
         purpose_label=_PURPOSE_LABELS[purpose],
         ttl_minutes=settings.OTP_TTL_MINUTES,
     )
-    email_service.queue(background, to=email, subject=subject, text_body=text, html_body=html)
+    email_service.enqueue_tracked(db, to=email, subject=subject, text_body=text, html_body=html)
 
     if not email_service.is_enabled():
         # Without this the code is unrecoverable on a dev box with no SMTP set
@@ -186,22 +217,54 @@ def request_code(db: Session, *, email: str, purpose: OtpPurpose,
 
 
 def verify_code(db: Session, *, email: str, purpose: OtpPurpose, code: str,
-                consume: bool = True, commit: bool = True) -> OtpCode:
-    """Check a submitted code. Raises 400 on any failure; returns the row on success.
+                consume: bool = True, commit: bool = True) -> OtpCode | None:
+    """Check a submitted code. Raises 400 (or 429 on an exhausted attempt
+    budget) on any failure. Dispatches on purpose to whichever backend that
+    purpose's code actually lives in -- see this module's docstring.
 
     Every rejection uses the same generic message. Distinguishing "expired" from
     "wrong" from "already used" tells an attacker which of their guesses landed
     on a real, live code -- and tells a legitimate user nothing they can act on
     that "request a new code" doesn't already cover.
-
-    `commit=False` marks the code consumed without committing, so the caller can
-    finish the work the code authorised in the same transaction. The signup
-    endpoint's own comment claimed a failed registration could not burn a valid
-    code; it could, because consumption was committed here and the account was
-    created afterwards. A duplicate email or student ID then left the candidate
-    with no account and no usable code, having done nothing wrong.
     """
     email = email.strip().lower()
+    if purpose in _REDIS_BACKED_PURPOSES:
+        _verify_code_redis(email=email, purpose=purpose, code=code)
+        return None
+    return _verify_code_postgres(db, email=email, purpose=purpose, code=code, consume=consume, commit=commit)
+
+
+def _verify_code_redis(*, email: str, purpose: OtpPurpose, code: str) -> None:
+    """SIGNUP / PASSWORD_RESET verification against otp_redis_store.
+
+    Always consumes on success -- Redis has no notion of an outer SQL
+    transaction to defer into, and this rewrite's brief is explicit that OTP
+    data must be deleted immediately once verification succeeds. See
+    otp_redis_store's module docstring for the one behavioural change that
+    follows from that (a failed signup after a correct code cannot reuse it).
+    """
+    generic = "That code is invalid or has expired. Request a new one."
+    result = otp_redis_store.verify(
+        purpose, email, code_hash=_digest(code.strip()), max_attempts=settings.OTP_MAX_ATTEMPTS,
+    )
+    if result == "ok":
+        return
+    if result == "locked":
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "Too many incorrect attempts for this code. Request a new one.",
+        )
+    raise HTTPException(status.HTTP_400_BAD_REQUEST, generic)
+
+
+def _verify_code_postgres(db: Session, *, email: str, purpose: OtpPurpose, code: str,
+                          consume: bool, commit: bool) -> OtpCode:
+    """ACTIVATION verification against the otp_codes table -- the original
+    implementation, unchanged, for the one purpose that still lives here.
+
+    `commit=False` marks the code consumed without committing, so the caller can
+    finish the work the code authorised in the same transaction.
+    """
     generic = "That code is invalid or has expired. Request a new one."
 
     # Locked when the caller is going to hold the transaction open: two requests

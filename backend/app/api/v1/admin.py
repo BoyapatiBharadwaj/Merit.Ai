@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import require_admin
 from app.models.activity_log import ActivityType
 from app.models.user import User
+from app.core import redis_client
 from app.core.config import settings
 from app.database.session import get_db
 from app.schemas.pagination import Page, PageParams, build_page
@@ -388,7 +389,13 @@ def get_platform_settings(db: Session = Depends(get_db), _=Depends(require_admin
             "otp_ttl_minutes": settings.OTP_TTL_MINUTES,
         },
         "scaling": {
-            "shared_state": bool(settings.REDIS_URL.strip()),
+            # A live check, not a config echo: rate limiting, OTP state and
+            # locks are all Redis-backed now (app/core/redis_client.py), so
+            # "shared_state" reports whether Redis is actually reachable right
+            # now rather than merely configured -- an admin looking at this
+            # page during an incident wants to know that, not that a REDIS_URL
+            # is set somewhere.
+            "shared_state": redis_client.is_available(),
             "trusted_proxies": len(settings.trusted_proxies),
         },
         "editable": False,

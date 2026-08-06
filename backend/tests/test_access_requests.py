@@ -400,7 +400,19 @@ def test_staff_logins_are_emailed_and_candidate_logins_are_not(client, seed_role
 
     monkeypatch.setattr(email_service, "is_enabled", lambda: True)
 
-    _create_examiner_and_login(client, admin_token)
+    # _create_examiner_and_login signs the examiner in via the ONE-TIME
+    # activation link, not /auth/login -- activating an account and logging
+    # into it are different events, and only the latter is what this notice is
+    # about. So the helper's own setup produces no notice (correctly -- there
+    # is nothing here to email a warning about yet); the notice is asserted
+    # against an EXPLICIT /auth/login call, same as the candidate half below.
+    examiner_token = _create_examiner_and_login(client, admin_token)
+    assert examiner_token
+    outbox.clear()
+
+    signed_in = client.post("/api/v1/auth/login",
+                            json={"email": "examiner@example.com", "password": "Sup3rSecret!123"})
+    assert signed_in.status_code == 200
     staff_mail = [m for m in outbox if m["subject"] == "New sign-in to your Merit.Ai account"]
     assert len(staff_mail) == 1
     assert "reset your password" in staff_mail[0]["text"].lower()

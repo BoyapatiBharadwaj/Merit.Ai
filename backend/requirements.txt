@@ -89,21 +89,22 @@ reportlab==4.2.2
 # needs no extra pip package -- it shells out to the `docker` CLI, which must
 # be installed and on PATH separately. See README section on coding questions.
 
-# Shared state across API workers: rate-limit counters and the job queue.
-# Optional at runtime -- app/core/shared_state.py falls back to per-process
-# state when REDIS_URL is unset -- but installed by default because the compose
-# stack now runs several worker processes, where it stops being optional in
-# practice.
+# Redis + RQ: shared rate-limit counters, one-time-passcode state, distributed
+# locks (app/core/rate_limit.py, app/services/otp_redis_store.py,
+# app/core/locks.py) and the background job/email queue (app/core/queues.py,
+# app/worker/). PostgreSQL remains the permanent source of truth for every
+# durable record -- see app/core/redis_client.py's module docstring for the
+# exact boundary between what lives in each store.
 redis==5.0.8
-# Background job queue (app/worker/). Chosen over Celery because it is a far
-# smaller surface for the handful of jobs here: no broker abstraction layer, no
-# result backend to configure, no separate beat process. Celery earns its
-# complexity at a scale this is nowhere near.
 rq==1.16.2
 
 # --- test-only dependencies (see backend/tests/) ---
 pytest==8.2.2
 httpx==0.27.0
+# An in-memory Redis stand-in so the suite needs no real Redis server, the
+# same reasoning SQLite-in-memory exists for Postgres. conftest.py installs
+# one via app.core.redis_client.set_client_for_tests before each test.
+fakeredis==2.23.3
 # Boots a throwaway PostgreSQL from a prebuilt binary wheel -- no system
 # package, no Docker, no root. Used only by tests/test_migrations_postgres.py,
 # which runs the real Alembic chain against a real server; the rest of the suite
@@ -114,9 +115,4 @@ httpx==0.27.0
 # plain `pip install -r requirements.txt && pytest` still passes everywhere. In
 # CI, prefer a real postgres service container and set TEST_POSTGRES_URL.
 pgserver>=0.1.4; sys_platform != "win32"
-# In-memory Redis for tests/test_shared_state_and_workers.py, so the SHARED
-# rate-limit path is exercised without a Redis container. Those tests skip
-# cleanly without it, but then the multi-worker behaviour goes untested --
-# which is the half most likely to break silently.
-fakeredis==2.23.3
 

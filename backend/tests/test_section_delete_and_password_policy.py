@@ -112,7 +112,7 @@ def test_an_examiner_can_change_their_own_password(client, seed_roles, admin_tok
     a candidate account is an institutional identity issued for a sitting."""
     token = _create_examiner_and_login(client, admin_token)
     response = client.post("/api/v1/users/me/password", json={
-        "current_password": "Sup3rSecret!", "new_password": "SomethingElse123",
+        "current_password": "Sup3rSecret!123", "new_password": "SomethingElse123",
     }, headers=auth_headers(token))
     assert response.status_code == 200, response.text
 
@@ -149,9 +149,9 @@ def test_a_student_can_still_recover_by_email(client, seed_roles, db_session, mo
     """Central administration, not a lockout -- the OTP path stays open so a
     locked-out candidate does not have to find an administrator before an exam."""
     from app.core.config import settings
+    from app.core.redis_client import get_client
     from app.models.otp import OtpPurpose
-    from app.repositories import otp_repository
-    from app.services import email_service, otp_service
+    from app.services import email_service, otp_redis_store, otp_service
 
     monkeypatch.setattr(email_service, "is_enabled", lambda: True)
     monkeypatch.setattr(email_service, "send", lambda **kw: True)
@@ -159,10 +159,9 @@ def test_a_student_can_still_recover_by_email(client, seed_roles, db_session, mo
 
     _register_student_and_login(client, email="recover@example.com")
     otp_service.request_code(db_session, email="recover@example.com", purpose=OtpPurpose.PASSWORD_RESET)
-    row = otp_repository.get_latest(db_session, email="recover@example.com",
-                                    purpose=OtpPurpose.PASSWORD_RESET)
+    stored_hash = get_client().get(otp_redis_store._code_key(OtpPurpose.PASSWORD_RESET, "recover@example.com"))
     code = next(c for c in (str(i).zfill(settings.OTP_LENGTH) for i in range(10 ** settings.OTP_LENGTH))
-                if otp_service._digest(c) == row.code_hash)
+                if otp_service._digest(c) == stored_hash)
 
     response = client.post("/api/v1/auth/password-reset/confirm", json={
         "email": "recover@example.com", "code": code, "new_password": "RecoveredPass123",

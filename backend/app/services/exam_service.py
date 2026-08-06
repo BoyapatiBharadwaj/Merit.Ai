@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import BackgroundTasks, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.models.enums import AttemptStatus, ExamStatus
+from app.models.enums import AttemptStatus, ExamStatus, ResultsReleaseMode
 from app.models.examiner import Examiner
 from app.repositories import exam_repository
 from app.services import code_runner_service, email_service
@@ -65,6 +65,18 @@ def notify_exam_address(db: Session, exam, *, background: BackgroundTasks | None
     return True
 
 
+def _normalize_results_release_mode(payload: dict) -> dict:
+    """The schema carries results_release_mode as a plain string literal
+    ("immediate" | "after_end_time"); the column is a real Python enum
+    (ResultsReleaseMode), and Exam(**payload)/setattr expects an enum member
+    the same way every other enum-typed column on this model does (compare
+    AdminDecision(decision) in admin_service.set_violation_decision) rather
+    than relying on SQLAlchemy to coerce a bare string on flush."""
+    if payload.get("results_release_mode") is not None:
+        payload = {**payload, "results_release_mode": ResultsReleaseMode(payload["results_release_mode"])}
+    return payload
+
+
 def create_exam(db: Session, examiner_id: int, payload: dict, background: BackgroundTasks | None = None):
     """Stamp the owning examiner's organization onto the exam.
 
@@ -83,6 +95,7 @@ def create_exam(db: Session, examiner_id: int, payload: dict, background: Backgr
             status.HTTP_400_BAD_REQUEST,
             "Your account is not linked to an organization yet, so students would not be "
             "able to see this exam. Ask an administrator to assign your organization.")
+    payload = _normalize_results_release_mode(payload)
     exam = exam_repository.create_exam(db, examiner_id, {**payload, "organization_id": examiner.organization_id})
     # An address supplied at creation counts as "added" just as much as one
     # typed in later -- the examiner should not have to guess which path sends.
@@ -456,7 +469,7 @@ def update_exam_details(db: Session, examiner_id: int, exam_id: int, payload: di
     move, through the narrower, state-aware update_exam_schedule below."""
     exam = _get_editable_exam(db, examiner_id, exam_id)
     previous_email = exam.notify_email
-    updated = exam_repository.update_exam(db, exam, payload)
+    updated = exam_repository.update_exam(db, exam, _normalize_results_release_mode(payload))
     # Only on a genuine change. Re-saving the exam with the same address must
     # not re-notify -- an examiner tweaking the pass mark three times should not
     # send three emails to the same person.
