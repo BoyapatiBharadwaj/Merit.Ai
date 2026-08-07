@@ -1,1 +1,0 @@
-import{v as e,j as r,N as i}from"./index-D5ZRnI_v.js";function c({to:a="/login"}){const o=e(),t=`${o.pathname}${o.search}`,s=t.startsWith("/login")||t.startsWith("/register")?void 0:t;return r.jsx(i,{to:a,state:s?{from:s}:void 0,replace:!0})}export{c as R};

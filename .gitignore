@@ -66,6 +66,7 @@ frontend/public/mediapipe/
 # Node/frontend dependencies and build output
 node_modules/
 dist/
+dist_check/
 build/
 .cache/
 .parcel-cache/
