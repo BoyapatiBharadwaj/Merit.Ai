@@ -1,11 +1,18 @@
 """Coding-question authoring, autosave, sample "Run", and Docker-sandboxed
-grading at submit time. Real Docker isn't available in this test environment
-(nor in most CI runners), so grading tests monkeypatch
+grading at submit time. Real Docker isn't available in most test
+environments, so grading tests monkeypatch
 app.services.code_runner_service.run_against_test_cases to simulate a real
 sandboxed run's shape -- the graceful-degradation path (Docker missing) is
-covered separately with the real, un-mocked service."""
+covered separately by forcing code_runner_service.is_available() False and
+letting the real run_against_test_cases() handle it, rather than assuming the
+ambient runner has no Docker daemon. That assumption doesn't hold everywhere:
+GitHub Actions' hosted ubuntu-latest runners ship a working Docker Engine
+(it's what the postgres service container in the migrations job runs on), so
+this test failed there with available=True until it stopped depending on
+runner reality."""
 from tests.conftest import auth_headers
 from tests.test_exam_workflow import _create_examiner_and_login, _register_student_and_login
+from app.services import code_runner_service
 
 
 def _create_coding_exam(client, examiner_headers, test_cases=None, marks=10):
@@ -96,9 +103,13 @@ def test_code_autosave_persists_and_shows_in_recovery_map(client, seed_roles, ad
     assert answers_map.json()[str(question_id)] is True
 
 
-def test_run_sample_reports_unavailable_without_docker(client, seed_roles, admin_token):
-    """No mocking here -- this exercises the real graceful-degradation path,
-    since the test environment (like most CI runners) has no Docker daemon."""
+def test_run_sample_reports_unavailable_without_docker(client, seed_roles, admin_token, monkeypatch):
+    """Forces code_runner_service.is_available() False -- rather than relying
+    on the ambient runner actually lacking Docker -- so this deterministically
+    exercises the real, un-mocked run_against_test_cases() and its
+    graceful-degradation branch on every machine this runs on, including CI
+    providers that (unlike most) do ship a working Docker daemon."""
+    monkeypatch.setattr(code_runner_service, "is_available", lambda: False)
     examiner_headers = auth_headers(_create_examiner_and_login(client, admin_token))
     exam_id, question_id = _create_coding_exam(client, examiner_headers)
     student_headers = auth_headers(_register_student_and_login(client))
