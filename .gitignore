@@ -12,6 +12,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .coverage
+coverage.xml
 htmlcov/
 build/
 dist/
@@ -34,8 +35,7 @@ dist/
 # reporting nothing wrong because ignored files are not reported as missing.
 #
 # The two directories genuinely are unrelated despite the shared name:
-# `backend/app/models/` is source, `backend/models/` is a weights cache. See
-# the naming note in CODEBASE_REVIEW.md.
+# `backend/app/models/` is source, `backend/models/` is a weights cache.
 /backend/models/
 *.onnx
 *.pt
@@ -83,10 +83,33 @@ vite.config.ts.timestamp-*
 *.swp
 *.swo
 
+# Editor/patch backup files -- leftovers from a crashed editor or a `patch`/
+# `git apply` conflict, never meant to be committed.
+*.bak
+*.orig
+*.rej
+*~
+
 # OS files
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Duplicate files from a browser/OS download or drag-and-drop-copy, e.g.
+# "report copy.pdf" or "notes (1).md" -- always an accidental second copy of
+# something already tracked under its real name.
+* copy*
+*[(]1[)]*
+
+# Private keys/certificates. Nothing in this repo is meant to ship one -- the
+# reverse proxy terminates TLS outside the container in every deployment this
+# project documents -- so if one of these shows up, it almost certainly
+# doesn't belong in git regardless of why it's here.
+*.pem
+*.key
+*.p12
+*.pfx
+!deploy/**/*.example.*
 
 # Docker/local volume artifacts
 postgres-data/

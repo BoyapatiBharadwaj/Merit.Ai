@@ -18,7 +18,9 @@ MediaPipe + EasyOCR + Web Audio API (AI/proctoring) · React + Vite + Tailwind
 Merit.Ai/
 ├── backend/
 │   ├── app/
-│   │   ├── core/            # config, security (hashing, JWT)
+│   │   ├── core/            # config, security (hashing, JWT), redis_client.py,
+│   │   │                    # locks.py (distributed locks), queues.py (RQ queues),
+│   │   │                    # rate_limit.py (fail-closed Redis rate limiting)
 │   │   ├── database/        # SQLAlchemy engine/session
 │   │   ├── models/          # ORM models (one file per table group)
 │   │   ├── schemas/         # Pydantic request/response models
@@ -26,6 +28,10 @@ Merit.Ai/
 │   │   ├── services/        # business logic, calls repositories
 │   │   ├── ai/               # face_service.py, object_service.py, anti_spoof.py, ocr_service.py
 │   │   ├── api/v1/          # FastAPI routers (thin controllers)
+│   │   ├── scheduler/        # standalone periodic-job process (see 12) -- exam
+│   │   │                     # reminders, OTP purge, biometric retention
+│   │   ├── worker/           # standalone RQ worker (see 12) -- consumes the
+│   │   │                     # emails/reports/default queues over Redis
 │   │   ├── utils/           # seed.py (roles + default admin), fetch_models.py
 │   │   └── main.py          # app entrypoint
 │   ├── alembic/              # DB migrations
@@ -34,17 +40,19 @@ Merit.Ai/
 │   │   ├── requirements.txt    # deliberately a slim subset of backend/requirements.txt
 │   │   └── Dockerfile
 │   ├── uploads/               # faces/, id_cards/, violations/ (gitignored)
-│   ├── Dockerfile             # Core API image
+│   ├── Dockerfile             # Core API image (also runs scheduler/worker, see 3.0)
 │   ├── entrypoint.sh           # wait-for-db, migrate, seed, warm up OCR weights
-│   ├── requirements.txt
+│   ├── requirements.txt        # production dependencies only
+│   ├── requirements-dev.txt    # + pytest/httpx/fakeredis for section 11 below
 │   └── .env.example            # for running the backend directly, no Docker
 ├── frontend/                  # React (Vite) frontend — "Merit.Ai"
 │   ├── src/
 │   │   ├── components/        # Navbar, DashboardHeader, Icon, CaptureCard, CodeEditor, ...
 │   │   ├── lib/                # api.js, auth.js, theme.js, ui.js, proctoring.js
 │   │   ├── pages/              # Home, Features, Pricing, About, FAQ, Contact, Login,
-│   │   │                       # Register, StudentDashboard, AdminDashboard,
-│   │   │                       # ExaminerDashboard, Profile, Exam, Results
+│   │   │                       # Register, StudentDashboard, Profile, Exam, Results,
+│   │   │                       # ExaminerDashboard, Admin*/AttemptReport pages, ...
+│   │   │   └── examiner/       # exam builder, question builder, per-attempt violation review
 │   │   ├── App.jsx             # route table
 │   │   └── main.jsx            # entry point
 │   ├── package.json
@@ -55,8 +63,8 @@ Merit.Ai/
 │   └── nginx/                  # the reverse proxy in front of the whole stack (see 3.0)
 │       ├── Dockerfile
 │       └── nginx.conf
-├── docker-compose.yml          # all five services, wired together (see 3.0)
-└── .env.example                 # compose-level config (Postgres creds, SECRET_KEY, ...)
+├── docker-compose.yml          # all eight services, wired together (see 3.0)
+└── .env.example                 # compose-level config (Postgres/Redis creds, SECRET_KEY, ...)
 ```
 
 Architecture follows a clean layering: **API (routers) → Services (business
@@ -107,7 +115,7 @@ student from attempting the same exam twice or answering the same question twice
 
 ### 3.0 Docker (recommended): the whole stack in one command
 
-The root `docker-compose.yml` runs Merit.Ai as five containers rather than
+The root `docker-compose.yml` runs Merit.Ai as eight containers rather than
 one monolith:
 
 | Service | What it is | Reachable from |
@@ -117,6 +125,9 @@ one monolith:
 | `core-api` | Auth, exams, attempts, organizations, admin, analytics, proctoring orchestration, sandboxed code execution | `proxy` only — no longer published to the host, so the proxy is the single entry point |
 | `ai-worker` | Dedicated face-identity + object-detection inference | `core-api` only — never published |
 | `postgres` | The one shared database | `core-api` only |
+| `redis` | Rate limits, OTP state, distributed locks, and the RQ job queue (see 12) | `core-api`, `scheduler`, `worker` only |
+| `scheduler` | Single-replica periodic jobs: exam reminders, OTP purge, biometric retention (see 12) | Talks outward to `postgres`/`redis`; nothing talks to it |
+| `worker` | RQ worker(s) draining the emails/reports/default queues (see 12) | Talks outward to `postgres`/`redis`; nothing talks to it |
 
 `core-api` still owns the single Postgres database and every business
 transaction exactly as it does when run directly (see 3.2) — nothing about
@@ -130,17 +141,20 @@ exactly this reason — see `backend/Dockerfile`'s header comment) rather than
 proctoring simply going dark; a bad exam moment is a slower one, not an
 unmonitored one.
 
-Four separate Docker networks keep the blast radius of each service honest
+Five separate Docker networks keep the blast radius of each service honest
 rather than dropping everything onto one flat network: the database is
-reachable only from `core-api`, `ai-worker` is reachable only from `core-api`,
-and `frontend`/`core-api` are each reachable only through `proxy`. A
-compromised frontend container, for instance, has no network path to
-Postgres at all.
+reachable only from `core-api` (`data-net`), Redis only from `core-api`/
+`scheduler`/`worker` (`cache-net`), `ai-worker` only from `core-api`
+(`ai-net`), and `frontend`/`core-api` are each reachable only through `proxy`
+(`web-net`/`api-net`). A compromised frontend container, for instance, has no
+network path to Postgres or Redis at all.
 
 ```bash
 cp .env.example .env
-# Edit .env: set SECRET_KEY (generate with the command in the file) and
-# POSTGRES_PASSWORD before running anything but a local throwaway stack.
+# Edit .env: set SECRET_KEY, POSTGRES_PASSWORD, and REDIS_PASSWORD (generate
+# each with the command shown next to it in the file) before running anything
+# but a local throwaway stack. Compose refuses to start at all if
+# REDIS_PASSWORD is left unset.
 
 docker compose up --build
 ```
@@ -202,6 +216,16 @@ database with the name in `DATABASE_URL`, created and reachable, before
 running migrations below.
 
 ### 3.2 Backend
+
+Redis is required here too, not just in Docker — rate limiting, OTP signup/
+password-reset, and distributed locks all fail closed with a `503` rather
+than silently working around a missing Redis (see 12). A plain, unauthenticated
+local instance is enough for development and needs no `.env` changes, since
+`backend/.env.example`'s defaults already point at it:
+
+```bash
+docker run -d --name merit-ai-redis -p 6379:6379 redis:7-alpine
+```
 
 ```bash
 cd backend
@@ -582,10 +606,84 @@ the AI helper modules (image validation, the liveness heuristic, and the
 worker-vs-in-process selection in `face_service`, plus the property that both
 paths share one embedding format - all mocked, so no GPU, network access or
 model download is required to run them), and DB transaction/rollback
-behavior. Tests run against an in-memory SQLite database, so no Postgres
-instance is needed.
+behavior. Tests run against an in-memory SQLite database and `fakeredis`, so
+neither a real Postgres nor a real Redis instance is needed.
 
-## 12. Extending this project
+## 12. Background Jobs, Rate Limiting & Redis
+
+Redis backs four things: request rate limiting (`app/core/rate_limit.py`),
+one-time-passcode storage for signup/password-reset (`app/services/
+otp_redis_store.py`), short-lived distributed locks (`app/core/locks.py`)
+that keep a periodic job or a duplicate-prevention check from racing itself
+across replicas, and an RQ job queue (`app/core/queues.py`) with three
+queues — `emails`, `reports`, `default` — so a burst of OTP emails never sits
+behind a slow PDF report job.
+
+**Fails closed, not open.** Every one of those four fails its *own* request
+with a `503` when Redis is unreachable, rather than silently granting the
+request, skipping the OTP check, or double-running a job (`redis_client.py`'s
+module docstring spells out the exact boundary). PostgreSQL remains the
+permanent record of everything durable regardless of Redis's health — most
+visibly the `email_outbox` table, which every transactional email is written
+to *before* delivery is attempted, so a Redis outage delays a queued email
+rather than losing it.
+
+**Two dedicated single-purpose containers**, both sharing the `core-api`
+image so a job can import the same services/models/settings the API uses
+rather than a second copy of them:
+
+- `scheduler` — a plain asyncio process (not a FastAPI app; it serves no
+  traffic). Runs exam reminders, OTP purge, and biometric retention on their
+  own intervals, each pass taking a Redis lock first. Pinned to exactly one
+  replica in `docker-compose.yml` — this is what makes "only one of these
+  ever runs at a time" true by construction, not just by convention.
+- `worker` — an RQ worker draining the `emails`/`reports`/`default` queues.
+  Scales freely (`JOB_WORKER_REPLICAS`); RQ workers claim jobs from Redis
+  atomically, so more replicas only means more throughput.
+
+## 13. Violations, Reviewer Decisions & Results Visibility
+
+**No standalone violations list.** Every logged violation is reviewed in the
+context of the student who triggered it — `GET /attempts/{id}/staff-report`,
+surfaced at `/examiner/attempts/:attemptId` and `/admin/attempts/:attemptId`
+— rather than a flat cross-student feed. Each violation there shows its proof
+screenshot (`GET /proctoring/events/{id}/screenshot`, only if one was
+captured) alongside a computed risk score for the attempt as a whole.
+
+**Reviewer decisions.** `PATCH /proctoring/events/{id}/decision` sets one of
+`pending` / `confirmed` / `dismissed` (labelled "Misleading" in both the
+examiner and admin UIs) on a single violation — an audit annotation only,
+never touching scoring or the attempt's already-final status. The exam's own
+owning examiner can decide on their candidates' violations directly; an admin
+can decide on any exam's.
+
+**Live exam CSV export.** `GET /attempts/exam/{exam_id}/export` (owning
+examiner or admin) returns one row per candidate who has sat the exam —
+name, roll number, violation count, start/end time, status, score, result —
+regenerated fresh from the database on every download rather than a
+physically maintained file, so it is always complete and current with no
+separate sync step to forget.
+
+**Results visibility**, set per exam at creation time (`show_results`,
+`results_release_mode`): whether a candidate sees their own score/pass-fail
+outcome at all, and if so, whether that happens immediately on submission or
+only after the exam's `end_time`. This is a separate gate from the
+pre-existing `release_results_at`/`show_answers_on_release` pair, which
+governs only the answer *key* (correct options and explanations) — withholding
+the score implies withholding the key too, but delaying the key alone does not
+delay the score. See `Exam.results_released` vs. `Exam.answer_key_released`
+in `backend/app/models/exam.py` for the exact rule.
+
+**Candidate account corrections.** An admin can edit a candidate's name,
+email, or roll number (`PATCH /admin/candidates/{id}`). Editing an
+already-face-verified candidate's name or email unlocks their identity and
+flags the account for re-verification automatically; an admin can also flag
+it manually (`POST /admin/candidates/{id}/require-reverification`) without
+changing anything else. Every edit — and every re-verification requirement it
+triggers — is written to the activity log with the actual before/after
+values, not just "candidate updated."
+
+## 14. Extending this project
 
 - Add pagination to admin/examiner list endpoints for larger datasets
 - Add refresh tokens (current JWT is a single long-lived access token)
