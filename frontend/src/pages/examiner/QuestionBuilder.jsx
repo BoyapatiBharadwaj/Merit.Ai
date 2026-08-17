@@ -609,7 +609,7 @@ function SectionCard({ section, isDraft = false, onQuestionAdded, onReordered })
               <> and its <strong>{section.questions.length}</strong> question{section.questions.length === 1 ? "" : "s"}</>
             )}?
           </p>
-          <p className="text-xs text-muted mt-1">This can't be undone.</p>
+          <p className="text-xs text-muted mt-1">This can&apos;t be undone.</p>
           {sectionDeleteError && <p className="text-xs text-danger mt-2">{sectionDeleteError}</p>}
           <div className="flex gap-2 mt-3">
             <button type="button" disabled={deletingSection} onClick={confirmDeleteSection}
@@ -713,7 +713,7 @@ function SectionCard({ section, isDraft = false, onQuestionAdded, onReordered })
                   {confirmDeleteId === q.id ? (
                     <div className="mt-2 rounded-lg border border-danger/30 bg-danger/5 px-2.5 py-2">
                       <div className="flex items-center gap-3">
-                        <span className="text-xs text-danger font-medium flex-1">Delete this question? This can't be undone.</span>
+                        <span className="text-xs text-danger font-medium flex-1">Delete this question? This can&apos;t be undone.</span>
                         <button
                           type="button"
                           onClick={() => confirmDelete(q.id)}

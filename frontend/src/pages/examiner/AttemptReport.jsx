@@ -324,7 +324,7 @@ export default function ExaminerAttemptReport() {
           </div>
           <div className="rounded-2xl border border-border bg-surface shadow-card p-4">
             <h3 className="text-sm font-bold mb-1">Webcam Evidence</h3>
-            <p className="text-xs text-muted mb-3">Frames captured from the candidate's webcam at the moment of a violation — this platform does not separately record the screen.</p>
+            <p className="text-xs text-muted mb-3">Frames captured from the candidate&apos;s webcam at the moment of a violation — this platform does not separately record the screen.</p>
             {evidenceEvents.length === 0 ? (
               <p className="text-xs text-muted">No screenshots were captured during this attempt.</p>
             ) : (

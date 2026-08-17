@@ -34,7 +34,7 @@ export default function CredentialsHandoff({ email, password, onDismiss }) {
             Account created — send these details now
           </p>
           <p className="mt-1 text-xs text-muted">
-            This password cannot be shown again. If it's lost, an admin has to reset it.
+            This password cannot be shown again. If it&apos;s lost, an admin has to reset it.
           </p>
 
           <dl className="mt-3 rounded-lg border border-border bg-page px-3 py-2.5 text-sm">

@@ -105,10 +105,10 @@ export default function Contact() {
               <Icon name="send" width={13} height={13} />
               Contact
             </span>
-            <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight mb-5 text-balance">Let's talk</h1>
+            <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight mb-5 text-balance">Let&apos;s talk</h1>
             <p className="text-lg text-muted leading-relaxed max-w-2xl mx-auto">
-              Whether you're evaluating Merit.Ai for your institution or you hit a snag as a candidate, tell us
-              what's going on and we'll get back to you.
+              Whether you&apos;re evaluating Merit.Ai for your institution or you hit a snag as a candidate, tell us
+              what&apos;s going on and we&apos;ll get back to you.
             </p>
           </div>
         </section>
@@ -162,7 +162,7 @@ export default function Contact() {
               <>
                 <h2 className="text-lg font-bold text-ink mb-1">Send us a message</h2>
                 <p className="text-sm text-muted mb-6">
-                  This opens your email client with your message pre-filled — we don't have a live chat, so this is
+                  This opens your email client with your message pre-filled — we don&apos;t have a live chat, so this is
                   the fastest way to reach a real person.
                 </p>
                 <form onSubmit={handleSubmit} noValidate>
@@ -195,7 +195,7 @@ export default function Contact() {
 
                   <div className="mb-5">
                     <label htmlFor="reason" className={fieldLabel}>
-                      What's this about?
+                      What&apos;s this about?
                     </label>
                     <select id="reason" className={fieldInput} value={form.reason} onChange={update("reason")}>
                       {REASONS.map((r) => (

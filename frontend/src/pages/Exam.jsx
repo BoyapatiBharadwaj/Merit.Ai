@@ -1163,7 +1163,7 @@ export default function Exam() {
               <div className="text-xs font-semibold text-ink mb-2">Instructions &amp; exam rules</div>
               <ul className="space-y-1.5 text-xs text-muted leading-relaxed list-disc list-inside">
                 <li>Stay in fullscreen with your entire screen shared for the whole exam.</li>
-                <li>Don't switch tabs, minimise the window, or open other applications.</li>
+                <li>Don&apos;t switch tabs, minimise the window, or open other applications.</li>
                 <li>Only you should be visible and audible -- no other people, phones, books, or notes in frame.</li>
                 <li>Leaving fullscreen, switching tabs, or stopping screen sharing counts as a warning; enough
                   warnings end the exam automatically and submit what you have so far.</li>
@@ -1171,7 +1171,7 @@ export default function Exam() {
               </ul>
               <div className="text-xs font-semibold text-ink mt-3 mb-1.5">Allowed / prohibited</div>
               <ul className="space-y-1.5 text-xs text-muted leading-relaxed list-disc list-inside">
-                <li>Allowed: a quiet, well-lit room and (for coding questions) the built-in code editor and sample-test "Run" button.</li>
+                <li>Allowed: a quiet, well-lit room and (for coding questions) the built-in code editor and sample-test &quot;Run&quot; button.</li>
                 <li>Prohibited: other people in frame, phones or smart devices, books or notes, a second monitor, and any external help.</li>
               </ul>
             </div>
@@ -1181,7 +1181,7 @@ export default function Exam() {
                 <li>{examMeta?.proctoring_enabled === false ? "AI proctoring is not enabled for this exam." : "Your camera, microphone, and screen are monitored throughout for face presence, gaze, audio, and screen-share/fullscreen compliance."}</li>
                 <li>Flagged moments are logged as violations attached to your attempt, visible to your examiner.</li>
                 <li>Recordings and captures are used solely for exam-integrity review and are not shared outside your institution.</li>
-                <li>Enough violations auto-submit your exam early -- see "Instructions" for the warning limit.</li>
+                <li>Enough violations auto-submit your exam early -- see &quot;Instructions&quot; for the warning limit.</li>
               </ul>
             </div>
           </div>
@@ -1621,7 +1621,7 @@ export default function Exam() {
                try this question again, or go back to one that loaded. */
             <div className="m-auto text-center" role="alert">
               <p className="text-sm text-red-500 font-medium mb-3">
-                Couldn't load question {currentIndex + 1}. {questionError}
+                Couldn&apos;t load question {currentIndex + 1}. {questionError}
               </p>
               <div className="flex items-center justify-center gap-2">
                 <button type="button" onClick={() => loadQuestion(currentIndex)}
@@ -2226,7 +2226,7 @@ function SubmitConfirmModal({ answeredCount, totalCount, flaggedCount = 0, saveS
           <div className="mx-7 mb-5 flex items-start gap-2.5 rounded-xl border border-amber-500/25 bg-amber-500/5 px-4 py-3">
             <span className="text-amber-500 mt-0.5 shrink-0"><Icon name="alert" width={15} height={15} /></span>
             <p className="text-sm text-ink leading-relaxed">
-              {unsynced === 1 ? "1 answer is" : `${unsynced} answers are`} still syncing. They'll be
+              {unsynced === 1 ? "1 answer is" : `${unsynced} answers are`} still syncing. They&apos;ll be
               sent with your submission — submitting now is safe, but staying connected is safer.
             </p>
           </div>

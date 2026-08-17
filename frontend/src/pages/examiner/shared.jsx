@@ -87,7 +87,7 @@ export function ErrorState({ message, onRetry }) {
       <div className="flex items-start gap-2.5">
         <span className="text-danger mt-0.5 shrink-0"><Icon name="alert" width={16} height={16} /></span>
         <div className="flex-1">
-          <p className="text-ink font-semibold mb-0.5">Couldn't load this.</p>
+          <p className="text-ink font-semibold mb-0.5">Couldn&apos;t load this.</p>
           <p className="text-muted">{message || "Something went wrong."}</p>
           {onRetry && (
             <button onClick={onRetry} className={`${btnGhost} mt-3 px-3 py-1.5 text-xs`}>

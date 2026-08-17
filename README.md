@@ -49,7 +49,7 @@ Three roles, each with its own dashboard:
 | **Candidate** | Identity registration (face + ID card), proctored exam sitting, results and PDF report |
 
 **Scale of the codebase:** 122 REST endpoints across 9 routers, 21 database
-tables under 31 Alembic migrations, and 628 tests across 41 test modules.
+tables under 31 Alembic migrations, and 642 tests across 41 test modules.
 
 ---
 
@@ -252,7 +252,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-628 tests run against in-memory SQLite and `fakeredis` — no Postgres, no Redis,
+642 tests run against in-memory SQLite and `fakeredis` — no Postgres, no Redis,
 no GPU, no network, no model downloads. A second suite exercises migrations and
 row-lock concurrency against a real Postgres; CI runs both on every push.
 

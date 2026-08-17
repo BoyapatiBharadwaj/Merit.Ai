@@ -170,7 +170,7 @@ export default function Features() {
             </h1>
             <p className="text-lg text-muted leading-relaxed max-w-2xl mx-auto">
               From identity verification to sandboxed code grading, Merit.Ai handles the full lifecycle of a proctored
-              assessment — not just the timer and the submit button. Here's the whole platform, in detail.
+              assessment — not just the timer and the submit button. Here&apos;s the whole platform, in detail.
             </p>
           </div>
         </section>
@@ -252,12 +252,12 @@ export default function Features() {
                   <Icon name="alert" width={19} height={19} />
                 </span>
                 <div className="min-w-0">
-                  <h3 className="font-bold text-ink mb-2">And what we don't claim</h3>
+                  <h3 className="font-bold text-ink mb-2">And what we don&apos;t claim</h3>
                   <p className="text-sm text-muted leading-relaxed mb-4">
                     No browser-based platform can prevent an operating-system screenshot, a screen recorder, or a
                     second device pointed at the monitor — including every vendor that implies otherwise. What
                     Merit.Ai does is intercept capture shortcuts, clear the clipboard, and record each attempt as a
-                    high-severity violation on the candidate's report, so an invigilator sees exactly what happened.
+                    high-severity violation on the candidate&apos;s report, so an invigilator sees exactly what happened.
                   </p>
                   <p className="text-sm text-muted/80 leading-relaxed">
                     For environments that need OS-level enforcement, the platform is designed to sit behind a

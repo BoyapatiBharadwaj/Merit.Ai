@@ -470,7 +470,6 @@ function AccessRequestsPanel({ requests, onChange }) {
                       type="button"
                       onClick={() => {
                         setExpandedId(r.id);
-                        setPassword("");
                         setNote("");
                         setError("");
                         setSuccess("");

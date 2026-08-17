@@ -91,7 +91,7 @@ export default function RequestAccess() {
                 <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight mb-3">Request examiner access</h1>
                 <p className="text-muted leading-relaxed">
                   Examiner accounts are created by our team, so exams are always run by a verified institution. Tell us
-                  a little about yourself and we'll set you up.
+                  a little about yourself and we&apos;ll set you up.
                 </p>
               </div>
 
@@ -209,7 +209,7 @@ function SuccessPanel({ email }) {
       <h1 className="text-2xl font-extrabold tracking-tight mb-3">Request received</h1>
 
       <p className="text-muted leading-relaxed mb-6">
-        Thanks — your request is with our team. You'll receive an email
+        Thanks — your request is with our team. You&apos;ll receive an email
         {email ? (
           <>
             {" "}at <span className="font-semibold text-ink break-words">{email}</span>

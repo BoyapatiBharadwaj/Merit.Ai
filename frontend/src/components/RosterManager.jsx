@@ -152,7 +152,7 @@ export default function RosterManager() {
             {saving ? "Enrolling…" : "Enrol students"}
           </button>
           <span className="text-xs text-muted">
-            Students who haven't signed up yet are linked automatically when they register.
+            Students who haven&apos;t signed up yet are linked automatically when they register.
           </span>
         </div>
         {feedback && (
@@ -222,7 +222,7 @@ export default function RosterManager() {
               ))}
             </ul>
             {visible.length === 0 && (
-              <p className="text-sm text-muted py-3">No one matches "{filter}".</p>
+              <p className="text-sm text-muted py-3">No one matches &quot;{filter}&quot;.</p>
             )}
             <p className="mt-4 text-xs text-muted">
               Removing a student revokes access to future exams. Results they have already

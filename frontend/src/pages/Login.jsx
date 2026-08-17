@@ -34,8 +34,6 @@ export default function Login() {
   // the checkbox keeps today's behaviour rather than being logged out sooner.
   const [remember, setRemember] = useState(false);
 
-  if (isLoggedIn()) return <Navigate to={intended} replace />;
-
   function computeErrors(values) {
     const next = {};
     if (!values.email.trim()) next.email = "Email is required.";
@@ -76,6 +74,8 @@ export default function Login() {
   useEffect(() => {
     if (formError) errorRef.current?.focus();
   }, [formError]);
+
+  if (isLoggedIn()) return <Navigate to={intended} replace />;
 
   async function handleSubmit(e) {
     e.preventDefault();

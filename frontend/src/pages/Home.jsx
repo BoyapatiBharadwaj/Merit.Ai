@@ -299,7 +299,7 @@ function HeroSection() {
           </h1>
 
           <p className="text-lg text-muted leading-relaxed max-w-xl mb-8">
-            Merit.Ai requires fullscreen, verifies every candidate's identity against their ID, and watches the
+            Merit.Ai requires fullscreen, verifies every candidate&apos;s identity against their ID, and watches the
             session with continuous AI proctoring — detecting focus loss, screen-share interruptions and unusual
             activity, pausing the exam on a breach, and recording server-authoritative strikes in a complete,
             timestamped log.
@@ -467,7 +467,7 @@ function TrustSection() {
     <section className="max-w-7xl mx-auto px-5 sm:px-6 lg:px-8 py-20 lg:py-24">
       <SectionHeader eyebrow="Where we stand" icon="shield-check"
                      title="What we claim, and what we don't" className="mb-12">
-        An exam platform asking for a webcam in someone's bedroom owes them both halves. Every line
+        An exam platform asking for a webcam in someone&apos;s bedroom owes them both halves. Every line
         below is a real property of the software, including the limits.
       </SectionHeader>
 

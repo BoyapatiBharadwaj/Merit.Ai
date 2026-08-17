@@ -57,7 +57,7 @@ export default function Privacy() {
           data during identity verification and proctored exams. This page describes exactly what, in plain language,
           including what is stored rather than discarded. It is not a substitute for a full{" "}
           <Link to="/terms" className="font-semibold text-primary hover:underline">Terms of Service</Link> -- an
-          institution deploying this platform for real exams should have both reviewed by counsel before candidates'
+          institution deploying this platform for real exams should have both reviewed by counsel before candidates&apos;
           data is at stake.
         </p>
 

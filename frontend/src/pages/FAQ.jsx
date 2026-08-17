@@ -177,7 +177,7 @@ export default function FAQ() {
               Frequently asked questions
             </h1>
             <p className="text-lg text-muted leading-relaxed max-w-2xl mx-auto">
-              Straight answers about proctoring, pricing, and how the platform actually works — organized by who's
+              Straight answers about proctoring, pricing, and how the platform actually works — organized by who&apos;s
               asking.
             </p>
           </div>

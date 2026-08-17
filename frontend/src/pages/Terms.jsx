@@ -89,7 +89,7 @@ export default function Terms() {
             reviewed by a lawyer. An institution deploying Merit.Ai for real exams should have counsel review this
             and the{" "}
             <Link to="/privacy" className="font-semibold text-primary hover:underline">privacy notice</Link>{" "}
-            before candidates' results and biometric data are at stake.
+            before candidates&apos; results and biometric data are at stake.
           </p>
         </div>
 

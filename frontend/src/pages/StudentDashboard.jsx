@@ -177,7 +177,7 @@ export default function StudentDashboard() {
       <main className="flex-1 max-w-7xl mx-auto w-full px-5 sm:px-6 lg:px-8 py-8">
         <div className="mb-7 animate-fade-in">
           <h1 className="text-2xl font-extrabold tracking-tight">Welcome back, {firstName}</h1>
-          <p className="text-sm text-muted mt-1">Here's what's on your plate today.</p>
+          <p className="text-sm text-muted mt-1">Here&apos;s what&apos;s on your plate today.</p>
         </div>
 
         {loadError && (
@@ -201,7 +201,7 @@ export default function StudentDashboard() {
                className="mb-6 flex flex-wrap items-start gap-2.5 rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-warning">
             <Icon name="alert" width={16} height={16} className="mt-0.5 shrink-0" />
             <span className="flex-1 min-w-[12rem]">
-              We couldn't check your identity verification status. This does not mean you are
+              We couldn&apos;t check your identity verification status. This does not mean you are
               unverified — if you have already registered your face and ID, you are still verified.
             </span>
             <button type="button" onClick={() => setReloadKey((n) => n + 1)}
@@ -424,7 +424,7 @@ export default function StudentDashboard() {
                     </div>
                   ))
                 ) : (
-                  <p className="text-muted">You're all caught up. No new announcements.</p>
+                  <p className="text-muted">You&apos;re all caught up. No new announcements.</p>
                 )}
               </div>
             </div>

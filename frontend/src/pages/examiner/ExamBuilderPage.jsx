@@ -266,8 +266,8 @@ function ExamDetailsForm({ exam, onUpdated }) {
     <div className="rounded-2xl border border-border bg-surface shadow-card p-5">
       <div className="font-semibold text-ink mb-1">Exam Details</div>
       <p className="text-xs text-muted mb-4">
-        Editable while this exam is a draft. You don't have to finish everything now -- come back and adjust as
-        many times as you like, and publish only once it's ready.
+        Editable while this exam is a draft. You don&apos;t have to finish everything now -- come back and adjust as
+        many times as you like, and publish only once it&apos;s ready.
       </p>
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
         {error && (
@@ -365,7 +365,7 @@ function ExamDetailsForm({ exam, onUpdated }) {
               <label className={fieldLabel}>When</label>
               <select value={form.resultsReleaseMode} onChange={(e) => update("resultsReleaseMode", e.target.value)} className={fieldInput}>
                 <option value="immediate">As soon as each candidate submits</option>
-                <option value="after_end_time">Only after the exam's end date/time</option>
+                <option value="after_end_time">Only after the exam&apos;s end date/time</option>
               </select>
               {form.resultsReleaseMode === "after_end_time" && !exam.end_time && (
                 <p className="mt-1.5 text-xs text-warning leading-relaxed">
@@ -379,14 +379,14 @@ function ExamDetailsForm({ exam, onUpdated }) {
                   <input type="datetime-local" value={form.releaseResultsAt}
                          onChange={(e) => update("releaseResultsAt", e.target.value)} className={fieldInput} />
                   <p className="mt-1.5 text-xs text-muted leading-relaxed">
-                    Leave blank to release each candidate's result the moment they submit.
+                    Leave blank to release each candidate&apos;s result the moment they submit.
                   </p>
                 </div>
               )}
               <p className="mt-3 text-xs text-muted leading-relaxed">
-                "As soon as each candidate submits" means the first person to finish can, in
+                &quot;As soon as each candidate submits&quot; means the first person to finish can, in
                 principle, hand around their result (and, unless disabled below, the answer key)
-                while everyone else is still writing. Choose "after the exam's end date/time" to
+                while everyone else is still writing. Choose &quot;after the exam&apos;s end date/time&quot; to
                 prevent that.
               </p>
             </>

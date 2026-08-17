@@ -92,8 +92,8 @@ export default function About() {
               <p className="text-muted leading-relaxed">
                 Give every institution — not just the ones who can afford enterprise proctoring contracts — a way to
                 run exams that candidates can trust and results that mean what they say. That means building the
-                enforcement where it can't be tampered with, being transparent about what's genuinely possible in a
-                browser, and never treating a candidate's biometric data as anything other than a verification tool.
+                enforcement where it can&apos;t be tampered with, being transparent about what&apos;s genuinely possible in a
+                browser, and never treating a candidate&apos;s biometric data as anything other than a verification tool.
               </p>
             </div>
           </div>

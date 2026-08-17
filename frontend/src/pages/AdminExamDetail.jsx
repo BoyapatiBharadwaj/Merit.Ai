@@ -41,15 +41,16 @@ export default function AdminExamDetail() {
   }
 
   useEffect(() => {
+    let cancelled = false;
     Api.get(`/admin/exams/${examId}`)
       .then((data) => { if (!cancelled) setExam(data); })
       .catch((err) => setLoadError(err instanceof ApiError ? err.message : "Couldn't load this exam."));
+    return () => { cancelled = true; };
   }, [examId]);
 
   useEffect(() => {
     const t = setTimeout(() => setSearch(searchInput.trim()), 300);
     return () => clearTimeout(t);
-    return () => { cancelled = true; };
   }, [searchInput]);
 
   useEffect(() => {

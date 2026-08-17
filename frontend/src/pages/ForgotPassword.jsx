@@ -162,7 +162,7 @@ export default function ForgotPassword() {
           </span>
           <h2 className="text-base font-bold text-ink mb-2">No account for {email.trim()}</h2>
           <p className="text-sm text-muted leading-relaxed">
-            Double-check the address, or create a new account if you haven't registered yet.
+            Double-check the address, or create a new account if you haven&apos;t registered yet.
           </p>
         </div>
 
@@ -288,8 +288,8 @@ export default function ForgotPassword() {
       </form>
 
       <p className="text-xs text-muted leading-relaxed mt-4 px-1">
-        Examiner accounts are managed by your institution's administrator. If you're an examiner and the code
-        doesn't arrive, contact them directly.
+        Examiner accounts are managed by your institution&apos;s administrator. If you&apos;re an examiner and the code
+        doesn&apos;t arrive, contact them directly.
       </p>
 
       <Link to="/login" className={`${btnGhost.replace("px-5 py-3", "px-5 py-4")} w-full justify-center mt-5`}>

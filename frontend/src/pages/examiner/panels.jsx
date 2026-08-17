@@ -213,7 +213,7 @@ function AttemptsPanel({ examId }) {
         </table>
       </div>
       <p className="text-xs text-muted mt-3">
-        Resetting clears a student's answers and lets them retake the exam from scratch -- use it for connectivity
+        Resetting clears a student&apos;s answers and lets them retake the exam from scratch -- use it for connectivity
         problems, browser crashes, power failures, or other technical interruptions. Every reset is logged with your
         name, the time, and the reason you enter.
       </p>
@@ -547,7 +547,7 @@ function ExamAccessPanel({ examId }) {
           )}
         </div>
         <p className="mt-2 text-xs text-muted">
-          Students who haven't registered yet can be added now — they're linked automatically when they sign up.
+          Students who haven&apos;t registered yet can be added now — they&apos;re linked automatically when they sign up.
         </p>
         {feedback && (
           <p className={`mt-3 text-sm ${

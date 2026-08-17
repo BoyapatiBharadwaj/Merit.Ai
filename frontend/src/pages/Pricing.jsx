@@ -189,7 +189,7 @@ export default function Pricing() {
             Ready to talk about your cohort?
           </h2>
           <p className="text-muted mb-8 max-w-xl mx-auto">
-            Tell us about your institution and we'll set up a verified examiner account with a quote to match.
+            Tell us about your institution and we&apos;ll set up a verified examiner account with a quote to match.
           </p>
           <div className="flex flex-wrap items-center justify-center gap-4">
             <Link to="/request-access" className={btnPrimary}>

@@ -88,7 +88,7 @@ export default function AdminReviewQueue() {
             <h1 className="text-2xl font-extrabold tracking-tight">Review Queue</h1>
             <p className="text-sm text-muted mt-1">
               Flags waiting on a decision, most serious and longest-waiting first. Until one is
-              decided it counts toward the candidate's risk score.
+              decided it counts toward the candidate&apos;s risk score.
             </p>
           </div>
           <span className="inline-flex items-center rounded-full px-3 py-1.5 text-sm font-semibold bg-warning/10 text-warning">
@@ -104,7 +104,7 @@ export default function AdminReviewQueue() {
 
         {state === "error" && (
           <div role="alert" className="rounded-2xl border border-danger/30 bg-danger/5 p-5">
-            <p className="font-semibold text-ink mb-1">Couldn't load the review queue.</p>
+            <p className="font-semibold text-ink mb-1">Couldn&apos;t load the review queue.</p>
             <p className="text-sm text-muted mb-3">{error}</p>
             <button onClick={load} className={`${btnGhost} px-4 py-2 text-sm`}>Try again</button>
           </div>

@@ -68,7 +68,7 @@ export default function AdminOrganizations() {
 
         {state === "error" && (
           <div role="alert" className="rounded-2xl border border-danger/30 bg-danger/5 p-5">
-            <p className="font-semibold text-ink mb-1">Couldn't load organizations.</p>
+            <p className="font-semibold text-ink mb-1">Couldn&apos;t load organizations.</p>
             <p className="text-sm text-muted mb-3">{error}</p>
             <button onClick={load} className={`${btnGhost} px-4 py-2 text-sm`}>Try again</button>
           </div>

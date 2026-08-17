@@ -174,7 +174,7 @@ export default function Profile() {
             <div className="rounded-2xl border border-border bg-surface shadow-card p-6">
               <p className="text-sm text-ink font-semibold mb-1.5">Your password is managed by your administrator</p>
               <p className="text-sm text-muted leading-relaxed">
-                Passwords on Merit.Ai are issued and rotated centrally. If you've forgotten yours, you can set a new
+                Passwords on Merit.Ai are issued and rotated centrally. If you&apos;ve forgotten yours, you can set a new
                 one yourself using a code sent to <strong className="text-ink">{me?.email}</strong> — no need to wait
                 for an administrator.
               </p>
@@ -546,7 +546,7 @@ function ChangePasswordCard() {
           </span>
           <div>
             <p className="text-sm font-bold text-ink">Change password</p>
-            <p className="text-xs text-muted">Enter your current password to confirm it's you.</p>
+            <p className="text-xs text-muted">Enter your current password to confirm it&apos;s you.</p>
           </div>
         </div>
         <button

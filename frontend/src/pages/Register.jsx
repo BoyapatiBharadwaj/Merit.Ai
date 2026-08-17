@@ -54,7 +54,6 @@ export default function Register() {
   }, []);
 
   // Signup is now a single step, so an already-signed-in visitor is simply sent onward.
-  if (isLoggedIn()) return <Navigate to="/dashboard" replace />;
 
   function computeErrors(values) {
     const next = {};
@@ -104,6 +103,8 @@ export default function Register() {
   useEffect(() => {
     if (formError) errorRef.current?.focus();
   }, [formError]);
+
+  if (isLoggedIn()) return <Navigate to="/dashboard" replace />;
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -250,7 +251,7 @@ export default function Register() {
             icon's tooltip for anyone who wants it, instead of being forced
             on everyone as a permanent block of text under the name fields. */}
         <p className="-mt-1 mb-4 text-xs text-muted leading-relaxed inline-flex items-start gap-1">
-          Enter your name exactly as shown on your ID. It can't be edited after verification.
+          Enter your name exactly as shown on your ID. It can&apos;t be edited after verification.
           <span title="Your name is matched against the ID card you verify from your Profile page before your first exam. Once that match succeeds, your name and email are locked and an administrator would need to change them." className="cursor-help text-muted/70 shrink-0 mt-0.5">
             <Icon name="alert" width={12} height={12} />
           </span>
@@ -343,7 +344,7 @@ export default function Register() {
             <span>
               I understand that identity and proctoring data may be collected during exams.{" "}
               <Link to="/privacy" target="_blank" className="text-primary hover:underline">
-                See what's collected
+                See what&apos;s collected
               </Link>
               .
             </span>
@@ -355,7 +356,7 @@ export default function Register() {
             <div className="flex items-start gap-2.5 mb-3">
               <span className="text-primary mt-0.5 shrink-0"><Icon name="mail" width={16} height={16} /></span>
               <p className="text-sm text-ink leading-relaxed">
-                We've sent a {codeShape.length}-digit code to <strong>{form.email.trim()}</strong>.
+                We&apos;ve sent a {codeShape.length}-digit code to <strong>{form.email.trim()}</strong>.
                 It expires in {codeShape.expiresIn} minutes.
               </p>
             </div>

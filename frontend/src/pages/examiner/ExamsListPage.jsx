@@ -196,7 +196,7 @@ function ExamsListView({ onManage }) {
 
               {confirmDeleteExamId === e.id ? (
                 <div className="mt-auto rounded-lg border border-danger/30 bg-danger/5 px-2.5 py-2">
-                  <p className="text-xs text-danger font-medium mb-2">Delete this draft? This can't be undone.</p>
+                  <p className="text-xs text-danger font-medium mb-2">Delete this draft? This can&apos;t be undone.</p>
                   <div className="flex items-center gap-3">
                     <button
                       type="button"

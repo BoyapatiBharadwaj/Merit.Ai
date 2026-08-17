@@ -190,7 +190,7 @@ export default function AdminExaminers() {
                 <span>
                   {created.activationSent
                     ? <>Account created. An activation email was sent to <strong>{created.email}</strong> — the examiner sets their own password from that link.</>
-                    : <>Account created for <strong>{created.email}</strong>, but the activation email could not be delivered. Use "Resend activation" on their row once your mail settings are fixed.</>}
+                    : <>Account created for <strong>{created.email}</strong>, but the activation email could not be delivered. Use &quot;Resend activation&quot; on their row once your mail settings are fixed.</>}
                 </span>
               </div>
             )}

@@ -107,7 +107,7 @@ export default function Results() {
             <h1 className="text-xl font-extrabold tracking-tight mb-1">{report.exam_title}</h1>
             <p className="text-sm text-muted mb-1">{report.candidate_name}{report.roll_number ? ` · Roll No. ${report.roll_number}` : ""}</p>
             <p className="text-sm text-ink mt-4 max-w-md mx-auto">
-              Your submission was received. The examiner hasn't released results for this exam yet -- check back
+              Your submission was received. The examiner hasn&apos;t released results for this exam yet -- check back
               later.
             </p>
             <p className="text-xs text-muted mt-3">

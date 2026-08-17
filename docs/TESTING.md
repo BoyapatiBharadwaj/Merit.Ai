@@ -8,7 +8,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-628 tests across 41 modules. The default run needs no Postgres, no Redis, no GPU,
+642 tests across 41 modules. The default run needs no Postgres, no Redis, no GPU,
 no network, and no model downloads — it uses in-memory SQLite and `fakeredis`,
 and every AI call is mocked.
 
@@ -76,13 +76,13 @@ npm run build        # production build; fails on a broken import
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs on every push to `main` and on every pull request:
+`.github/workflows/backend-tests.yml` runs on every push to `main` and on every
+pull request:
 
 | Job | What it does |
 |---|---|
-| **Backend tests (SQLite)** | Python 3.11, `pip install -r requirements-dev.txt`, `pytest -q -m "not postgres"` |
+| **Test suite (SQLite)** | Python 3.11, `pip install -r requirements-dev.txt`, `pytest -q -m "not postgres"` |
 | **Alembic chain (PostgreSQL)** | Same install against a `postgres:16` service container, then `pytest -q -m postgres` |
-| **Frontend lint, test and build** | Node 20, `npm ci`, then `npm run lint`, `npm test`, `npm run check`, `npm run build` |
 
 Postgres is pinned to the major version the application is developed against,
 since enum behaviour differs across majors.
