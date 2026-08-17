@@ -1,63 +1,9 @@
-
-# ==============================================================================
-# Merit.Ai -- full stack. PostgreSQL is the permanent source of truth for
-# every durable record (users, exams, attempts, results, violations,
-# credentials, audit logs, email delivery history); Redis is back as the
-# shared, ephemeral-state backend for the things that genuinely benefit from
-# it -- cross-worker rate limiting, one-time-passcode state, distributed
-# locks, and the RQ background job/email queue. See
-# backend/app/core/redis_client.py's module docstring for the exact boundary.
+# Merit.Ai -- full stack: reverse proxy, SPA, API, AI worker, scheduler, RQ worker,
+# PostgreSQL and Redis. See docs/ARCHITECTURE.md for the service and network map.
 #
-#   proxy      nginx, the ONLY published port. Routes /api/* to core-api,
-#              everything else to frontend. See deploy/nginx/nginx.conf.
-#   frontend   React/Vite SPA, built once, served as static files. Not
-#              reachable directly -- only through `proxy`.
-#   core-api   FastAPI: auth, exams, attempts, organizations, admin,
-#              analytics, proctoring orchestration, sandboxed code execution.
-#              Owns the Postgres database and the Redis connection. Falls
-#              back to computing face/object detection locally if `ai-worker`
-#              is unreachable -- see AI_SERVICE_URL below and
-#              backend/app/ai/face_service.py.
-#   ai-worker  Dedicated face/object inference microservice. Stateless,
-#              internal-only (no published port), holds no secrets, never
-#              touches Postgres or Redis. See backend/ai_worker/main.py.
-#   scheduler  The one process that runs periodic work (exam reminders, OTP
-#              purge, biometric retention). Single replica by design -- see
-#              backend/app/scheduler/main.py.
-#   worker     An RQ worker consuming the emails/reports/default queues over
-#              Redis (transactional email delivery and retry, PDF reports,
-#              bulk email). Scale freely -- RQ workers claim jobs from Redis
-#              atomically. See backend/app/worker/.
-#   postgres   The permanent database: users, exams, attempts, results,
-#              violations, credentials, audit logs, and the email_outbox
-#              delivery-history table. Owned exclusively by core-api (the
-#              other services reach it only through core-api's ORM models
-#              over the same network).
-#   redis      Shared rate-limit counters, one-time-passcode state,
-#              distributed locks, and the RQ job/email queue. Internal-only
-#              (no published port), password-authenticated, persisted with
-#              append-only storage. Holds no permanent record of anything --
-#              losing this container loses in-flight OTP codes and queued
-#              (not-yet-delivered) jobs, never a user, an exam, a result, or
-#              an email's own delivery history (that is in Postgres).
-#
-# Network segmentation (not just "one flat network everything can reach"):
-#   data-net   postgres <-> core-api, scheduler, worker. Nothing else can
-#              reach the database.
-#   cache-net  redis <-> core-api, scheduler, worker. Nothing else can reach
-#              Redis, and Redis publishes no port to the host.
-#   ai-net     ai-worker <-> core-api only.
-#   api-net    core-api <-> proxy only.
-#   web-net    frontend <-> proxy only.
-# frontend can never reach postgres, redis or ai-worker; ai-worker can never
-# reach postgres or redis; proxy can only reach core-api and frontend, never
-# the database, Redis, or the AI worker directly.
-#
-# Quick start:
-#   cp .env.example .env      # then edit SECRET_KEY, POSTGRES_PASSWORD, REDIS_PASSWORD
+#   cp .env.example .env      # set SECRET_KEY, POSTGRES_PASSWORD, REDIS_PASSWORD
 #   docker compose up --build
 #   open http://localhost
-# ==============================================================================
 
 services:
   # ----------------------------------------------------------------------------
@@ -78,15 +24,8 @@ services:
       start_period: 10s
     networks:
       - data-net
-    # Not published to the host by default -- nothing else in this stack
-    # needs it (core-api reaches it over the internal `data-net` network),
-    # and binding 127.0.0.1:5432 fails outright on some Windows/Docker
-    # Desktop setups (a local Postgres install, another container, or a
-    # Hyper-V/WinNAT reserved-port range already holding that port -- shows
-    # up as "bind: An attempt was made to access a socket in a way forbidden
-    # by its access permissions"). Uncomment below if you want a host-side
-    # DB client (`psql`, a GUI tool) to reach it for debugging, and change
-    # the host-side port if 5432 is already taken:
+    # Not published to the host: core-api reaches it over the internal `data-net`
+    # network. Uncomment for a host-side DB client, changing the port if 5432 is taken.
     # ports:
     #   - "127.0.0.1:5432:5432"
 
@@ -94,15 +33,8 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    # --appendonly yes: durability for the one thing here worth surviving a
-    # container restart -- an in-flight OTP resend cooldown, a queued-but-not
-    # -yet-delivered email/report job. Losing it is a bounded inconvenience
-    # (a code has to be re-requested; a queued job is gone and would need
-    # re-triggering), never a lost permanent record, which is why this is
-    # "where appropriate" durability rather than the synchronous fsync
-    # tuning a primary datastore would need.
-    # --requirepass: no anonymous access, even on the internal-only network
-    # below -- defense in depth against a misconfigured network segment.
+    # --appendonly yes: survive a restart with in-flight OTP cooldowns and queued jobs
+    # intact. --requirepass: no anonymous access even on the internal-only network.
     command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}"]
     volumes:
       - redis_data:/data
@@ -119,13 +51,10 @@ services:
     deploy:
       resources:
         limits:
-          # Everything stored here is small (counters, short-lived hashes,
-          # queued job payloads) and TTL-bounded or consumed quickly -- this
-          # is headroom for a burst, not a sizing exercise.
+          # Everything stored here is small (counters, short-lived hashes, queued job payloads)
+          # and TTL-bounded or consumed quickly.
           memory: 256m
-    # Not published to the host, and not reachable from any network but
-    # cache-net -- nothing outside core-api, scheduler and worker has any
-    # business talking to this instance.
+    # Not published to the host, and reachable only over cache-net.
     # ports:
     #   - "127.0.0.1:6379:6379"   # uncomment only for local debugging
 
@@ -136,19 +65,15 @@ services:
       dockerfile: ai_worker/Dockerfile
     restart: unless-stopped
     environment:
-      # Deliberately NOT AI_SERVICE_URL -- leaving it unset is what makes
-      # this process's own app.ai.face_service / object_service calls take
-      # their "local" branch, i.e. actually run inference here rather than
-      # trying to call itself. See ai_worker/main.py's module docstring.
+      # Deliberately NOT AI_SERVICE_URL -- leaving it unset is what makes this process's own
+      # app.ai.face_service / object_service calls take their "local" branch, i.e. actually run
+      # inference here rather than trying to call itself.
       FACE_MODEL_NAME: ${FACE_MODEL_NAME:-buffalo_l}
       FACE_MODEL_ROOT: /app/models/insightface
       OBJECT_MODEL_ROOT: /app/models/yolo
       ANTISPOOF_MODEL_ROOT: /app/models/antispoof
-      # This process never issues or checks a JWT and never opens a database
-      # connection, so it has no real secret to protect -- explicit
-      # "development" keeps app.core.config's production secrets gate from
-      # logging a spurious warning about a SECRET_KEY that is never used for
-      # anything here.
+      # This process never issues or checks a JWT and never opens a database connection, so it
+      # has no real secret to protect.
       ENVIRONMENT: development
     volumes:
       - ai_models:/app/models
@@ -177,10 +102,7 @@ services:
       ENVIRONMENT: ${ENVIRONMENT:-production}
       DATABASE_URL: postgresql://${POSTGRES_USER:-merit_ai}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-merit_ai}
       SECRET_KEY: "${SECRET_KEY:?Set SECRET_KEY in .env -- generate one with python3 -c 'import secrets; print(secrets.token_urlsafe(64))'}"
-      # Rate limiting, OTP state and distributed locks -- see
-      # backend/app/core/redis_client.py. REDIS_PASSWORD is passed separately
-      # (rather than embedded in REDIS_URL) so it is never interpolated into a
-      # string a stray log line might print whole.
+      # Rate limiting, OTP state and distributed locks -- see backend/app/core/redis_client.py.
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
       LOCK_DEFAULT_TTL_SECONDS: ${LOCK_DEFAULT_TTL_SECONDS:-30}
@@ -196,10 +118,8 @@ services:
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-120}
       UPLOAD_DIR: /app/uploads
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost}
-      # Points at the dedicated inference service instead of this
-      # container's own (still-installed, still-functional) local fallback
-      # -- see backend/Dockerfile's header comment for why the fallback
-      # stays installed here rather than being trimmed out.
+      # Points at the dedicated inference service instead of this container's own
+      # (still-installed, still-functional) local fallback.
       AI_SERVICE_URL: http://ai-worker:8010
       AI_SERVICE_TIMEOUT_SECONDS: ${AI_SERVICE_TIMEOUT_SECONDS:-8}
       FACE_MATCH_TOLERANCE: ${FACE_MATCH_TOLERANCE:-0.38}
@@ -210,21 +130,12 @@ services:
       LOCKDOWN_STRIKE_LIMIT: ${LOCKDOWN_STRIKE_LIMIT:-3}
       CODE_EXECUTION_ENABLED: ${CODE_EXECUTION_ENABLED:-true}
       CODE_EXECUTION_MAX_CONCURRENT: ${CODE_EXECUTION_MAX_CONCURRENT:-4}
-      # uvicorn worker processes. The default of 1 is what this app ran as
-      # before shared state existed; raising it is the single biggest
-      # throughput change available, because request handling was previously
-      # confined to one CPU core no matter how many the host had.
-      #
-      # Rule of thumb: (2 x cores) + 1, capped by the database. Total Postgres
-      # connections are (DB_POOL_SIZE + DB_MAX_OVERFLOW) x this number, and
-      # Postgres allows 100 by default -- so 4 workers at the defaults is 60,
-      # which is fine, and 8 would not be.
+      # uvicorn worker processes. Rule of thumb: (2 x cores) + 1, capped by the database --
+      # total Postgres connections are (DB_POOL_SIZE + DB_MAX_OVERFLOW) x this value.
       WEB_CONCURRENCY: ${WEB_CONCURRENCY:-4}
       DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
       DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
       # Defaults to true so an existing deployment keeps booting correctly.
-      # Set false once migrations run as an explicit, backed-up deploy step --
-      # see backend/entrypoint.sh for why that matters for rollback.
       RUN_MIGRATIONS_ON_START: ${RUN_MIGRATIONS_ON_START:-true}
       FACE_MATCHING_ENABLED: ${FACE_MATCHING_ENABLED:-true}
       OBJECT_DETECTION_ENABLED: ${OBJECT_DETECTION_ENABLED:-true}
@@ -234,10 +145,7 @@ services:
       # Intentionally has NO default. Unset in production means "create no
       # admin", which is the safe outcome -- see backend/app/utils/seed.py.
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-}
-      # Outbound email. Every value is optional -- with EMAIL_ENABLED unset the
-      # app runs exactly as it did before email existed, so this whole block is
-      # safe to leave at its defaults. See .env.example for the Gmail App
-      # Password walkthrough.
+      # Outbound email.
       EMAIL_ENABLED: ${EMAIL_ENABLED:-false}
       SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
       SMTP_PORT: ${SMTP_PORT:-587}
@@ -255,63 +163,43 @@ services:
       # 0 = never auto-delete. Deliberate default -- see .env.example.
       BIOMETRIC_RETENTION_DAYS: ${BIOMETRIC_RETENTION_DAYS:-0}
       BIOMETRIC_PURGE_INTERVAL_HOURS: ${BIOMETRIC_PURGE_INTERVAL_HOURS:-24}
-      # Fail-closed signup gates. These were set in .env and never reached the
-      # container, because this file lists every variable explicitly rather than
-      # using env_file -- so the process fell back to the code defaults and .env
-      # appeared to do nothing. Both default to true in config.py, so the
-      # behaviour happened to be correct; setting either to false in .env would
-      # silently have had no effect, which is the dangerous half.
+      # Fail-closed signup gates. Every variable is listed explicitly rather than via
+      # env_file, so anything added to .env must also be added here to reach the container.
       REQUIRE_EMAIL_VERIFICATION: ${REQUIRE_EMAIL_VERIFICATION:-true}
       PASSWORD_MIN_LENGTH: ${PASSWORD_MIN_LENGTH:-10}
-      # Which hops may set X-Forwarded-For. Rate limiting reads the rightmost
-      # UNTRUSTED address from it, so getting this wrong means either every
-      # request shares one bucket (the proxy's IP) or a caller can spoof their
-      # way out of the limit.
+      # Which hops may set X-Forwarded-For.
       TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-172.16.0.0/12,10.0.0.0/8,192.168.0.0/16,127.0.0.1/32}
       REQUIRE_CONSENT_ON_SIGNUP: ${REQUIRE_CONSENT_ON_SIGNUP:-true}
       OTP_LENGTH: ${OTP_LENGTH:-6}
       OTP_TTL_MINUTES: ${OTP_TTL_MINUTES:-10}
       OTP_MAX_ATTEMPTS: ${OTP_MAX_ATTEMPTS:-5}
       OTP_RESEND_COOLDOWN_SECONDS: ${OTP_RESEND_COOLDOWN_SECONDS:-60}
-      # Activation links. Passwords are never emailed: approving an access
-      # request creates the account with an unusable random secret and mails a
-      # single-use link the owner sets their own password from.
+      # Activation links.
       ACTIVATION_TTL_HOURS: ${ACTIVATION_TTL_HOURS:-72}
-      # "open" (anyone may register) or "invite" (only addresses already on an
-      # exam or organization roster). Open is right for a trial, invite for an
-      # institution.
+      # "open" (anyone may register) or "invite" (only
+      # addresses already on an exam or organization roster).
       REGISTRATION_MODE: ${REGISTRATION_MODE:-open}
       # Examiner/admin sign-ins get an email; candidate sign-ins do not.
       NOTIFY_STAFF_ON_LOGIN: ${NOTIFY_STAFF_ON_LOGIN:-true}
-      # Minimum gap between two admin notifications about the same pending
-      # access request. Stops a double-click sending two emails without making
-      # the suppression permanent.
+      # Minimum gap between two admin notifications about the same pending access request.
       ACCESS_REQUEST_RENOTIFY_SECONDS: ${ACCESS_REQUEST_RENOTIFY_SECONDS:-900}
       EXAM_REMINDER_ENABLED: ${EXAM_REMINDER_ENABLED:-true}
       EXAM_REMINDER_MINUTES_BEFORE: ${EXAM_REMINDER_MINUTES_BEFORE:-5}
       EXAM_REMINDER_POLL_SECONDS: ${EXAM_REMINDER_POLL_SECONDS:-60}
-      # Permanent delivery record for tracked transactional email (admin
-      # notification, activation link, OTP codes, exam/report notices) --
-      # see app/services/email_service.py's outbox. The retry TIMING between
-      # attempts is these same base/max seconds, now driving RQ's backoff
-      # curve (app/core/queues.py) instead of a Postgres-polling worker.
+      # Permanent delivery record for tracked transactional email (admin notification,
+      # activation link, OTP codes, exam/report notices).
       EMAIL_OUTBOX_MAX_ATTEMPTS: ${EMAIL_OUTBOX_MAX_ATTEMPTS:-5}
       EMAIL_OUTBOX_RETRY_BASE_SECONDS: ${EMAIL_OUTBOX_RETRY_BASE_SECONDS:-60}
       EMAIL_OUTBOX_RETRY_MAX_SECONDS: ${EMAIL_OUTBOX_RETRY_MAX_SECONDS:-3600}
     volumes:
       - uploads:/app/uploads
       - core_models:/app/models
-      # Docker-outside-of-Docker: code_runner_service.py shells out to the
-      # `docker` CLI (installed in backend/Dockerfile) to run each coding-
-      # question test case in its own ephemeral, network-disabled container
-      # on the HOST's Docker daemon -- there is no nested daemon here, this
-      # container just talks to the same one your shell does.
+      # Docker-outside-of-Docker: code_runner_service.py shells out to the `docker` CLI
+      # (installed in backend/Dockerfile) to run each coding-question test case in its own
+      # ephemeral, network-disabled container on the HOST's Docker daemon -- there is no nested
+      # daemon here, this container just talks to the same one your shell does.
       - /var/run/docker.sock:/var/run/docker.sock
-    # The docker.sock above is owned by the *host's* docker group, whose GID
-    # varies by machine. Run `getent group docker | cut -d: -f3` on the host
-    # and put that number in .env as DOCKER_GID so this container's appuser
-    # can actually use the socket instead of hitting "permission denied" on
-    # every code-runner request.
+    # The docker.sock above is owned by the *host's* docker group, whose GID varies by machine.
     group_add:
       - "${DOCKER_GID:-999}"
     networks:
@@ -332,38 +220,14 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
-    # NOT published to the host. The reverse proxy is the one and only door in,
-    # which is the whole point of having it -- and what deploy/nginx/nginx.conf's
-    # own header comment already claimed was true.
-    #
-    # This used to map 8000:8000 "for local development convenience". Two
-    # problems with that on a stack whose shipped .env sets
-    # ENVIRONMENT=production: it exposed every endpoint directly, bypassing the
-    # proxy, and with it the proxy's `client_max_body_size 12m` -- currently the
-    # only real ceiling on the multi-megabyte image payloads the proctoring
-    # endpoints accept.
-    #
-    # To get the direct port back for local work, override it without editing
-    # this file:
-    #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
-    # or temporarily uncomment:
-    #   ports:
-    #     - "127.0.0.1:8000:8000"   # loopback only, never 0.0.0.0
+    # NOT published to the host. The reverse proxy is the one
+    # and only door in, which is the whole point of having it.
     expose:
       - "8000"
 
   # ----------------------------------------------------------------------------
   scheduler:
-    # Periodic work: exam reminders, OTP purge, biometric retention.
-    #
-    # MUST stay at one replica. This loop used to live inside core-api, which
-    # was correct only while core-api was a single process -- with several
-    # workers, each ran its own copy and raced to send the same reminders.
-    # Splitting it out is what makes scaling core-api safe; scaling THIS would
-    # reintroduce the bug. There is nothing to gain from it either: the work is
-    # a few queries a minute.
-    #
-    # Shares the core-api image because it imports the same services and models.
+    # Periodic work: exam reminders, OTP purge, biometric retention. MUST stay at one replica.
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -393,15 +257,13 @@ services:
       EXAM_REMINDER_POLL_SECONDS: ${EXAM_REMINDER_POLL_SECONDS:-60}
       BIOMETRIC_RETENTION_DAYS: ${BIOMETRIC_RETENTION_DAYS:-0}
       BIOMETRIC_PURGE_INTERVAL_HOURS: ${BIOMETRIC_PURGE_INTERVAL_HOURS:-24}
-      # Each periodic pass takes a Redis lock naming itself before running
-      # (see backend/app/scheduler/main.py) -- belt-and-suspenders alongside
-      # `deploy.replicas: 1` below, not a substitute for it.
+      # Each periodic pass takes a Redis lock naming itself before running (see
+      # backend/app/scheduler/main.py).
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
       LOCK_DEFAULT_TTL_SECONDS: ${LOCK_DEFAULT_TTL_SECONDS:-30}
-      # This process never serves a request, so it must never run migrations
-      # either -- core-api owns the schema. Two containers racing to migrate the
-      # same database at boot is a genuinely nasty way to corrupt a deploy.
+      # This process never serves a request, so it must never
+      # run migrations either -- core-api owns the schema.
       RUN_MIGRATIONS_ON_START: "false"
       AUTO_SEED_ADMIN: "false"
     volumes:
@@ -419,15 +281,8 @@ services:
 
   # ----------------------------------------------------------------------------
   worker:
-    # An RQ worker consuming the emails/reports/default queues over Redis:
-    # transactional email delivery + retry, PDF result reports, bulk email.
-    # See backend/app/worker/main.py and backend/app/worker/jobs.py.
-    #
-    # Scale this freely -- RQ workers claim jobs from Redis atomically, so
-    # more replicas simply means more throughput. A job queued while every
-    # worker replica is down just waits in Redis until one is available;
-    # PERMANENT records (an email's own final delivery status) are always in
-    # Postgres's email_outbox regardless of how many workers are running.
+    # An RQ worker consuming the emails/reports/default queues over Redis: transactional email
+    # delivery + retry, PDF result reports, bulk email.
     build:
       context: ./backend
       dockerfile: Dockerfile

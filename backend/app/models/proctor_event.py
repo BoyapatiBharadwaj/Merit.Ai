@@ -1,4 +1,4 @@
-﻿"""
+"""
 Logs every AI-proctoring violation raised during an exam attempt.
 """
 from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, func
@@ -17,10 +17,8 @@ class ProctorEvent(Base):
     severity = Column(db_enum(Severity), default=Severity.LOW, nullable=False, index=True)
     description = Column(String(255), nullable=True)
     screenshot_path = Column(String(255), nullable=True)
-    # An admin's review verdict for the candidate exam report's violation
-    # timeline -- see AdminDecision. Defaults to PENDING so every violation
-    # starts out needing a look, rather than silently reading as "already
-    # handled" the moment it's logged.
+    # An admin's review verdict for the candidate exam
+    # report's violation timeline -- see AdminDecision.
     admin_decision = Column(db_enum(AdminDecision), default=AdminDecision.PENDING, nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 

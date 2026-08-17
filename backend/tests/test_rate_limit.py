@@ -1,13 +1,5 @@
-"""
-Tests for the per-IP rate limiter (app/core/rate_limit.py) and its wiring
-into POST /auth/login and POST /auth/register/student.
-
-The unit tests call `rate_limit()` directly against a fake Request so window
-timing can be exercised in milliseconds instead of the real 60-second
-default. The end-to-end tests go through the actual HTTP endpoints, using
-the suite's real configured default (10 requests / 60s window) -- fast
-enough to run in-process without any sleep, since a loop of plain in-memory
-requests finishes in well under a second.
+"""Tests for the per-IP rate limiter (app/core/rate_limit.py) and its wiring into POST
+/auth/login and POST /auth/register/student.
 """
 import time
 from types import SimpleNamespace

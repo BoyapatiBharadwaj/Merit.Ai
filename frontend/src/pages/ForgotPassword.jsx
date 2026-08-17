@@ -10,32 +10,11 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
  * Self-service password reset, by emailed one-time code.
- *
- * This page used to say -- honestly, at the time -- that Merit.Ai could not
- * send email and that an administrator had to reset passwords by hand. That is
- * no longer true (see backend/app/services/email_service.py), so the page now
- * does the thing it previously explained it could not do.
- *
- * Three steps in one component rather than three routes: the flow is strictly
- * linear, each step needs the previous one's state (first the address, then the
- * code), and separate URLs would mean a refresh mid-flow silently drops that
- * state and restarts the user at the beginning with no explanation.
- *
- * One deliberate piece of restraint in the copy: the confirmation never says
- * whether an account actually exists for the address. The backend takes care
- * not to leak that (see otp_service.request_code on account enumeration), and a
- * UI that helpfully said "no account found" would hand straight back the
- * information the API just went out of its way to withhold.
  */
 export default function ForgotPassword() {
   const navigate = useNavigate();
-  // request -> notfound | verify -> done
-  //
-  // "notfound" is its own step, not just an inline error on "request": the
-  // product decision here (see the backend's AccountExistsOut docstring) is to
-  // tell someone with no account plainly, with a way straight to registering,
-  // rather than sending them into a code-entry screen for a message that will
-  // never arrive.
+  // request -> notfound | verify -> done "notfound" is its
+  // own step, not just an inline error on "request".
   const [step, setStep] = useState("request");
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
@@ -45,17 +24,11 @@ export default function ForgotPassword() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
-  // Seconds until "Resend code" is available again, mirroring the server's
-  // OTP_RESEND_COOLDOWN_SECONDS. Disabling the button while a request would be
-  // rejected anyway explains the wait far better than letting them press it and
-  // handing back a 429.
+  // Seconds until "Resend code" is available again,
+  // mirroring the server's OTP_RESEND_COOLDOWN_SECONDS.
   const [cooldown, setCooldown] = useState(0);
 
   // The rules the SERVER enforces, fetched the same way Register.jsx does.
-  // This screen used to hard-code "at least 8 characters", independent of
-  // PASSWORD_MIN_LENGTH -- so a deployment that raised the floor to, say, 12
-  // would let someone submit a 9-character password here, have the server
-  // reject it, and never learn why 8 wasn't actually the rule.
   const [policy, setPolicy] = useState(null);
 
   useEffect(() => {
@@ -89,11 +62,7 @@ export default function ForgotPassword() {
     }
     setLoading(true);
     try {
-      // Check existence FIRST. Every other email-driven flow in this app
-      // (OTP, activation) deliberately never answers this question, to avoid
-      // becoming an account-enumeration oracle -- this screen is the one
-      // deliberate, product-required exception (see the backend schema's
-      // docstring for AccountExistsOut).
+      // Check existence FIRST.
       const { exists } = await Api.post("/auth/password-reset/check-account", { email: email.trim() });
       if (!exists) {
         setStep("notfound");
@@ -136,11 +105,8 @@ export default function ForgotPassword() {
         code: code.trim(),
         new_password: password,
       });
-      // Setting a new password stamps password_changed_at, which invalidates
-      // every access token issued before this moment (see
-      // api/deps.py::_reject_if_password_changed) -- so every other signed-in
-      // session is logged out by this same call. The OTP code itself is
-      // single-use and already consumed by password-reset/confirm above.
+      // Setting a new password stamps password_changed_at, which invalidates every access token
+      // issued before this moment (see api/deps.py::_reject_if_password_changed).
       setStep("done");
     } catch (err) {
       setError(describe(err));
@@ -242,9 +208,8 @@ export default function ForgotPassword() {
             value={code}
             onChange={(e) => setCode(e.target.value)}
             inputMode="numeric"
-            // Lets iOS/Android surface the code straight from the SMS/mail
-            // notification instead of making the person switch apps and retype
-            // it from memory.
+            // Lets iOS/Android surface the code straight from the SMS/mail notification instead
+            // of making the person switch apps and retype it from memory.
             autoComplete="one-time-code"
             autoFocus
             placeholder="123456"

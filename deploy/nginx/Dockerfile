@@ -1,9 +1,5 @@
 # syntax=docker/dockerfile:1
-# ==============================================================================
-# Reverse proxy -- the single public entrypoint for the stack. See nginx.conf
-# for the routing rules; this Dockerfile only sets up an unprivileged runtime
-# for it (no root, no privileged port bound from inside the container).
-# ==============================================================================
+# Merit.Ai reverse proxy -- the only published port; routes /api/* to core-api.
 FROM nginx:1.27-alpine
 
 RUN rm -f /etc/nginx/conf.d/default.conf

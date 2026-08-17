@@ -4,15 +4,6 @@ from sqlalchemy.orm import Session
 from app.repositories import analytics_repository
 
 # Half-open bands: [lower, upper), with the last one closed so 100% has a home.
-#
-# These were (0,20), (21,40), (41,60), (61,80), (81,100), matched with
-# `lo <= pct <= hi`. Percentages are floats -- ExamResult.percentage is
-# `round(scored / total * 100, 2)` -- so every value in the gaps between bands
-# matched nothing and was silently dropped from the chart. 20.5, 40.5, 60.5 and
-# 80.5 are not exotic: 20.5 is 41 of 200 marks, and any exam whose total is not
-# a factor of 100 produces them constantly. A candidate would simply not appear
-# in the distribution, and the columns would not add up to the number of
-# candidates -- with nothing to indicate why.
 SCORE_BUCKETS = [(0, 20), (20, 40), (40, 60), (60, 80), (80, 100)]
 
 

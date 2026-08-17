@@ -11,17 +11,6 @@ import { isLoggedIn, getRole } from "../lib/auth.js";
 
 /**
  * Organizations, and what is in each one.
- *
- * An organization is this platform's tenancy boundary: it decides which
- * candidates an examiner can see, which roster an exam draws from, and which
- * students may sit it. Every access decision runs through it — and there was no
- * page anywhere showing which organizations existed, let alone what was in
- * them. An administrator investigating "why can this examiner see these
- * candidates?" had to infer the answer from two other screens.
- *
- * Registered and invited are shown separately on purpose. "50 on the roster,
- * 12 registered" is the number someone chasing enrolment before an exam
- * actually needs; one combined figure hides the 38 who cannot sit it yet.
  */
 export default function AdminOrganizations() {
   const [rows, setRows] = useState([]);

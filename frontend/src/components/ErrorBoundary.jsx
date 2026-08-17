@@ -4,21 +4,6 @@ import { btnPrimary, btnGhost } from "../lib/ui.js";
 
 /**
  * Catches render-time errors anywhere below it.
- *
- * Without one, any thrown error during render unmounts the entire React tree
- * and leaves a blank white page -- no message, no navigation, nothing telling
- * the person what happened or what to do. That is bad on a marketing page and
- * genuinely serious mid-exam, where a candidate staring at a white screen has
- * no way to know whether their answers were saved.
- *
- * Still a class component: `componentDidCatch` / `getDerivedStateFromError`
- * have no hooks equivalent, and this is the one place React still requires a
- * class. Not an oversight.
- *
- * Deliberately NOT a full-screen replacement of the app for recoverable cases:
- * the primary action is "Reload", because a chunk that failed to download (the
- * most likely cause now that routes are code-split) succeeds on a retry, and a
- * reload preserves the URL so the candidate returns to the same exam.
  */
 export default class ErrorBoundary extends Component {
   constructor(props) {
@@ -31,20 +16,16 @@ export default class ErrorBoundary extends Component {
   }
 
   componentDidCatch(error, info) {
-    // Console rather than a reporting service: this app has no error-tracking
-    // integration yet, and inventing a silent network call to nowhere would be
-    // worse than a log the developer can actually find. When Sentry (or
-    // similar) is wired up, this is the single place it hooks in.
+    // Console rather than a reporting service: this app has no
+    // error-tracking integration yet, and inventing a silent network call
+    // to nowhere would be worse than a log the developer can actually find.
     console.error("Unhandled render error:", error, info?.componentStack);
   }
 
   render() {
     if (!this.state.error) return this.props.children;
 
-    // A lazily-loaded route chunk that fails to download throws a distinctive
-    // error. Worth telling apart from a genuine bug, because the remedy the
-    // person needs is completely different -- and on the flaky connections this
-    // app is built to tolerate, this is the likelier of the two.
+    // A lazily-loaded route chunk that fails to download throws a distinctive error.
     const isChunkError = /Loading chunk|dynamically imported module|Failed to fetch/i.test(
       this.state.error?.message || ""
     );

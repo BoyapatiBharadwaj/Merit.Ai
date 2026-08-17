@@ -1,30 +1,4 @@
-"""
-Runs the Alembic chain against a real PostgreSQL server.
-
-Everything else in this suite builds the schema with `Base.metadata.create_all()`
-against SQLite (see conftest.py), which reflects whatever the Python models
-currently say and ignores migration history entirely. That is fast and right for
-testing application behaviour, and structurally incapable of catching a broken
-migration. Two real bugs lived in that blind spot:
-
-  * `multi_select` and `screen_share_stopped` existed in app/models/enums.py with
-    no `ALTER TYPE ... ADD VALUE` anywhere -- every test passed, and the first
-    INSERT against a migrated PostgreSQL database raised
-    InvalidTextRepresentation. Fixed in 0017.
-  * Migration 0016 created the `otppurpose` type explicitly AND referenced it
-    from `op.create_table`, which runs SQLAlchemy's DDL visitor and emits a
-    second CREATE TYPE without checkfirst -- `DuplicateObject: type
-    "otppurpose" already exists`. Only reproducible on PostgreSQL.
-
-How to get a database for this:
-
-  * CI: start a postgres service container and set TEST_POSTGRES_URL.
-  * Locally, zero setup: `pip install pgserver` and these tests boot their own
-    throwaway server. pgserver ships prebuilt PostgreSQL binaries as a wheel, so
-    it needs no system package and no Docker.
-  * Neither available: every test here skips with a message saying so. It must
-    never fail merely because a developer has no PostgreSQL to hand.
-"""
+"""Runs the Alembic chain against a real PostgreSQL server."""
 import logging
 import os
 import subprocess
@@ -44,11 +18,7 @@ pytestmark = pytest.mark.postgres
 
 @pytest.fixture(scope="session")
 def postgres_server():
-    """A base URL to a live PostgreSQL, or a skip.
-
-    Yields a callable that creates a fresh, empty database and returns its URL,
-    so each test starts from nothing rather than inheriting another's schema.
-    """
+    """A base URL to a live PostgreSQL, or a skip."""
     explicit = os.getenv("TEST_POSTGRES_URL", "").strip()
 
     if explicit:
@@ -80,25 +50,14 @@ def postgres_server():
 
     yield make
 
-    # pgserver shuts its postmaster down from an atexit hook, which runs after
-    # pytest has already closed the streams its logger writes to -- producing a
-    # wall of "ValueError: I/O operation on closed file" tracebacks that look
-    # like test failures and are not. Silencing its logger on the way out costs
-    # nothing (the server still stops) and keeps a passing run readable.
+    # pgserver shuts its postmaster down from an atexit hook, which runs after pytest has
+    # already closed the streams its logger writes to.
     logging.getLogger("pgserver").disabled = True
     logging.getLogger("pgserver._commands").disabled = True
 
 
 def _alembic(url: str, *args: str) -> subprocess.CompletedProcess:
-    """Run alembic in a subprocess against `url`.
-
-    Not in-process, and this matters: alembic/env.py sets sqlalchemy.url from
-    `settings.DATABASE_URL`, which is lru_cached at first import. An in-process
-    second run therefore silently reuses the FIRST run's database and reports
-    success against the wrong target -- which is exactly what happened while
-    writing these tests. A subprocess gets a clean import and a clean settings
-    cache, and is also how entrypoint.sh actually runs migrations in production.
-    """
+    """Run alembic in a subprocess against `url`."""
     env = {
         **os.environ,
         "DATABASE_URL": url,
@@ -143,15 +102,7 @@ def migrated_url(postgres_server):
 
 
 def test_0022_backfills_the_password_epoch_without_signing_everyone_out(postgres_server):
-    """The subtle half of 0022, and the one that would hurt on deploy day.
-
-    password_changed_at is stamped into every token and any token older than it
-    is refused. Backfilling existing rows with now() would therefore set the
-    epoch LATER than every token currently in circulation and sign out every
-    candidate -- including ones mid-exam -- the moment the migration ran.
-    created_at is both true (the password was set when the account was made) and
-    safely in the past.
-    """
+    """The subtle half of 0022, and the one that would hurt on deploy day."""
     url = postgres_server("meritai_mig_0022")
     assert _alembic(url, "upgrade", "0021").returncode == 0
 
@@ -225,12 +176,7 @@ def test_native_enum_types_contain_every_value_the_app_uses(migrated_url, type_n
 
 
 def test_multi_select_and_screen_share_stopped_are_rejected_before_0017(postgres_server):
-    """Pins WHY 0017 exists.
-
-    Without this, someone could delete 0017 believing it redundant -- the SQLite
-    suite would stay green and the bug would come back silently. Here the
-    pre-0017 database genuinely refuses both values.
-    """
+    """Pins WHY 0017 exists."""
     url = postgres_server("meritai_mig_0016")
     result = _alembic(url, "upgrade", "0016")
     assert result.returncode == 0, f"upgrade to 0016 failed:\n{result.stderr[-2000:]}"
@@ -247,20 +193,7 @@ def test_multi_select_and_screen_share_stopped_are_rejected_before_0017(postgres
 
 
 def test_activation_rows_and_the_must_change_flag_work_after_0026(migrated_url):
-    """The 0017 lesson, applied to 0026.
-
-    Adding OtpPurpose.ACTIVATION in Python costs nothing on SQLite, where the
-    column is a VARCHAR with a CHECK. On PostgreSQL it is a native enum, and a
-    missing ALTER TYPE means every activation link fails at INSERT with
-    InvalidTextRepresentation -- with a green test suite, because nothing else
-    here runs against Postgres. That is precisely how multi_select shipped.
-
-    Asserting the enum LABEL exists is not enough on its own: 0026 issues the
-    ADD VALUE after an explicit COMMIT (it cannot run inside the migration's
-    transaction on older servers), which is the kind of thing that can leave the
-    type looking right while the value is unusable in the same session. So this
-    actually inserts a row.
-    """
+    """The 0017 lesson, applied to 0026."""
     engine = sa.create_engine(migrated_url)
     try:
         with engine.begin() as conn:
@@ -287,11 +220,7 @@ def test_activation_rows_and_the_must_change_flag_work_after_0026(migrated_url):
 
 
 def test_every_migration_can_be_rolled_back(migrated_url):
-    """A downgrade path nobody ever runs is a downgrade path that does not work.
-
-    Runs last against the shared database (it empties it), and re-upgrades
-    afterwards so ordering between tests cannot matter.
-    """
+    """A downgrade path nobody ever runs is a downgrade path that does not work."""
     down = _alembic(migrated_url, "downgrade", "base")
     assert down.returncode == 0, f"`alembic downgrade base` failed:\n{down.stderr[-3000:]}"
 

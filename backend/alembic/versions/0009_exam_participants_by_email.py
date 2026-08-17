@@ -3,16 +3,6 @@
 Revision ID: 0009
 Revises: 0008
 Create Date: 2026-08-02
-
-exam_participants originally referenced students.id, which meant an exam could
-only be restricted to people who had already registered. That is backwards for
-the case it exists to serve: an examiner sets up an exam *before* the cohort
-signs up. Keying on email lets them paste a list straight away, and the row
-resolves to a real account whenever that person registers.
-
-student_id survives as a nullable cache for display ("Registered" vs
-"Invited"). It is not what authorises access -- see the ExamParticipant
-docstring and can_student_access_exam, which match on id OR email.
 """
 import sqlalchemy as sa
 from alembic import op
@@ -35,9 +25,8 @@ def upgrade() -> None:
         "  WHERE s.id = exam_participants.student_id"
         "), linked_at = CURRENT_TIMESTAMP"
     ))
-    # A row whose student vanished has nothing to key on and can never match
-    # anyone; leaving it would silently keep the exam in allow-list mode
-    # while granting access to no one.
+    # A row whose student vanished has nothing to key on and can never match anyone; leaving it
+    # would silently keep the exam in allow-list mode while granting access to no one.
     op.execute(sa.text("DELETE FROM exam_participants WHERE email IS NULL"))
 
     with op.batch_alter_table("exam_participants") as batch:
@@ -51,9 +40,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Rows that never resolved to an account cannot be represented by the old
-    # student_id-only schema, so they are dropped rather than silently
-    # becoming NULL-keyed junk.
+    # Rows that never resolved to an account cannot be represented by the old student_id-only
+    # schema, so they are dropped rather than silently becoming NULL-keyed junk.
     op.execute(sa.text("DELETE FROM exam_participants WHERE student_id IS NULL"))
     op.drop_index("ix_exam_participants_email", table_name="exam_participants")
     with op.batch_alter_table("exam_participants") as batch:

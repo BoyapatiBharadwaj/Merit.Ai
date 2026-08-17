@@ -1,33 +1,5 @@
-"""
-Seeds the three fixed roles (admin, examiner, student) and, optionally, a
-first admin account. Run after migrations: `python -m app.utils.seed`.
-
-Roles are always safe to seed: they are three fixed rows the application cannot
-function without, and creating them grants nobody access to anything.
-
-The admin account is a different matter, and this module used to treat the two
-the same. It hard-coded `admin@examproctor.com` / `Admin@12345`, created that
-account on every boot (entrypoint.sh runs this with AUTO_SEED_ADMIN defaulting
-to true), and printed the password to stdout. Both halves of that credential
-appear in this repository, in .env.example, and in the README -- so every
-deployment that never got around to changing it shares one publicly known
-administrator login, and the password lands in the container logs of whatever
-platform is collecting them.
-
-What happens now instead:
-
-  * SEED_ADMIN_PASSWORD unset, non-production -> a random password is generated
-    and printed once. Local development still works with zero setup, and the
-    credential is different on every machine.
-  * SEED_ADMIN_PASSWORD unset, production -> the account is NOT created, and
-    the reason is logged. A deployment that forgot to configure this ends up
-    with no admin rather than a publicly known one; `python -m app.utils.seed`
-    can be run by hand once a real password is set.
-  * SEED_ADMIN_PASSWORD set to the old public default -> allowed, with a loud
-    warning. An operator who types it explicitly is not doing it by accident,
-    and the unset-in-production branch above already covers the accident.
-  * The password is never printed when it was supplied by the operator, who
-    already knows it and does not need it in the logs.
+"""Seeds the three fixed roles (admin, examiner, student) and, optionally, a first admin
+account. Run after migrations: `python -m app.utils.seed`.
 """
 import logging
 import os
@@ -49,25 +21,12 @@ PUBLICLY_KNOWN_PASSWORD = "Admin@12345"
 
 
 def _resolve_admin_password() -> tuple[str | None, bool]:
-    """Returns (password, should_print).
-
-    `should_print` is False whenever the operator supplied the password: they
-    already have it, and echoing it would put a live admin credential into
-    stdout and therefore into whatever aggregates the container's logs.
-    """
+    """Returns (password, should_print)."""
     configured = os.getenv("SEED_ADMIN_PASSWORD", "").strip()
 
     if configured:
         if configured == PUBLICLY_KNOWN_PASSWORD:
             # Warn loudly, but proceed.
-            #
-            # This used to refuse outright. That was the wrong call: the guard
-            # exists to stop a deployment *accidentally* shipping with the
-            # default that lives in .env.example and the README -- and an
-            # operator who has explicitly typed it into SEED_ADMIN_PASSWORD is
-            # not doing it by accident. Refusing an explicit instruction is
-            # paternalistic; refusing to mention the risk would be negligent.
-            # The unset-in-production branch below still covers the accident.
             logger.warning(
                 "SEED_ADMIN_PASSWORD is the publicly known default from .env.example. "
                 "Anyone who has seen this repository can sign in as an administrator. "

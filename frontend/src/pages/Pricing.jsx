@@ -6,13 +6,6 @@ import { btnPrimary, btnGhost, sectionEyebrow } from "../lib/ui.js";
 
 /**
  * Pricing page.
- *
- * No self-serve billing exists anywhere in this codebase -- candidate
- * accounts are genuinely free with no payment step, and every examiner
- * account is provisioned by an admin after a reviewed access request (see
- * access_request_service.py). So this page states a real $0 for candidates
- * and "custom" / "contact us" for institutions rather than inventing a price
- * list the product can't actually charge or enforce yet.
  */
 
 const TIERS = [

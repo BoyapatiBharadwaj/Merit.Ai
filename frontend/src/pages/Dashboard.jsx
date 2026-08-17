@@ -11,9 +11,8 @@ export default function Dashboard() {
   const role = getRole();
   if (role === "student") return <StudentDashboard />;
   if (role === "admin") return <AdminDashboard />;
-  // Examiners get their own routed section rather than being rendered inline
-  // here, so the exam they are working on lives in the URL -- see
-  // ExaminerDashboard for what that fixes.
+  // Examiners get their own routed section rather than being rendered inline here, so the exam
+  // they are working on lives in the URL.
   if (role === "examiner") return <Navigate to="/examiner" replace />;
   return <Navigate to="/" replace />;
 }

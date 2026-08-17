@@ -1,7 +1,6 @@
-"""
-Database transaction behavior: failed multi-step writes must not leave partial
-rows behind, get_db must roll back on error, and the background-task screenshot
-write path must not crash the request if something goes wrong.
+"""Database transaction behavior: failed multi-step writes must not leave partial rows behind,
+get_db must roll back on error, and the background-task screenshot write path must not crash
+the request if something goes wrong.
 """
 import pytest
 from fastapi import HTTPException

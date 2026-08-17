@@ -3,20 +3,16 @@
   Rebuild and start the Merit.Ai stack, then verify it actually came up.
 
 .DESCRIPTION
-  One command instead of a checklist, because every problem in this project so
-  far has been a step that got skipped rather than code that was wrong:
+  Checks the common deployment mistakes before touching anything, then
+  rebuilds, waits for health, and reports what is actually running:
 
-    * the stack was rebuilt from a different folder than the one being edited
-    * .env was missing keys that only existed in .env.example
-    * the frontend container was serving a build from before the changes
-    * a build failed halfway and the old containers kept running, so everything
-      looked deployed and nothing was
-
-  This script checks for each of those before touching anything, then rebuilds,
-  waits for health, and reports what is actually running.
+    * rebuilding from a different folder than the one being edited
+    * .env missing keys that only exist in .env.example
+    * the frontend container serving a stale build
+    * a build failing halfway while the old containers keep running
 
 .EXAMPLE
-  cd C:\Users\Babblu\Documents\GitHub\Merit.Ai
+  cd path\to\Merit.Ai
   .\deploy.ps1
 #>
 [CmdletBinding()]
@@ -79,9 +75,7 @@ if ($missing.Count -gt 0) {
 }
 Ok "required keys present"
 
-# The check that would have saved the last round-trip: EMAIL_ENABLED=true with
-# an empty SMTP_PASSWORD means is_enabled() stays false and every send is a
-# silent no-op, which looks identical to email being broken.
+# The check that would have saved the last round-trip.
 $emailOn = $envText -match "(?m)^\s*EMAIL_ENABLED\s*=\s*true\s*$"
 $pwdSet  = $envText -match "(?m)^\s*SMTP_PASSWORD\s*=\s*\S+"
 if ($emailOn -and -not $pwdSet) {
@@ -134,10 +128,8 @@ docker compose up -d
 if ($LASTEXITCODE -ne 0) { Fail "docker compose up failed."; exit 1 }
 Ok "containers started"
 
-# --- 6. Wait for health ------------------------------------------------------
-# Polling the app's own readiness endpoint rather than sleeping a fixed time:
-# first boot runs migrations and warms OCR weights, which is far slower than
-# every subsequent start.
+# --- 6. Wait for health ---
+# Polling the app's own readiness endpoint rather than sleeping a fixed time.
 Say ""
 Say "6. Waiting for the API to become ready (up to 3 minutes)"
 $ready = $false

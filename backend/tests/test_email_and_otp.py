@@ -1,12 +1,5 @@
-"""
-Tests for the outbound-email features: the SMTP wrapper's failure behaviour,
-the one-time passcode lifecycle, the account-flow notifications, and the
-pre-exam reminder scheduler.
-
-No SMTP server is involved anywhere. `email_service.send` is monkeypatched to
-record into a list, which is also the only honest way to assert "this flow sends
-exactly one message to exactly this address" -- the thing that actually matters
-about an email feature.
+"""Tests for the outbound-email features: the SMTP wrapper's failure behaviour, the one-time
+passcode lifecycle, the account-flow notifications, and the pre-exam reminder scheduler.
 """
 from datetime import datetime, timedelta, timezone
 
@@ -51,19 +44,7 @@ def test_messages_carry_both_a_text_and_an_html_part():
 # --- OTP lifecycle ------------------------------------------------------------
 
 def _issue(db, email="student@example.com", purpose=OtpPurpose.SIGNUP):
-    """Issue a code and dig the plaintext back out.
-
-    The service never returns the code (it only mails it), and its state --
-    now Redis for SIGNUP/PASSWORD_RESET, see otp_redis_store.py -- only holds
-    a digest, so the test brute-forces the six digits against the same HMAC
-    the service uses. Slightly awkward, and deliberately so: a test helper
-    that could read the code straight out of its store would mean the store
-    held it in the clear, which is exactly what must not be true.
-
-    Returns `(code, stored_hash)`. There is no ORM row any more for
-    SIGNUP/PASSWORD_RESET -- callers that need to simulate expiry act on the
-    Redis key directly (see test_an_expired_code_is_rejected below).
-    """
+    """Issue a code and dig the plaintext back out."""
     otp_service.request_code(db, email=email, purpose=purpose)
     from app.core.redis_client import get_client
     from app.services import otp_redis_store
@@ -99,13 +80,7 @@ def test_a_code_issued_for_signup_cannot_be_spent_on_a_password_reset(db_session
 
 
 def test_an_expired_code_is_rejected(db_session, outbox):
-    """Expiry is Redis's own key TTL now (see otp_redis_store.py) -- there is
-    no `expires_at` column to backdate for SIGNUP/PASSWORD_RESET codes, so this
-    simulates the code having already expired by deleting its key outright.
-    A verify against a missing key and a verify against a genuinely-expired
-    one are the exact same code path (otp_redis_store.verify's `stored is
-    None` branch), so this is not a weaker test than backdating a timestamp
-    would have been."""
+    """Expiry is Redis's own key TTL now (see otp_redis_store.py)."""
     from app.core.redis_client import get_client
     from app.services import otp_redis_store
 
@@ -241,13 +216,7 @@ def test_a_repeat_access_request_does_not_email_again(client, seed_roles, email_
 
 
 def test_approving_a_request_emails_an_activation_link_and_no_password(client, admin_token, email_on, outbox):
-    """The message must carry a link, not a credential.
-
-    This asserted the opposite until the approval flow changed: that the
-    password the admin typed appeared verbatim in the email body. That was the
-    behaviour, and it was the bug -- a live credential sitting in a mailbox in
-    plain text, known to the person who created the account.
-    """
+    """The message must carry a link, not a credential."""
     client.post("/api/v1/access-requests", json={
         "first_name": "Asha", "last_name": "Rao", "email": "asha@college.edu",
         "organization_name": "Example College",

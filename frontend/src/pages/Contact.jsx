@@ -8,15 +8,6 @@ import { btnPrimary, btnGhost, sectionEyebrow, fieldInput, fieldLabel } from "..
 
 /**
  * Contact page.
- *
- * There is no backend email/ticketing capability anywhere in this codebase
- * (confirmed by inspecting the API for any mail client). Rather than fake a
- * "message sent" success state that silently does nothing server-side, this
- * form opens the visitor's own email client with the message pre-filled via
- * a mailto: link -- honest about what actually happens, and it still works
- * with zero backend changes. Institution/pricing inquiries are pointed at
- * POST /access-requests instead (via the /request-access page), since that
- * one *is* a real, working, admin-reviewed intake path.
  */
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;

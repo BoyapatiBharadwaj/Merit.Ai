@@ -1,14 +1,4 @@
-/* Extracted from the 2,080-line ExaminerDashboard.jsx.
- *
- * That single component held every examiner screen -- the exam list, the
- * builder, the schedule form, five panels and the access editor -- and kept the
- * selected exam and the active tab in React state. So refresh reset the whole
- * portal to the exam list, browser Back left the app entirely, and no view had
- * a URL anyone could return to or send to a colleague.
- *
- * The split is by screen, and the screens are now routed, so those three things
- * follow from the structure rather than needing to be handled.
- */
+/* Extracted from the 2,080-line ExaminerDashboard.jsx. */
 import Icon from "../../components/Icon.jsx";
 import { btnGhost } from "../../lib/ui.js";
 
@@ -45,11 +35,8 @@ export const emptyTestCases = () => [
   { input: "", expected_output: "", is_sample: false },
 ];
 
-// Reshape an existing QuestionOut (id/is_correct-keyed, from the API) into
-// this form's local editable-row shape (isCorrect). Keeps however many
-// options the question actually has -- the count is dynamic, not a fixed 4
-// -- only padding up to the MIN_OPTIONS floor for the (shouldn't-happen)
-// case of a question with fewer than that already stored.
+// Reshape an existing QuestionOut (id/is_correct-keyed, from the API) into this form's local
+// editable-row shape (isCorrect).
 export function optionsFromExisting(question) {
   const rows = (question.options || []).map((o) => ({ text: o.text, isCorrect: !!o.is_correct }));
   while (rows.length < MIN_OPTIONS) rows.push({ text: "", isCorrect: false });
@@ -62,10 +49,8 @@ export function testCasesFromExisting(question) {
   return rows.length ? rows : emptyTestCases();
 }
 
-// Shared by "+ Add Question" (question=null) and each card's "Edit" action
-// (question=the existing QuestionOut). Editing pre-fills every field from
-// the existing question and PUTs a full replacement on save, instead of
-// POSTing a new one.
+// Shared by "+ Add Question" (question=null) and each
+// card's "Edit" action (question=the existing QuestionOut).
 
 export function toDatetimeLocalValue(isoString) {
   if (!isoString) return "";
@@ -75,11 +60,8 @@ export function toDatetimeLocalValue(isoString) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-// Mirrors exam_service.has_exam_started -- a client-side estimate used only
-// to decide which fields to show as editable. The server re-checks the same
-// rule authoritatively on every PATCH, so a stale/wrong guess here (e.g. the
-// device clock is off) fails safely as a rejected save with a clear message,
-// never as a silently-accepted change it shouldn't have allowed.
+// Mirrors exam_service.has_exam_started -- a client-side estimate
+// used only to decide which fields to show as editable.
 export function hasExamStarted(exam) {
   if (!exam || exam.status !== "published") return false;
   if (!exam.start_time) return true;
@@ -87,15 +69,7 @@ export function hasExamStarted(exam) {
 }
 
 
-/* ===================== request state =====================
- *
- * Every panel used a single `null` for both "still loading" and "the request
- * failed", and rendered EmptyState for both. A failed violations fetch was
- * therefore indistinguishable from a clean sitting -- an examiner would read
- * "No violations recorded" and reasonably conclude nothing had happened, when
- * in fact nothing had been asked. These three make the difference visible, and
- * the error one offers a way out rather than a dead end.
- */
+/* ===================== request state =====================. */
 
 export function LoadingRows({ rows = 3 }) {
   return (
@@ -136,11 +110,6 @@ export function AsyncSection({ state, error, onRetry, isEmpty, empty, children, 
 
 /**
  * Page controls for a SERVER-paginated list.
- *
- * The existing components/Pagination.jsx slices an array the browser already
- * holds, which was the problem rather than the solution: the whole list had to
- * arrive before page 1 could be drawn. This one only reports which page to ask
- * for; the rows never all exist on the client at once.
  */
 export function PageControls({ page, totalPages, total, onChange, noun = "row" }) {
   if (total === 0) return null;

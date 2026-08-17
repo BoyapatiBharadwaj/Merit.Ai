@@ -24,20 +24,6 @@ function QuestionForm({ sectionId, question, onSaved, onCancel }) {
 
   /**
    * Change the question type, reconciling the options to the new type's rules.
-   *
-   * Plain setType left the options exactly as they were, which produced two
-   * questions the server refuses and the form gives no hint about:
-   *
-   *   * multi-select -> MCQ kept every correct option marked, so a question
-   *     with three correct answers became a single-answer question with three,
-   *     and Save failed with "Mark exactly one option as correct" over a change
-   *     the examiner did not make.
-   *   * coding -> MCQ produced a fresh, blank set of options with nothing
-   *     marked correct at all.
-   *
-   * Reconciling here means the form is always in a state that can be saved.
-   * Keeping the FIRST correct option (rather than clearing them all) preserves
-   * the examiner's most likely intent; they can move it in one click.
    */
   function changeType(nextType) {
     setType(nextType);
@@ -68,9 +54,8 @@ function QuestionForm({ sectionId, question, onSaved, onCancel }) {
   function setOption(i, field, value) {
     setOptions((opts) => opts.map((o, idx) => {
       if (idx === i) return { ...o, [field]: value };
-      // MCQ is single-answer (radio semantics): picking a new correct option
-      // clears any previous one. Multi-select options are independent
-      // checkboxes, so other rows are left alone.
+      // MCQ is single-answer (radio semantics): picking a
+      // new correct option clears any previous one.
       if (field === "isCorrect" && type === "mcq") return { ...o, isCorrect: false };
       return o;
     }));
@@ -83,10 +68,8 @@ function QuestionForm({ sectionId, question, onSaved, onCancel }) {
       if (opts.length <= MIN_OPTIONS) return opts;
       const removed = opts[i];
       const next = opts.filter((_, idx) => idx !== i);
-      // Removing a single-answer MCQ's one marked-correct option would
-      // otherwise leave none, which the server rejects -- auto-promote the
-      // first remaining option so "exactly one correct" never silently
-      // breaks from a removal alone.
+      // Removing a single-answer MCQ's one marked-correct option
+      // would otherwise leave none, which the server rejects.
       if (type === "mcq" && removed?.isCorrect && next.length && !next.some((o) => o.isCorrect)) {
         next[0] = { ...next[0], isCorrect: true };
       }
@@ -100,11 +83,8 @@ function QuestionForm({ sectionId, question, onSaved, onCancel }) {
     setTestCases((rows) => [...rows, { input: "", expected_output: "", is_sample: false }]);
   }
   function removeTestCase(i) {
-    // A coding question needs at least one test case AND at least one of them
-    // visible to the candidate. Both could be deleted here, leaving a form that
-    // looked fine and was guaranteed to be rejected on Save -- so the examiner
-    // discovered the rule only by hitting it. Refusing the last of each keeps
-    // the form in a saveable state, matching the option rows above.
+    // A coding question needs at least one test case AND
+    // at least one of them visible to the candidate.
     setTestCases((rows) => {
       if (rows.length <= 1) return rows;
       const next = rows.filter((_, idx) => idx !== i);
@@ -126,10 +106,7 @@ function QuestionForm({ sectionId, question, onSaved, onCancel }) {
     setError("");
     setSaving(true);
     try {
-      // null on create means "append", which the server resolves. Sending 0 --
-      // which every create used to do -- gave every question in a section the
-      // same order_index, so their display order was whatever the database
-      // returned. An edit keeps the position it already had.
+      // null on create means "append", which the server resolves.
       let payload = {
         text: text.trim(), marks: parseInt(marks, 10) || 1,
         order_index: question ? question.order_index : null,
@@ -292,28 +269,9 @@ function QuestionForm({ sectionId, question, onSaved, onCancel }) {
 }
 
 // Format: Question | Option1 | Option2 | ... | OptionN | CorrectNumber | Marks | Explanation
-// The option list is dynamic (2 or more -- e.g. True/False needs just two),
-// so Marks and Explanation are read from the *last two* fields and
-// CorrectNumber from the third-to-last, with everything in between treated
-// as options -- rather than fixed positions, which only worked when every
-// question had exactly four options. Marks/Explanation may be left blank
-// (an empty segment between two pipes), but their pipes must still be
-// present so the parser knows where the option list ends.
+// The option list is dynamic: 2 or more options per question.
 /**
  * Parses one bulk-import row.
- *
- *   Question | Opt1 | Opt2 | ... | Correct | Marks | Explanation
- *
- * `Correct` accepts either a single option number (`2`) or several separated by
- * commas or spaces (`2,4` / `2 4`). One correct answer produces an `mcq`; two or
- * more produce a `multi_select`, so the question type is inferred from the data
- * rather than needing its own column — an examiner pasting a mixed list should
- * not have to declare the type twice per row.
- *
- * Returns `{ question }` on success or `{ error }` describing what was wrong,
- * instead of a bare null. The old version returned null for every failure, so a
- * hundred-row paste with one typo reported "some rows had a bad format" and left
- * the examiner to find it by eye.
  */
 function parseBulkLine(line) {
   const parts = line.split("|").map((p) => p.trim());
@@ -375,8 +333,6 @@ function BulkImportForm({ sectionId, onImported, onCancel }) {
     const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
 
     // Line numbers are tracked so a rejection can name the row it came from.
-    // Telling someone "3 rows were invalid" in a 100-row paste is barely more
-    // useful than saying nothing.
     const results = lines.map((line, i) => ({ lineNo: i + 1, ...parseBulkLine(line) }));
     const badRows = results.filter((r) => r.error);
     const valid = results.filter((r) => r.question);
@@ -391,19 +347,8 @@ function BulkImportForm({ sectionId, onImported, onCancel }) {
 
     setImporting(true);
 
-    // ONE request for the whole import, not one per question.
-    //
-    // The loop this replaces sent a separate POST per row and counted the
-    // successes. Any failure part-way -- a dropped connection at question 40 of
-    // 60, one row the server disliked -- left the exam holding whatever had
-    // already landed, with the remainder silently absent. The examiner's only
-    // recovery was to work out by eye where it stopped, or delete everything and
-    // start again. A paper quietly missing its last twenty questions is not
-    // something anyone notices until candidates are sitting it.
-    //
-    // The server now validates every row before writing any, so this is
-    // all-or-nothing and reports every problem at once rather than one per
-    // attempt.
+    // ONE request for the whole import, not one per question. The loop this replaces sent a
+    // separate POST per row and counted the successes.
     let response;
     try {
       response = await Api.post(`/exams/sections/${sectionId}/questions/bulk`, {
@@ -569,10 +514,9 @@ function SectionCard({ section, isDraft = false, onQuestionAdded, onReordered })
     }
   }
 
-  // Dragging a row while it's mid-edit or mid-delete-confirmation would be
-  // confusing (its own content is changing underneath the gesture), so
-  // reordering is disabled for every row while either is active anywhere in
-  // the section.
+  // Dragging a row while it's mid-edit or mid-delete-confirmation would be confusing (its own
+  // content is changing underneath the gesture), so reordering is disabled for every row while
+  // either is active anywhere in the section.
   const interactionLocked = Boolean(editingId || confirmDeleteId);
 
   async function saveTitle() {
@@ -790,12 +734,9 @@ function SectionCard({ section, isDraft = false, onQuestionAdded, onReordered })
                       {deleteError?.id === q.id && <p className="text-xs text-danger mt-1.5">{deleteError.message}</p>}
                     </div>
                   ) : isDraft ? (
-                    /* Draft-only, mirroring exam_service._get_editable_exam.
-                       The backend already refused these on a published exam, so
-                       showing them was an invitation to click something that
-                       could only fail -- and it implied a published paper was
-                       still editable, which is exactly the wrong thing to
-                       suggest about an exam candidates may be sitting. */
+                    /* Draft-only, mirroring exam_service._get_editable_exam. The backend
+                       already refused these on a published exam, so showing them was an
+                       invitation to click something that could only fail. */
                     <div className="mt-2 flex items-center gap-3">
                       <button type="button" onClick={() => startEdit(q.id)} className="text-xs font-semibold text-primary hover:underline">
                         Edit

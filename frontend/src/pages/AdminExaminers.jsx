@@ -16,11 +16,6 @@ const PAGE_SIZE = 10;
 
 /**
  * Download the current view as CSV.
- *
- * The filters are passed through deliberately: an export that silently ignored
- * what is on screen would hand someone a different dataset from the one they
- * were looking at, which is the kind of discrepancy that surfaces in a meeting.
- * The download is recorded server-side in the activity trail.
  */
 function ExportButton({ kind, params = {} }) {
   const [busy, setBusy] = useState(false);
@@ -56,11 +51,8 @@ function ExportButton({ kind, params = {} }) {
 
 export default function AdminExaminers() {
   const [organizations, setOrganizations] = useState([]);
-  // Whether the organization list could be loaded at all. Empty and
-  // unavailable are different facts: one means there are no organizations,
-  // the other means we could not ask -- and the filter silently degrades to
-  // "no filtering" in the second case, which looks identical to a filter that
-  // matched everything.
+  // Whether the organization list could be loaded at
+  // all. Empty and unavailable are different facts.
   const [organizationsFailed, setOrganizationsFailed] = useState(false);
   const [rows, setRows] = useState(null);
   const [loadError, setLoadError] = useState("");
@@ -76,9 +68,7 @@ export default function AdminExaminers() {
 
   const [formOpen, setFormOpen] = useState(false);
   const [form, setForm] = useState({ firstName: "", lastName: "", email: "", organizationName: "" });
-  // Confirms what was created and whether the activation email actually went
-  // out -- never a password, since the account no longer has one anybody
-  // but its eventual owner will ever type.
+  // Confirms what was created and whether the activation email actually went out.
   const [created, setCreated] = useState(null);
   const [formError, setFormError] = useState("");
   const [creating, setCreating] = useState(false);
@@ -89,12 +79,6 @@ export default function AdminExaminers() {
   }, [searchInput]);
 
   // A request ticket, so a slow OLD request cannot overwrite a newer one.
-  //
-  // The search box debounced but never cancelled: typing "ann" then "annie"
-  // fired two requests, and if the first was slower its results replaced the
-  // second's. The admin was left looking at results for a query they had
-  // already moved past, with the newer term still in the box and nothing to
-  // indicate the list was stale.
   const requestRef = useRef(0);
 
   async function load() {
@@ -151,9 +135,8 @@ export default function AdminExaminers() {
         email: form.email.trim(),
         organization_name: form.organizationName.trim(),
       });
-      // No password to hand over: the account was created with an unusable
-      // random one, and the examiner sets their own through the activation
-      // email this just triggered.
+      // No password to hand over: the account was created with an unusable random one, and the
+      // examiner sets their own through the activation email this just triggered.
       setCreated({ email: result.email, activationSent: result.activation_sent });
       setForm({ firstName: "", lastName: "", email: "", organizationName: "" });
       await load();

@@ -6,16 +6,7 @@ from tests.conftest import auth_headers
 
 def _create_examiner_and_login(client, admin_token, email="examiner@example.com",
                                organization_name="Acme Institute"):
-    """Create an examiner and return a token it can act with.
-
-    Examiner accounts are no longer created with an admin-chosen password (see
-    examiner_provisioning_service): POST /auth/examiners mails a single-use
-    activation link instead. This helper is used by dozens of unrelated tests
-    across the suite purely to get "a logged-in examiner" for setup, so it
-    completes that real flow itself -- captured the same way a genuine
-    recipient would recover the link, straight out of the message body --
-    rather than asking every call site to know about activation.
-    """
+    """Create an examiner and return a token it can act with."""
     import re
     from urllib.parse import unquote
 
@@ -43,13 +34,8 @@ def _create_examiner_and_login(client, admin_token, email="examiner@example.com"
         email_service.send, email_service.queue = original_send, original_queue
 
     if created.status_code == 400:
-        # Several call sites in this suite reuse the same default email within
-        # one test to get "an examiner" more than once -- previously harmless,
-        # because the old flow re-created the account with the same fixed
-        # password every time. An email already registered means this exact
-        # helper already created and activated it earlier in this same test,
-        # with the password above, so signing in directly is the equivalent
-        # of what the old code did, done correctly rather than by accident.
+        # Several call sites in this suite reuse the same default email within one test to get
+        # "an examiner" more than once.
         login = client.post("/api/v1/auth/login", json={"email": email, "password": password})
         assert login.status_code == 200, login.text
         return login.json()["access_token"]
@@ -67,18 +53,7 @@ def _create_examiner_and_login(client, admin_token, email="examiner@example.com"
 
 
 def enrol_email(email: str, organization_id: int | None = None) -> None:
-    """Put an email on an organization's roster, as an examiner would.
-
-    Since exam access became organization-scoped, a student who has not been
-    enrolled by anybody can see and start nothing -- which is the entire point
-    of the change, but it means every test that just registers a student and
-    expects to sit an exam needs this step first.
-
-    Defaults to every organization that currently exists, because the typical
-    test builds exactly one and the interesting question is not tenancy.
-    Tests that *are* about tenancy pass an explicit organization_id, or use
-    `enrol=False` below to get a genuinely unaffiliated student.
-    """
+    """Put an email on an organization's roster, as an examiner would."""
     from app.database.session import SessionLocal
     from app.models.organization import Organization, OrganizationMember
 
@@ -102,14 +77,10 @@ def enrol_email(email: str, organization_id: int | None = None) -> None:
 
 def _register_student_and_login(client, email="student@example.com", enrol=True,
                                 organization_id=None):
-    # Enrolment happens *before* registration, mirroring the real flow: an
-    # examiner adds a cohort's addresses, then those people sign up and are
-    # linked automatically by auth_service.register_student.
+    # Enrolment happens *before* registration, mirroring the real flow.
     if enrol:
         enrol_email(email, organization_id)
-    # Consent is sent because a real client sends it: the checkboxes used to be
-    # enforced only in React and never reached the server, so any direct caller
-    # -- including this helper -- registered without agreeing to anything.
+    # Consent is sent because a real client sends it.
     response = client.post("/api/v1/auth/register/student", json={
         "first_name": "Test", "last_name": "Student", "email": email, "password": "Sup3rSecret!",
         "accepted_terms": True, "accepted_proctoring": True, "terms_version": "2026-08-05",

@@ -7,13 +7,9 @@ import Icon from "./Icon.jsx";
 import { sectionEyebrow } from "../lib/ui.js";
 
 /**
- * Headline copy is page-specific (variant="login" | "register"); the three
- * benefit bullets underneath stay the same set on both, since they're true
- * regardless of which door someone's coming through and keeping one list
- * means they can't quietly drift apart. Previously this panel showed the
- * exact same headline and a four-item list on both pages, which made each
- * screen feel like a copy of the other rather than one someone designed on
- * purpose for what a visitor is actually about to do there.
+ * Headline copy is page-specific (variant="login" | "register"); the three benefit bullets
+ * underneath stay the same set on both, since they're true regardless of which door someone's
+ * coming through and keeping one list means they can't quietly drift apart.
  */
 const PANEL_COPY = {
   login: { headline: "Welcome back to secure assessments." },
@@ -23,13 +19,8 @@ const PANEL_COPY = {
 const PANEL_POINTS = ["Verified candidate identities", "Real-time integrity monitoring", "Fast, transparent results"];
 
 /**
- * Live-status-styled product preview -- an "Exam readiness" widget rather
- * than a couple of flat "OK" lines, so the panel demonstrates the product
- * instead of only claiming things about it. Still entirely illustrative
- * (aria-hidden, no real camera/session behind it, and the pulse sits on the
- * widget's own "Live preview" label rather than implying any one row is
- * currently being checked) -- it must never read as "we're already
- * watching you" before someone has even logged in.
+ * Live-status-styled product preview -- an "Exam readiness" widget rather than a couple of flat
+ * "OK" lines, so the panel demonstrates the product instead of only claiming things about it.
  */
 const READINESS_ROWS = [
   { icon: "camera", label: "Camera connected", value: "Ready" },

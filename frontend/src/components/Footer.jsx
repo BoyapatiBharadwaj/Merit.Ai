@@ -20,9 +20,6 @@ const COLUMNS = [
     ],
   },
   {
-    // Was three separate "Student / Examiner / Admin Login" entries that all
-    // pointed at the same /login route -- a single sign-in serves every role,
-    // so three links implied portals that don't exist.
     title: "Candidates",
     links: [
       { label: "Create Candidate Account", to: "/register" },

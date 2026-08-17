@@ -1,8 +1,6 @@
 /**
  * Simple underline tab strip -- used by the Examiner Detail page's
- * All/Active/Upcoming/Completed exam tabs. Deliberately not routed (no
- * nested <Route>s per tab): the tab choice is just a client-side filter over
- * data the page already fetched, not a separate page/URL of its own.
+ * All/Active/Upcoming/Completed exam tabs.
  */
 export default function Tabs({ tabs, active, onChange }) {
   return (

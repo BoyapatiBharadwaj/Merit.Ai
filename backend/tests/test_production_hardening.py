@@ -1,11 +1,4 @@
-"""
-Production-hardening guarantees.
-
-These cover the failure modes that are invisible in development and only bite
-in a real deployment: booting with a forgeable signing key, missing security
-headers, a load balancer that can't tell a broken instance from a healthy
-one, and correctly-signed-but-malformed tokens crashing the auth dependency.
-"""
+"""Production-hardening guarantees."""
 import pytest
 import jwt
 
@@ -76,9 +69,8 @@ def test_a_wildcard_cors_origin_is_always_stripped():
     assert config.cors_origins == ["https://real.example.com"]
 
 
-# --------------------------------------------------------------------------
-# Security headers
-# --------------------------------------------------------------------------
+# --- - ---
+# Security headers ------------------------------------------------------------------------
 
 def test_security_headers_are_present_on_every_response(client):
     response = client.get("/api/health")
@@ -101,9 +93,8 @@ def test_an_inbound_request_id_is_preserved_for_log_correlation(client):
     assert response.headers["X-Request-ID"] == "abc123fromproxy"
 
 
-# --------------------------------------------------------------------------
-# Health / readiness
-# --------------------------------------------------------------------------
+# --- - ---
+# Health / readiness ------------------------------------------------------------------------
 
 def test_liveness_does_not_touch_the_database(client):
     """Liveness failures cause restarts, so a DB blip must not trigger one."""
@@ -115,9 +106,8 @@ def test_readiness_reports_database_reachability(client):
     assert body == {"status": "ok", "database": "ok"}
 
 
-# --------------------------------------------------------------------------
-# Token handling
-# --------------------------------------------------------------------------
+# --- - ---
+# Token handling ------------------------------------------------------------------------
 
 def test_a_signed_token_with_a_non_numeric_subject_is_rejected_as_401(client, seed_roles):
     """Correctly signed but malformed. This used to raise ValueError out of

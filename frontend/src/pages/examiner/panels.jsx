@@ -35,9 +35,8 @@ function AttemptsPanel({ examId }) {
     }
   }
 
-  // `.catch(() => setAttempts([]))` rendered a failed request as "No attempts
-  // yet" -- indistinguishable from an exam nobody had sat. An examiner checking
-  // whether their cohort had turned up would read the failure as an answer.
+  // `.catch(() => setAttempts([]))` rendered a failed request as "No attempts yet" --
+  // indistinguishable from an exam nobody had sat.
   function reload() {
     setState("loading");
     Api.get(`/attempts/exam/${examId}?page=${page}`)
@@ -243,9 +242,6 @@ function ActivePanel({ examId }) {
     async function refresh() {
       try {
         // The dedicated endpoint, not every attempt filtered in the browser.
-        // This polls every ten seconds for as long as the page is open, so the
-        // old approach re-downloaded the exam's entire sitting history each
-        // time to find the two people currently writing.
         const attempts = await Api.get(`/attempts/exam/${examId}/active`);
         if (!cancelled) { setActive(attempts); setPollError(""); }
       } catch (err) {
@@ -328,14 +324,8 @@ function ActivePanel({ examId }) {
   );
 }
 
-/* There used to be a ViolationsPanel/ViolationEvidence pair here: a
- * cross-candidate "every violation in this exam" tab. It's gone -- an
- * examiner now reviews violations only per student, via the "Review" link
- * in AttemptsPanel above, which opens examiner/AttemptReport.jsx (every
- * violation for THAT candidate, with evidence, risk score, and a decision
- * control). Reviewing conduct is inherently a per-candidate judgement, and
- * a flat list across the whole exam encouraged deciding on rows out of
- * context. */
+/* There used to be a ViolationsPanel/ViolationEvidence pair
+   here: a cross-candidate "every violation in this exam" tab. */
 
 function AnalyticsPanel({ examId }) {
   const [data, setData] = useState(null);
@@ -430,11 +420,8 @@ function AnalyticsPanel({ examId }) {
 
 /* ===================== Exam schedule editing ===================== */
 
-// Formats an ISO datetime string as the local-time value a <input
-// type="datetime-local"> expects ("YYYY-MM-DDTHH:mm") -- the inverse of the
-// `new Date(value).toISOString()` conversion CreateExamForm uses going the
-// other way. Needed here (and not there) because this form, unlike create,
-// has to pre-fill from an existing value.
+// Formats an ISO datetime string as the local-time value a
+// <input type="datetime-local"> expects ("YYYY-MM-DDTHH:mm").
 
 function ExamAccessPanel({ examId }) {
   const [access, setAccess] = useState(null);
@@ -616,13 +603,6 @@ export { AttemptsPanel, ActivePanel, AnalyticsPanel, ExamAccessPanel };
 
 /**
  * Superseded attempts and the resets that produced them.
- *
- * Two APIs existed and nothing called either: GET /attempts/exam/{id}/resets
- * (who reset whose exam, when, and why) and, now, the archived attempts
- * themselves. Before this change the second could not have existed -- a reset
- * DELETED the attempt, so the audit trail pointed at an id that was gone.
- *
- * This is the screen that makes a granted retake reviewable afterwards.
  */
 function ResetHistoryPanel({ examId }) {
   const [rows, setRows] = useState([]);

@@ -10,12 +10,7 @@ import { btnPrimary } from "../lib/ui.js";
 import "../lib/vendorChart.js";
 
 /**
- * Sidebar items are a mix of same-page anchors (Overview, Access Requests,
- * Settings -- sections that still live on this page) and real routes
- * (Examiners, Candidates, Exams, Live Sessions, Violations -- now their own
- * dedicated pages under /admin/..., see App.jsx). Only the anchor items
- * participate in the scroll-spy IntersectionObserver below; route items are
- * plain links, the same as DashboardHeader's Dashboard/Profile links.
+ * Sidebar items are a mix of same-page anchors (Overview, Access Requests, Settings.
  */
 const NAV_ITEMS = [
   { id: "overview", label: "Overview", icon: "layout", anchor: true },
@@ -23,9 +18,8 @@ const NAV_ITEMS = [
   { id: "candidates", label: "Candidates", icon: "users", to: "/admin/candidates" },
   { id: "exams", label: "Exams", icon: "doc", to: "/admin/exams" },
   { id: "live", label: "Live Sessions", icon: "eye", to: "/admin/live-sessions" },
-  // No standalone violations list -- an admin reviews violations through
-  // exam -> student (Exams -> a candidate's row -> full report), the same
-  // path an examiner uses. Review Queue is a distinct, kept worklist.
+  // No standalone violations list -- an admin reviews violations through exam -> student (Exams
+  // -> a candidate's row -> full report), the same path an examiner uses.
   { id: "review", label: "Review Queue", icon: "shield-check", to: "/admin/review-queue" },
   { id: "organizations", label: "Organizations", icon: "briefcase", to: "/admin/organizations" },
   { id: "requests", label: "Access Requests", icon: "mail", anchor: true },
@@ -97,13 +91,8 @@ export default function AdminDashboard() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      // allSettled, not all.
-      //
-      // Promise.all rejects on the FIRST failure and discards the results that
-      // did arrive, so one unavailable widget blanked the entire dashboard --
-      // an admin whose access-requests endpoint was briefly failing lost their
-      // platform stats and their summary too, and the page said only that
-      // something went wrong. Each panel now succeeds or fails on its own.
+      // allSettled, not all. Promise.all rejects on the FIRST failure and discards the results
+      // that did arrive, so one unavailable widget blanked the entire dashboard.
       const [a, s, requests] = await Promise.allSettled([
         Api.get("/analytics/platform"),
         Api.get("/admin/summary"),
@@ -158,10 +147,7 @@ export default function AdminDashboard() {
     Object.values(chartInstances.current).forEach((c) => c?.destroy());
     chartInstances.current = {};
 
-    // Each canvas below is only mounted once its dataset is non-empty (see
-    // the render below) -- an EmptyState card takes its place otherwise --
-    // so every chart here is skipped rather than built against a fake
-    // "No data yet" placeholder slice/bar.
+    // Each canvas below is only mounted once its dataset is non-empty (see the render below).
     const statusLabels = Object.keys(analytics.exams_by_status);
     const statusCounts = Object.values(analytics.exams_by_status);
     if (statusChartRef.current) {
@@ -291,15 +277,6 @@ const REQUEST_STATUS_STYLES = {
 
 /**
  * Examiner access requests submitted from the public site.
- *
- * Approving is the primary path for creating an examiner account.
- *
- * It used to collect an initial password here, which was then emailed to the
- * new examiner in plain text and shown once to the admin to relay by hand. That
- * is gone: approving now mints the account with an unusable random secret and
- * emails a single-use activation link, so the only person who ever knows the
- * password is the person it belongs to. There is nothing for the admin to type
- * and nothing for them to pass on.
  */
 function AccessRequestsPanel({ requests, onChange }) {
   const [expandedId, setExpandedId] = useState(null);
@@ -514,14 +491,6 @@ function AccessRequestsPanel({ requests, onChange }) {
 
 /**
  * What this deployment is actually configured to do.
- *
- * Read-only by design, and says so. Making these writable means persisting
- * overrides and reloading them across every worker process; a page that looks
- * like it saved and silently did not is worse than one that tells an
- * administrator where the value comes from.
- *
- * No secrets reach here — the endpoint returns whether email is configured, not
- * the credentials behind it. There is a test asserting that.
  */
 function SettingsPanel() {
   const [config, setConfig] = useState(null);

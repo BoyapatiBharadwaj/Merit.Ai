@@ -1,6 +1,5 @@
-"""
-Alembic environment: loads DATABASE_URL from app settings and all models'
-metadata so `alembic revision --autogenerate` picks up every table.
+"""Alembic environment: loads DATABASE_URL from app settings and all models' metadata so
+`alembic revision --autogenerate` picks up every table.
 """
 import sys
 import os

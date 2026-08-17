@@ -1,15 +1,5 @@
 /**
  * Copies MediaPipe Tasks Vision's wasm out of node_modules into public/.
- *
- * The JS half of the library is bundled by Vite (see src/lib/faceMesh.js), but
- * its wasm is loaded at runtime by FilesetResolver from a URL, so it has to be
- * a real file served from this origin rather than a module import. Copying it
- * from the installed package -- instead of downloading it -- is what guarantees
- * the JS and the wasm can never end up on different versions, which fails in
- * confusing ways at model-init time rather than at build time.
- *
- * Idempotent. Run after `npm install` and whenever @mediapipe/tasks-vision is
- * upgraded:  npm run vendor:mediapipe
  */
 import { cp, mkdir, readdir, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";

@@ -1,21 +1,4 @@
-"""
-Student identity verification state machine.
-
-A student self-registers with a name and email, and can browse the site
-immediately. Before their *first* proctored exam they must clear two gates:
-
-    1. Face registration  -> stored as a FaceProfile row (biometric embedding)
-    2. ID card OCR match  -> stored as Student.id_verified
-
-Once both are satisfied the account is *identity-locked*: the student's legal
-name and email become immutable, because those are exactly the fields the ID
-card was matched against. Allowing an edit afterwards would let someone verify
-as themselves and then rename the account to sit an exam as somebody else.
-Password remains changeable -- it is a credential, not an identity claim.
-
-Everything here is deliberately server-side. The frontend mirrors this state
-for UX, but the authoritative check runs in start_attempt().
-"""
+"""Student identity verification state machine."""
 from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
@@ -57,15 +40,7 @@ def record_face_registration(db: Session, student: Student) -> None:
 
 def record_id_verification(db: Session, student: Student, name_matched: bool, extracted_name: str | None,
                             image_path: str | None = None) -> None:
-    """Persist the ID-card OCR outcome, and keep the submitted photo on file.
-
-    A failed match is intentionally NOT recorded as a rejection flag -- the
-    student can simply retry with a better photo. Only a successful match
-    mutates the verified fields, so a bad scan can never permanently block an
-    account. The photo itself is saved either way (most recent attempt wins):
-    an admin or examiner looking at a student who keeps failing verification
-    needs to see what they're actually submitting, not just "OCR said no".
-    """
+    """Persist the ID-card OCR outcome, and keep the submitted photo on file."""
     changed = False
     if image_path and student.id_card_image_path != image_path:
         student.id_card_image_path = image_path
@@ -85,15 +60,7 @@ def record_id_verification(db: Session, student: Student, name_matched: bool, ex
 
 def require_reverification(db: Session, student: Student, *, reason: str | None,
                             requested_by_id: int | None, commit: bool = True) -> Student:
-    """Ask a candidate to prove their identity again before their next exam.
-
-    Does not touch the stored face embedding or ID image -- see the model
-    comment on Student.reverification_required_at for why keeping them is the
-    whole point. `unlock_identity` is also left alone: this is about the
-    biometric evidence, not about whether the account's name may be edited,
-    and conflating them would silently hand back a permission nobody asked to
-    grant.
-    """
+    """Ask a candidate to prove their identity again before their next exam."""
     student.reverification_required_at = _now()
     student.reverification_reason = (reason or "").strip()[:500] or None
     student.reverification_requested_by_id = requested_by_id
@@ -107,14 +74,7 @@ def require_reverification(db: Session, student: Student, *, reason: str | None,
 
 
 def clear_reverification(db: Session, student: Student, *, commit: bool = False) -> bool:
-    """Drop the flag once BOTH halves have actually been redone.
-
-    Called after each verification step, not from the endpoint that asks for
-    re-verification -- the request is satisfied by the candidate's work, not by
-    anyone declaring it satisfied. Requiring both halves is deliberate: clearing
-    after only the face would let a candidate whose ID card was the problem walk
-    straight back through the gate.
-    """
+    """Drop the flag once BOTH halves have actually been redone."""
     if student.reverification_required_at is None:
         return False
     if not (student.id_verified and has_face_profile(db, student)):
@@ -130,14 +90,7 @@ def clear_reverification(db: Session, student: Student, *, commit: bool = False)
 
 def verification_state(db: Session, student: Student | None, *,
                         face_registered_ids: set[int] | None = None) -> dict:
-    """Shape consumed by GET /users/me and the exam-entry gate.
-
-    `face_registered_ids` lets a caller rendering a LIST pre-compute the face
-    lookup once for the whole page (see
-    proctor_repository.students_with_face_profiles) instead of paying a query
-    per row. Optional so the single-student callers -- which are the majority --
-    stay unchanged and can't accidentally pass a stale set.
-    """
+    """Shape consumed by GET /users/me and the exam-entry gate."""
     if student is None:
         return {"face_registered": False, "id_verified": False, "identity_locked": False,
                 "exam_ready": False, "reverification_required": False,
@@ -147,12 +100,8 @@ def verification_state(db: Session, student: Student | None, *,
         if face_registered_ids is not None
         else has_face_profile(db, student)
     )
-    # An outstanding re-verification request closes the gate on its own, even
-    # though the stored face and ID are still technically present and valid.
-    # That is the point: the administrator is saying "I do not currently accept
-    # this evidence", and the candidate must supply new evidence before sitting
-    # anything. Keeping the old records readable while refusing to rely on them
-    # is what lets a reviewer compare the two afterwards.
+    # An outstanding re-verification request closes the gate on its own, even though the stored
+    # face and ID are still technically present and valid.
     reverification_required = student.reverification_required_at is not None
 
     return {
@@ -173,11 +122,7 @@ def require_exam_ready(db: Session, student: Student) -> None:
     if state["exam_ready"]:
         return
 
-    # Named separately rather than folded into "incomplete". Telling somebody
-    # whose face and ID are both on file that their verification is incomplete
-    # is simply false, and sends them to a Profile page that shows two green
-    # ticks -- so they conclude the platform is broken rather than that
-    # something was asked of them.
+    # Named separately rather than folded into "incomplete".
     if state["reverification_required"]:
         reason = (student.reverification_reason or "").strip()
         raise HTTPException(

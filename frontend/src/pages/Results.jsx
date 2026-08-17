@@ -24,12 +24,11 @@ function formatDuration(totalSeconds) {
   return `${sec}s`;
 }
 
-/** Comprehensive post-exam report -- lands here right after submit, and is
- * also a shareable direct link (GET /attempts/{id}/report is role-aware
- * server side: the owning student, the exam's examiner, or an admin can view
- * it). Pulls every field the report needs from one endpoint
- * (attempt_service.build_full_report) rather than assembling it from
- * several. */
+/**
+ * Comprehensive post-exam report -- lands here right after submit, and is also a shareable
+ * direct link (GET /attempts/{id}/report is role-aware server side: the owning student, the
+ * exam's examiner, or an admin can view it).
+ */
 export default function Results() {
   const { attemptId } = useParams();
   const navigate = useNavigate();
@@ -73,14 +72,6 @@ export default function Results() {
   const passed = report ? report.passed : null;
   /**
    * Was this attempt auto-submitted?
-   *
-   * Read from the REPORT, with router state only as a hint. It used to come
-   * from router state alone, which meant the notice appeared exactly once --
-   * on the navigation straight out of the exam -- and vanished on reload, on a
-   * bookmark, and for anyone opening the report later. Whether the clock ran
-   * out is a permanent fact about the attempt, and the server records it as
-   * such (AttemptStatus.AUTO_SUBMITTED); reading it from the thing that knows
-   * makes the notice survive a refresh.
    */
   const autoSubmitted = report?.status
     ? report.status === "auto_submitted"

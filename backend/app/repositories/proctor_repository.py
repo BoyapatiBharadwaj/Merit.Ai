@@ -35,17 +35,7 @@ def list_events_for_attempt(db: Session, attempt_id: int) -> list[ProctorEvent]:
 
 
 def events_for_attempts(db: Session, attempt_ids: list[int]) -> dict[int, list[ProctorEvent]]:
-    """Every event for these attempts, grouped by attempt id, in ONE query.
-
-    The admin candidate lists call `list_events_for_attempt` per row to compute
-    a risk tier, which is one query per candidate -- and proctor_events is the
-    fastest-growing table in the schema, so it is the most expensive query to
-    repeat. Batching matters more here than for results.
-
-    Returns a dict keyed by attempt id, with events in the same created_at order
-    the per-attempt function returns, so `risk_score_and_tier` behaves
-    identically whichever loader the caller used.
-    """
+    """Every event for these attempts, grouped by attempt id, in ONE query."""
     if not attempt_ids:
         return {}
     rows = (
@@ -88,17 +78,7 @@ def get_face_profile(db: Session, student_id: int) -> FaceProfile | None:
 
 
 def students_with_face_profiles(db: Session, student_ids: list[int]) -> set[int]:
-    """Which of these students have a face profile, in ONE query.
-
-    `identity_service.verification_state` is called per row by every admin and
-    examiner candidate list, and its only database access is this lookup -- so
-    without batching, listing a cohort costs one query per candidate purely to
-    render a "Verified / Pending" label.
-
-    Returns ids rather than rows: every caller only asks whether a profile
-    exists, so fetching the 512-d embedding text for each one would be wasted
-    bytes on top of wasted queries.
-    """
+    """Which of these students have a face profile, in ONE query."""
     if not student_ids:
         return set()
     rows = (
@@ -124,13 +104,7 @@ def save_face_profile(db: Session, student_id: int, image_path: str, encoding_js
 
 def paginated_events_for_exam(db: Session, exam_id: int, *, offset: int, limit: int,
                               severity: str = "") -> tuple[list[ProctorEvent], int]:
-    """One page of an exam's violations, newest first, plus the total.
-
-    A hall of 500 candidates producing a dozen events each is 6,000 rows. The
-    whole set was returned and sliced in the browser, so the review page cost
-    the same whether the reviewer looked at 25 rows or all of them -- and it is
-    the page most likely to be refreshed repeatedly during a live sitting.
-    """
+    """One page of an exam's violations, newest first, plus the total."""
     from app.models.attempt import StudentExamAttempt
     from app.models.student import Student
 

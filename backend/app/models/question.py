@@ -1,9 +1,4 @@
-"""
-Question + Option tables. Each Question belongs to a Section and is either
-an MCQ (multiple Options, exactly one correct) or a coding question (a
-language, starter code, and a set of stdin/stdout test cases executed in an
-isolated Docker container -- see app/services/code_runner_service.py).
-"""
+"""Question + Option tables."""
 import json
 
 from sqlalchemy import Column, Integer, String, Text, ForeignKey, Boolean, func, DateTime
@@ -30,9 +25,8 @@ class Question(Base):
     test_cases_json = Column(Text, nullable=True)  # JSON list of {input, expected_output, is_sample}
     time_limit_seconds = Column(Integer, nullable=True)
 
-    # Optional, shown only on the post-exam report (never during the attempt
-    # itself) so a candidate reviewing their result understands *why* an
-    # answer was marked correct/incorrect.
+    # Optional, shown only on the post-exam report (never during the attempt itself) so a
+    # candidate reviewing their result understands *why* an answer was marked correct/incorrect.
     explanation = Column(Text, nullable=True)
 
     section = relationship("Section", back_populates="questions")

@@ -1,33 +1,4 @@
-"""
-Sandboxed code execution for coding questions.
-
-Each test case runs in its own ephemeral, network-disabled Docker container
-(`docker run --rm --network none ...`) with CPU/memory/process-count limits
-and a hard wall-clock timeout, using the `docker` CLI already on the host --
-no separate microservice or Docker-in-Docker setup needed.
-
-The container is further locked down beyond networking and resource limits:
-the root filesystem is mounted read-only (with a small size-capped tmpfs at
-/tmp for anything that wants scratch space), every Linux capability is
-dropped, privilege escalation is disabled, and the process runs as an
-unprivileged, non-root UID. None of this is defense against a
-sufficiently-motivated container escape -- Docker's own kernel-level
-isolation is what actually carries that weight -- but it means student code
-has no legitimate avenue to persist anything, escalate, or hold onto a
-capability it has no reason to need in the first place.
-
-The student's source code is never written to disk or interpolated into a
-shell string. It's base64-encoded and handed to a small trusted bootstrap
-script (run via `python3 -c` / `node -e`, passed as a real argv entry, never
-through a shell) that decodes and executes it, while the container's real
-stdin/stdout are left free for the test case's actual program input/output.
-
-Fails closed: if the `docker` CLI isn't on PATH, the daemon isn't reachable,
-or CODE_EXECUTION_ENABLED is off, `is_available()` returns False and callers
-should treat coding questions as ungraded/unavailable rather than crash --
-the same graceful-degradation pattern used for the optional AI worker
-(see app/ai/ai_worker_client.py).
-"""
+"""Sandboxed code execution for coding questions."""
 import base64
 import logging
 import shutil
@@ -49,25 +20,11 @@ _IMAGES = {
 
 _MAX_ERROR_CHARS = 2000
 
-# Hard ceiling on what a single run may emit. Enforced INSIDE the container,
-# at the top of the bootstrap, because the host reads the container's output
-# with subprocess.run(capture_output=True), which buffers the whole stream in
-# the API process's memory with no limit of its own. `while True: print("x")`
-# is a one-line student mistake (or a deliberate attack) that would otherwise
-# stream several hundred MB into the backend before the wall-clock timeout
-# fired -- and every concurrent run would do it at once. The container's own
-# --memory cap does not help here: the bytes are in the *host's* buffer, not
-# the container's.
-#
-# Capping at the source also keeps the value honest end-to-end: what's stored
-# and shown to the examiner is what the program actually produced, truncated,
-# rather than a stream the host silently gave up on midway.
+# Hard ceiling on what a single run may emit.
 _MAX_OUTPUT_BYTES = 64 * 1024
 
-# Concurrency ceiling. Each run is a full `docker run`; an exam hall of
-# students hammering "Run" would otherwise spawn unbounded containers and
-# take the host down. Sync FastAPI endpoints execute in a worker threadpool,
-# so a threading semaphore is the right primitive.
+# Concurrency ceiling. Each run is a full `docker run`; an exam hall of students hammering "Run"
+# would otherwise spawn unbounded containers and take the host down.
 _run_slots = threading.BoundedSemaphore(settings.CODE_EXECUTION_MAX_CONCURRENT)
 _SLOT_WAIT_SECONDS = 10
 
@@ -131,13 +88,7 @@ def _js_bootstrap(code_b64: str) -> str:
     )
 
 
-# Cached availability, but only briefly. This used to be @lru_cache, i.e.
-# cached for the lifetime of the process: if Docker happened to be down at
-# the first call, coding questions stayed "unavailable" until someone
-# restarted the API, and if Docker died later the app kept confidently
-# shelling out to a daemon that wasn't there. A short TTL keeps the check
-# cheap (it's a subprocess spawn per miss) while letting the answer actually
-# track reality.
+# Cached availability, but only briefly.
 _AVAILABILITY_TTL_SECONDS = 30
 _availability_cache: dict = {"value": None, "checked_at": 0.0}
 _availability_lock = threading.Lock()
@@ -161,17 +112,7 @@ def _probe_docker() -> bool:
         return False
     if shutil.which("docker") is None:
         return False
-    # The CLI being on PATH doesn't mean the daemon is up -- on Windows/Mac,
-    # Docker Desktop installs `docker.exe` on PATH even when the app itself
-    # isn't running. Without this check, `is_available()` reports True, so
-    # `run_against_test_cases` proceeds straight to `docker run`, which then
-    # fails with a raw daemon-connection error (e.g. "failed to connect to
-    # the docker API at npipe:////./pipe/dockerDesktopLinuxEngine...") that
-    # gets surfaced verbatim as a test case's "error" field -- an internal
-    # infra detail leaking into the student-facing exam UI instead of the
-    # clean "unavailable" message this function exists to produce. `docker
-    # info` is a cheap, side-effect-free daemon ping; a short timeout keeps a
-    # hung daemon from blocking the request this is called from.
+    # The CLI being on PATH doesn't mean the daemon is up.
     try:
         return subprocess.run(
             ["docker", "info"], capture_output=True, timeout=5,
@@ -181,11 +122,8 @@ def _probe_docker() -> bool:
 
 
 def run_against_test_cases(language: str, source_code: str, test_cases: list[dict], time_limit_seconds: int | None = None) -> dict:
-    """
-    test_cases: list of {"input": str, "expected_output": str, "is_sample": bool}
-    Returns {"available": bool, "results": [...], "all_passed": bool, "message": str | None}.
-    Output comparison is whitespace-trimmed (leading/trailing), matching the
-    typical stdin/stdout contract used by competitive-programming-style judges.
+    """test_cases: list of {"input": str, "expected_output": str, "is_sample": bool} Returns
+    {"available": bool, "results": [...], "all_passed": bool, "message": str | None}.
     """
     if language not in SUPPORTED_LANGUAGES:
         return {"available": False, "results": [], "all_passed": False, "message": f"Unsupported language: {language}"}
@@ -243,10 +181,7 @@ def _run_one(language: str, source_code: str, stdin_input: str, timeout_seconds:
         image, *run_cmd,
     ]
 
-    # Bound how many containers can exist at once (see _run_slots). Waiting a
-    # short while is better than either failing instantly under a burst or
-    # queueing without limit; if the wait is exceeded the caller gets an
-    # honest "busy" rather than a timeout that reads like their code hung.
+    # Bound how many containers can exist at once (see _run_slots).
     if not _run_slots.acquire(timeout=_SLOT_WAIT_SECONDS):
         logger.warning("Code execution rejected: all %s slots busy", settings.CODE_EXECUTION_MAX_CONCURRENT)
         return {"stdout": "", "error": "The grading sandbox is busy. Please try again in a moment.", "time_ms": 0}
@@ -258,9 +193,7 @@ def _run_one(language: str, source_code: str, stdin_input: str, timeout_seconds:
             timeout=timeout_seconds, encoding="utf-8", errors="replace",
         )
         elapsed_ms = int((time.monotonic() - started) * 1000)
-        # Second line of defence behind the in-container cap: a program that
-        # writes to fd 1 directly bypasses the wrapped sys.stdout, so never
-        # hand an unbounded string to the response/DB either.
+        # Second line of defence behind the in-container cap.
         stdout = (proc.stdout or "")[:_MAX_OUTPUT_BYTES]
         if proc.returncode != 0:
             error = (proc.stderr or f"Exited with code {proc.returncode}").strip()[:_MAX_ERROR_CHARS]
@@ -273,12 +206,10 @@ def _run_one(language: str, source_code: str, stdin_input: str, timeout_seconds:
         return {"stdout": "", "error": "Docker is not installed or not on PATH.", "time_ms": 0}
     except Exception as error:
         logger.exception("Sandboxed execution failed unexpectedly")
-        # Deliberately generic: `error` can carry daemon paths and other host
-        # infrastructure detail, and this string is rendered in the student's
-        # exam UI. The real cause is in the log above, tied to the request id.
+        # Deliberately generic: `error` can carry daemon paths and other host infrastructure
+        # detail, and this string is rendered in the student's exam UI.
         return {"stdout": "", "error": "Execution failed due to a server error.", "time_ms": 0}
     finally:
-        # Must release on every path, including the timeout/kill branch, or
-        # the pool leaks a slot per timed-out submission and eventually
-        # deadlocks every future run.
+        # Must release on every path, including the timeout/kill branch, or the pool leaks a
+        # slot per timed-out submission and eventually deadlocks every future run.
         _run_slots.release()

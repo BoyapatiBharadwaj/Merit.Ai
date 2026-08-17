@@ -6,16 +6,6 @@ import { btnPrimary, btnGhost, sectionEyebrow } from "../lib/ui.js";
 
 /**
  * Dedicated features + security deep-dive, linked from the top nav.
- *
- * This is the full detail that used to live inline on Home.jsx -- moved here
- * so the landing page can stay short while a visitor who wants the complete
- * picture (an evaluator, a procurement committee) has one page that covers
- * it end to end rather than scrolling a long homepage.
- *
- * Same honesty rule as everywhere else in this app's marketing copy: every
- * claim matches what the code actually does, and the security section is
- * explicit about the ENFORCED vs. DETECTED-ONLY boundary rather than
- * blurring it for effect.
  */
 
 const PILLARS = [

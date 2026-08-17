@@ -37,12 +37,7 @@ def get_pending_by_email(db: Session, email: str) -> AccessRequest | None:
 
 def mark_notified(db: Session, request: AccessRequest, *, when: datetime,
                   commit: bool = True) -> AccessRequest:
-    """Stamp when admins were last told about this request.
-
-    Committed separately from the row's creation on purpose: the notification
-    is a side effect, and a mail-server problem must not roll back a request
-    somebody legitimately submitted.
-    """
+    """Stamp when admins were last told about this request."""
     request.last_notified_at = when
     if commit:
         db.commit()

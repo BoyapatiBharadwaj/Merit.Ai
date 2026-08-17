@@ -1,39 +1,4 @@
-"""
-Outbound transactional email.
-
-This is the one place in the application that opens an SMTP connection.
-Everything else -- OTP delivery, access-request notifications, credential
-handoff, exam reminders -- calls `send()` or one of the typed helpers below and
-never touches smtplib itself.
-
-Three properties this module guarantees, because every caller depends on them:
-
-**It never raises.** `send()` returns a bool and swallows every exception. A
-mail server being down, misconfigured, rate-limiting, or simply not configured
-at all must never turn into a 500 on a student pressing "register" or an admin
-approving an examiner. Email here is a notification channel layered on top of
-flows that already complete successfully in the database; if delivery fails the
-flow has still happened, and the failure belongs in the log, not in the user's
-face. This mirrors the graceful-degradation pattern already used for the AI
-worker (app/ai/ai_worker_client.py) and the code sandbox
-(code_runner_service.is_available).
-
-**It never blocks a request.** SMTP handshakes take hundreds of milliseconds on
-a good day and can take twenty seconds against a struggling host. Callers pass
-FastAPI's `BackgroundTasks` and the send happens after the response is already
-on the wire. `send()` is still safe to call synchronously (the tests do), it
-just isn't what the endpoints do.
-
-**It is off by default.** With EMAIL_ENABLED false -- the default, and what the
-test suite and any fresh clone run with -- `send()` logs the message it would
-have sent and returns False. Nothing needs a mail server to run.
-
-On Gmail specifically: SMTP_PASSWORD must be a 16-character App Password, not
-the account password. Google rejects plain-password SMTP outright, and App
-Passwords are only available once 2-Step Verification is on. The daily cap is
-around 500 recipients, which is comfortable for institutional use but is a real
-ceiling worth knowing about before an exam-day broadcast.
-"""
+"""Outbound transactional email."""
 import logging
 import smtplib
 import ssl
@@ -52,34 +17,16 @@ logger = logging.getLogger("app")
 
 
 def is_enabled() -> bool:
-    """True when this deployment can actually send mail.
-
-    Checked by callers that want to adapt their behaviour rather than fire a
-    message into the void -- for example, the OTP endpoints refuse to pretend a
-    code was delivered when there is no way to deliver it, because "check your
-    inbox" for a mail that cannot arrive is worse than an honest error.
-    """
+    """True when this deployment can actually send mail."""
     return bool(settings.EMAIL_ENABLED and settings.SMTP_HOST and settings.SMTP_USERNAME)
 
 
 def from_address() -> str:
-    """The envelope/From address. Defaults to the authenticated SMTP user.
-
-    Gmail silently rewrites a From: that doesn't match the authenticated
-    account, so defaulting to SMTP_USERNAME keeps what the recipient sees the
-    same as what was actually configured instead of quietly diverging.
-    """
+    """The envelope/From address. Defaults to the authenticated SMTP user."""
     return settings.EMAIL_FROM.strip() or settings.SMTP_USERNAME.strip()
 
 
 # The brand mark, embedded rather than linked.
-#
-# A hosted <img src="https://..."> is blocked by default in Gmail, Outlook and
-# Apple Mail until the reader clicks "show images", so the letterhead would be a
-# broken box for most first-time recipients. A data: URI is worse -- Gmail strips
-# those from <img> entirely. An inline CID attachment is the one approach every
-# major client renders without asking, because the bytes travel inside the
-# message rather than being fetched from a third party.
 LOGO_PATH = Path(__file__).resolve().parent.parent / "assets" / "logo-mark.png"
 LOGO_CID_NAME = "meritai-logo"
 
@@ -101,20 +48,14 @@ def _build_message(*, to: str, subject: str, text_body: str, html_body: str | No
     message["Subject"] = subject
     message["From"] = formataddr((settings.EMAIL_FROM_NAME, from_address()))
     message["To"] = to
-    # The plain-text part is set first and the HTML added as an alternative, so
-    # a text-only client gets a genuinely readable message rather than a
-    # stripped tag soup. Every template below writes both by hand for that
-    # reason -- auto-generating text from HTML produces something noticeably
-    # worse, and these messages carry passcodes and credentials that must stay
-    # legible in any client.
+    # The plain-text part is set first and the HTML added as an alternative, so a text-only
+    # client gets a genuinely readable message rather than a stripped tag soup.
     message.set_content(text_body)
     if html_body:
         logo = _logo_bytes()
         if logo and f"cid:{LOGO_CID_NAME}" in html_body:
-            # The Content-ID header must match what the HTML's src points at,
-            # angle brackets and all -- a src of "cid:x" resolves against a
-            # header of "<x>". Getting that pairing wrong is the usual reason an
-            # inline image shows as a broken box.
+            # The Content-ID header must match what the HTML's src points at, angle brackets and
+            # all -- a src of "cid:x" resolves against a header of "<x>".
             cid = f"<{LOGO_CID_NAME}>"
             message.add_alternative(html_body, subtype="html")
             # related, not mixed: the image is part of the HTML body, not a
@@ -129,13 +70,7 @@ def _build_message(*, to: str, subject: str, text_body: str, html_body: str | No
 
 
 def send(*, to: str, subject: str, text_body: str, html_body: str | None = None) -> bool:
-    """Deliver one message. Returns True only on a successful handshake+send.
-
-    Never raises -- see the module docstring. The recipient address is included
-    in failure logs but the body never is: these messages carry passcodes and
-    initial credentials, and a log file is a much easier thing to read than a
-    mailbox.
-    """
+    """Deliver one message. Returns True only on a successful handshake+send."""
     if not is_enabled():
         logger.info("Email disabled; not sending %r to %s (set EMAIL_ENABLED and SMTP_* to enable).", subject, to)
         return False
@@ -144,9 +79,7 @@ def send(*, to: str, subject: str, text_body: str, html_body: str | None = None)
 
     try:
         if settings.SMTP_USE_TLS:
-            # STARTTLS: connect in the clear on 587, then upgrade. The context
-            # verifies the server certificate by default, which is the point of
-            # using ssl.create_default_context() rather than an unverified one.
+            # STARTTLS: connect in the clear on 587, then upgrade.
             with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT,
                               timeout=settings.SMTP_TIMEOUT_SECONDS) as smtp:
                 smtp.ehlo()
@@ -182,12 +115,8 @@ def send(*, to: str, subject: str, text_body: str, html_body: str | None = None)
 
 def queue(background: BackgroundTasks | None, *, to: str, subject: str,
           text_body: str, html_body: str | None = None) -> None:
-    """Send after the response has been returned, when a BackgroundTasks is
-    available; otherwise send inline.
-
-    The `None` branch exists so service-layer code can be called from places
-    with no request context at all -- the exam reminder loop, a management
-    script, a test -- without every caller needing to care which it is.
+    """Send after the response has been returned, when a
+    BackgroundTasks is available; otherwise send inline.
     """
     if background is not None:
         background.add_task(send, to=to, subject=subject, text_body=text_body, html_body=html_body)
@@ -201,36 +130,8 @@ def _utcnow() -> datetime:
 
 def enqueue_tracked(db: Session, *, to: str, subject: str, text_body: str,
                     html_body: str | None = None, max_attempts: int | None = None):
-    """Queue one message for reliable delivery, with a durable Postgres record
-    that never claims success it didn't earn.
-
-    This is the one path every transactional message in this app goes
-    through now -- OTP codes, examiner activation and its resend, exam
-    notifications, report-ready emails, and (via
-    access_request_service._notify_admins) admin access-request notices.
-    `queue()` above is still what it always was, fire-and-forget with no
-    delivery record, for the one message that is genuinely disposable (a
-    staff login notice: losing one to a mail hiccup is a missed FYI, not a
-    broken flow).
-
-    An `email_outbox` row is written FIRST, in this same request's
-    transaction, so a crash between writing it and the queue actually
-    accepting the job still leaves something a human or a retry can find --
-    Postgres is the durable record; Redis/RQ (app/core/queues.py) is only the
-    delivery mechanism, and the row's status/attempts/error/sent_at is the
-    real, final answer to "did this ever send", not whatever RQ's own job
-    state says.
-
-    Returns the created row. The row is `pending` when this function returns
-    -- delivery happens on the `worker` service asynchronously, with
-    exponential-backoff retries, up to JOB_MAX_RETRIES times (see
-    app/worker/jobs.deliver_outbox_email and app/core/queues.py). A caller
-    that must know whether delivery ultimately succeeded (there is
-    deliberately only one: access_request_service, which must not stamp
-    `last_notified_at` on a request nobody was actually told about) uses the
-    dedicated `app/worker/jobs.enqueue_access_request_notification` job
-    instead of this generic one, precisely because that side effect cannot be
-    decided here, before the send has even been attempted.
+    """Queue one message for reliable delivery, with a durable
+    Postgres record that never claims success it didn't earn.
     """
     from app.repositories import email_outbox_repository
     from app.worker import jobs
@@ -243,15 +144,9 @@ def enqueue_tracked(db: Session, *, to: str, subject: str, text_body: str,
     return row
 
 
-# ------------------------------------------------------------------------------
-# Templates
-#
-# Deliberately plain inline HTML with inline styles and no <style> block, no
-# external CSS and no images. Mail clients strip stylesheets, block remote
-# content by default, and Gmail's clipping kicks in around 102KB -- so the
-# robust thing for a message whose entire job is to deliver six digits legibly
-# is a table-free, inline-styled layout that degrades to readable text.
-# ------------------------------------------------------------------------------
+# --- - ---
+# Templates Deliberately plain inline HTML with inline styles
+# and no <style> block, no external CSS and no images.
 
 # Brand palette, matched to the web app rather than approximated.
 #   _BRAND     frontend --primary (the ".Ai" in the wordmark, buttons, the mark)
@@ -271,24 +166,9 @@ _TAGLINE = "Conduct &nbsp;&middot;&nbsp; Monitor &nbsp;&middot;&nbsp; Evaluate"
 
 
 def _logo_mark(size: int = 40) -> str:
-    """The Merit.Ai mark: a rounded blue tile with a white check.
-
-    Built from a table cell with a background colour and a text glyph, NOT an
-    <img> or inline <svg>. Both of those lose in email: Gmail refuses data: URIs
-    on images so an embedded PNG renders as a broken box, a hosted image is
-    blocked by default until the reader clicks "show images", and Outlook's Word
-    renderer drops inline SVG entirely. A styled cell always paints.
-
-    border-radius is ignored by Outlook, which degrades to a square tile -- an
-    acceptable loss, and the reason the mark is a solid colour rather than the
-    site's gradient (Outlook would drop the gradient and leave a transparent
-    box, which is not).
-    """
+    """The Merit.Ai mark: a rounded blue tile with a white check."""
     if _logo_bytes() is not None:
-        # The real mark from app/assets/logo-mark.png, attached inline (see
-        # _build_message). Explicit width/height attributes AND matching CSS:
-        # Outlook ignores the CSS, everything else prefers it, and without both
-        # the 512px source renders at full size in at least one client.
+        # The real mark from app/assets/logo-mark.png, attached inline (see _build_message).
         return (f'<img src="cid:{LOGO_CID_NAME}" width="{size}" height="{size}" alt="Merit.Ai" '
                 f'style="display:block;width:{size}px;height:{size}px;border:0;outline:none;'
                 f'text-decoration:none;border-radius:11px;" />')
@@ -307,30 +187,17 @@ def _logo_mark(size: int = 40) -> str:
 
 
 def _wordmark(font_size: int = 22) -> str:
-    """"Merit" in ink, ".Ai" in brand blue -- the same split the site uses.
-
-    Two spans rather than one coloured string, because the two halves are
-    genuinely different colours in the product and a single-colour wordmark in
-    email would be the one place the brand is rendered wrong.
-    """
+    """"Merit" in ink, ".Ai" in brand blue -- the same split the site uses."""
     return (f'<span style="font-family:{_FONT};font-size:{font_size}px;font-weight:800;'
             f'letter-spacing:-0.4px;color:{_INK};">Merit'
             f'<span style="color:{_BRAND};">.Ai</span></span>')
 
 
 def _wrap(title: str, body_html: str, *, preheader: str | None = None) -> str:
-    """Standard shell: header with mark + wordmark + tagline, card, footer.
-
-    Table-based throughout. Modern CSS layout (flex, grid) is unusable here --
-    Outlook renders mail through Word, which supports neither -- so nested
-    tables with inline styles remain the only thing that lays out reliably
-    across clients.
-    """
+    """Standard shell: header with mark + wordmark + tagline, card, footer."""
     preheader_html = ""
     if preheader:
         # The grey snippet a client shows next to the subject in the inbox list.
-        # Hidden in the body itself; without it the client grabs the first
-        # visible text, which here is the word "Merit".
         preheader_html = (
             f'<div style="display:none;max-height:0;overflow:hidden;opacity:0;'
             f'mso-hide:all;font-size:1px;line-height:1px;color:{_PAGE};">{preheader}</div>'
@@ -396,13 +263,7 @@ def _paragraph(text: str, *, margin: str = "0 0 16px") -> str:
 
 
 def _button(label: str, url: str) -> str:
-    """A padded anchor, not a <button>.
-
-    Bulletproof-button techniques (VML for Outlook) would render this more
-    consistently, but they triple the markup and Outlook still shows a legible,
-    clickable link without them -- the wrong trade for a transactional message
-    whose primary content is text.
-    """
+    """A padded anchor, not a <button>."""
     return (f'<a href="{url}" style="display:inline-block;background-color:{_BRAND};color:#ffffff;'
             f'text-decoration:none;font-family:{_FONT};font-size:15px;font-weight:600;'
             f'padding:13px 26px;border-radius:10px;">{label}</a>')
@@ -484,22 +345,7 @@ def access_request_message(*, first_name: str, last_name: str, email: str,
 def activation_message(*, full_name: str, email: str, activation_url: str,
                        expires_hours: int, organization_name: str | None,
                        role_label: str = "examiner") -> tuple[str, str, str]:
-    """Sent to a newly created account so its owner can set their own password.
-
-    This replaces a message that mailed the password itself. That older design
-    had three problems that no amount of "please change it immediately" fixes:
-
-      1. The password sat in an inbox forever, in plain text, on whatever mail
-         providers it passed through -- long after the account was in use.
-      2. Whoever created the account knew the password, so "only this person
-         could have done that" was never true of anything the account did.
-      3. Mailbox compromise handed over a live credential rather than a link
-         that expires.
-
-    A link carries the same convenience with none of that: it expires, it is
-    single-use, it is stored only as a hash, and the password that ends up on
-    the account was chosen by its owner and has never been transmitted.
-    """
+    """Sent to a newly created account so its owner can set their own password."""
     subject = "Activate your Merit.Ai account"
     org_line = f"Organization: {organization_name}\n" if organization_name else ""
     window = "1 hour" if expires_hours == 1 else f"{expires_hours} hours"
@@ -537,18 +383,7 @@ def activation_message(*, full_name: str, email: str, activation_url: str,
 
 
 def reverification_message(*, full_name: str, reason: str | None) -> tuple[str, str, str]:
-    """Tells a candidate their institution has asked them to verify again.
-
-    The reason is included verbatim and given its own visual block, because a
-    demand to re-prove your identity with no explanation attached reads, from
-    the receiving end, as either an accusation or a malfunction. Neither is
-    what was meant, and both make the person less likely to just go and do it.
-
-    Sent when the request is made rather than discovered at the exam gate: the
-    entire value of asking early is that the candidate has time to act. A
-    candidate who first learns of this ten minutes before a paper starts has
-    effectively been blocked from it.
-    """
+    """Tells a candidate their institution has asked them to verify again."""
     subject = "Action needed: verify your identity again"
     profile_url = f"{settings.APP_BASE_URL.rstrip('/')}/profile"
     reason_text = (reason or "").strip()
@@ -586,17 +421,7 @@ def reverification_message(*, full_name: str, reason: str | None) -> tuple[str, 
 
 def staff_login_message(*, full_name: str, role_label: str, when: str,
                         ip: str | None, user_agent: str | None) -> tuple[str, str, str]:
-    """Tells a staff member their account was just signed into.
-
-    Only staff. An examiner or admin account can read candidate identity
-    photographs, alter results and export personal data, so an unexpected
-    sign-in is worth interrupting someone's inbox for. Sending the same for
-    every candidate login would produce one email per exam per student, which
-    is how a security notice becomes something people filter away.
-
-    Deliberately not blocking and deliberately not fatal: this is a notice, not
-    a control. Losing one to a mail outage must never stop somebody signing in.
-    """
+    """Tells a staff member their account was just signed into."""
     subject = "New sign-in to your Merit.Ai account"
     rows = [("When", when), ("Account type", role_label.title())]
     if ip:
@@ -629,16 +454,7 @@ def staff_login_message(*, full_name: str, role_label: str, when: str,
 def exam_published_message(*, exam_title: str, examiner_name: str, starts_at: str | None,
                            duration_minutes: int, status: str = "published",
                            reason: str = "published") -> tuple[str, str, str]:
-    """Details of one exam, sent to the address the examiner nominated.
-
-    `reason` distinguishes the two moments this fires -- the address being added
-    to an exam, and the exam later going live. Same details either way; only the
-    framing changes, because "you've been added to an exam that opens next week"
-    and "that exam is now live" are different things to tell someone.
-
-    `status` is surfaced explicitly so a draft never reads as if candidates can
-    already sit it.
-    """
+    """Details of one exam, sent to the address the examiner nominated."""
     is_publish = reason == "published"
     subject = (f"Exam published: {exam_title}" if is_publish
                else f"You've been added to an exam: {exam_title}")

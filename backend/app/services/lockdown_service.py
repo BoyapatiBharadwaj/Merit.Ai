@@ -1,24 +1,4 @@
-"""
-Exam lockdown enforcement.
-
-The browser side of lockdown (fullscreen, blur/visibility listeners, blocked
-shortcuts) is inherently defeatable -- a student can open devtools and unhook
-every listener. So the *authoritative* strike count lives here and is derived
-from persisted ProctorEvent rows, which means:
-
-  * refreshing the page does not reset the count
-  * clearing localStorage does not reset the count
-  * killing the client JS stops new strikes being reported, but any strike
-    already banked stays banked
-
-When the limit is reached the attempt is force-submitted server-side, so the
-termination is a fact in the database rather than a client-side courtesy.
-
-What this genuinely cannot do: stop an OS-level screenshot, a screen
-recorder, or a second device pointed at the monitor. Those need a lockdown
-browser (Safe Exam Browser) or a proctored physical environment. Attempts we
-*can* observe are recorded as violations so they surface on the report.
-"""
+"""Exam lockdown enforcement."""
 import logging
 
 from fastapi import HTTPException, status
@@ -31,33 +11,16 @@ from app.services import attempt_service, proctor_service
 
 logger = logging.getLogger("app")
 
-# Only these count toward termination. Copy/paste and right-click attempts are
-# logged as violations but never end an exam -- they are blocked in the browser
-# anyway, so the student gains nothing and a mis-keyed Ctrl+C shouldn't be
-# treated the same as deliberately leaving the exam window.
-#
-# screen_share_stopped is included alongside fullscreen_exit/tab_switch: ending
-# the shared-screen stream mid-exam is exactly as deliberate a signal as
-# Alt-Tabbing out of the window, and the frontend (lib/lockdown.js) reports it
-# through this same strike endpoint rather than a separate one.
+# Only these count toward termination. Copy/paste and right-click attempts are logged as
+# violations but never end an exam.
 STRIKE_EVENT_TYPES = ["fullscreen_exit", "tab_switch", "screen_share_stopped"]
 
 
 def _debounced_strike_count(events: list) -> int:
-    """Collapse bursts of events into single strikes.
-
-    One physical Alt-Tab typically fires window blur, visibilitychange, and
-    fullscreenchange within milliseconds of each other. Counting each one
-    separately would burn a student's entire strike budget on a single
-    accidental keystroke, so events inside the debounce window after a counted
-    strike are folded into it.
-    """
+    """Collapse bursts of events into single strikes."""
     window = settings.LOCKDOWN_STRIKE_DEBOUNCE_SECONDS
-    # A window of zero (or negative) means debouncing is switched off: every
-    # recorded event is its own strike. Handled explicitly because the
-    # comparison below is strictly-greater-than, so a zero window would
-    # otherwise still collapse same-timestamp events -- which is the opposite
-    # of what "no debounce" should mean.
+    # A window of zero (or negative) means debouncing is
+    # switched off: every recorded event is its own strike.
     if window <= 0:
         return len(events)
 
@@ -89,12 +52,7 @@ def strike_status(db: Session, attempt_id: int) -> dict:
 
 
 def record_strike(db: Session, student_id: int, attempt_id: int, event_type: str, description: str | None) -> dict:
-    """Log a lockdown breach and, if it takes the student to the limit,
-    force-submit the attempt.
-
-    Returns the post-write status so the client can render the correct
-    warning ("1 of 3") or the terminal state without a second round-trip.
-    """
+    """Log a lockdown breach and, if it takes the student to the limit, force-submit the attempt."""
     if event_type not in STRIKE_EVENT_TYPES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unsupported lockdown event type.")
 

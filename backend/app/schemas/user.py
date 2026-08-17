@@ -24,9 +24,6 @@ class StudentProfileOut(UserOut):
     identity_locked: bool = False
     exam_ready: bool = False
     # An administrator has asked this candidate to prove their identity again.
-    # Carried on /users/me because it is the candidate's own business: without
-    # it the Profile page would show two green ticks and a blocked exam gate,
-    # with nothing anywhere explaining the contradiction.
     reverification_required: bool = False
     reverification_reason: str | None = None
 

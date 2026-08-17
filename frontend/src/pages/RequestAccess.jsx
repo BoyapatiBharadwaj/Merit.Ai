@@ -9,11 +9,6 @@ import { Api, ApiError } from "../lib/api.js";
 
 /**
  * "Request examiner access" — the public front door for institutions.
- *
- * Examiners can't self-register: their accounts are created by an admin
- * (auth_service.create_examiner). So rather than sending prospective
- * examiners to a signup form that would reject them, this page collects what
- * an admin needs to make that decision and files it as a pending request.
  */
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;

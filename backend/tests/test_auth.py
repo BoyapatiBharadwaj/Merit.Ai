@@ -56,10 +56,9 @@ def test_examiner_creation_requires_admin(client, seed_roles):
 
 
 def test_admin_can_create_examiner(client, seed_roles, admin_token):
-    """No password field: the account is created with an unusable random
-    secret and activated later through a single-use emailed link -- see
-    examiner_provisioning_service. The response confirms what was created
-    rather than handing back a session for an account nobody can use yet."""
+    """No password field: the account is created with an unusable random secret and activated
+    later through a single-use emailed link -- see examiner_provisioning_service.
+    """
     response = client.post(
         "/api/v1/auth/examiners",
         json={

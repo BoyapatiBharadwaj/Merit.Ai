@@ -1,12 +1,6 @@
-"""
-ID-card OCR using EasyOCR (a deep-learning text detector/recognizer), which is
-meaningfully more accurate than Tesseract on the low-quality, phone-camera ID
-photos students typically submit -- angled shots, glare, low resolution.
-
-The reader is lazy-loaded and memoized (mirrors the pattern used for the local
-ArcFace model in face_service.py), so importing this module never
-pulls in EasyOCR/PyTorch until OCR is actually requested, and a missing
-install surfaces as a clean 503 instead of crashing the app at import time.
+"""ID-card OCR using EasyOCR (a deep-learning text detector/recognizer),
+which is meaningfully more accurate than Tesseract on the low-quality,
+phone-camera ID photos students typically submit.
 """
 import re
 import threading
@@ -17,14 +11,7 @@ from fastapi import HTTPException, status
 
 from app.ai.image_utils import decode_image
 
-# Same defensive reasoning as the locks in face_service.py/pose_service.py:
-# _easyocr_reader() hands every caller the same shared Reader instance, and
-# FastAPI runs this sync endpoint on a worker thread per request. EasyOCR's
-# own thread-safety under concurrent readtext() calls isn't something this
-# codebase has verified either way, and ID-card verification is rare enough
-# (once per student, not a per-second poll) that serializing it costs
-# nothing real -- cheap insurance against the same class of bug confirmed in
-# MediaPipe FaceMesh, rather than a proven-necessary fix like those were.
+# Same defensive reasoning as the locks in face_service.py/pose_service.py.
 _ocr_lock = threading.Lock()
 
 

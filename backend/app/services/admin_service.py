@@ -1,9 +1,4 @@
-"""
-Business logic for the admin dashboard's drill-down views: shaping
-admin_repository's raw rows into the dicts the frontend tables render,
-computing each exam's active/upcoming/completed bucket, and a candidate
-attempt's risk score/tier plus a templated (non-AI) proctoring summary.
-"""
+"""Business logic for the admin dashboard's drill-down views."""
 from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
@@ -26,12 +21,7 @@ def _as_utc(value: datetime | None) -> datetime | None:
 # ---------------------------------------------------------------------------
 
 def exam_bucket(exam: Exam, now: datetime | None = None) -> str:
-    """Exam-level lifecycle bucket ("active" | "upcoming" | "completed" |
-    "draft") -- independent of any one candidate, unlike
-    exam_service.compute_candidate_status (which depends on a specific
-    student's own attempt state). This is what the admin dashboard's
-    Active/Upcoming/Completed cards and filters count against.
-    """
+    """Exam-level lifecycle bucket ("active" | "upcoming" | "completed" | "draft")."""
     if exam.status == ExamStatus.DRAFT:
         return "draft"
     if exam.status == ExamStatus.CLOSED:
@@ -65,30 +55,13 @@ def _tier_for(score: int, attempt_status: str | None) -> str:
 
 
 def risk_score_and_tier(violations: list, attempt_status: str | None = None) -> tuple[int, str]:
-    """The AUTOMATED score: every violation counted, decisions ignored.
-
-    Kept as-is so the raw signal remains visible -- an administrator reviewing a
-    reviewer's judgement needs to see what the system originally flagged, not
-    only what survived adjudication.
-    """
+    """The AUTOMATED score: every violation counted, decisions ignored."""
     score = sum(RISK_WEIGHTS.get(v.severity, 1) for v in violations)
     return score, _tier_for(score, attempt_status)
 
 
 def adjudicated_risk(violations: list, attempt_status: str | None = None) -> dict:
-    """The score after a human reviewer's decisions, and the counts behind it.
-
-    Dismissing a violation used to update `admin_decision` and nothing else. The
-    risk score, the tier and the templated proctoring summary all kept counting
-    it, so a candidate whose three flags a reviewer had explicitly cleared as
-    false positives stayed labelled high risk -- and the label, not the
-    decisions, is what the next person to open the record sees. The review
-    changed the record and not the conclusion drawn from it.
-
-    Both numbers are returned rather than one replacing the other: "automated 82,
-    adjudicated 34 after 3 dismissed" is the honest summary, and collapsing it to
-    a single figure loses either the reviewer's work or the original signal.
-    """
+    """The score after a human reviewer's decisions, and the counts behind it."""
     confirmed, dismissed, pending = [], 0, 0
     for violation in violations:
         decision = (getattr(violation, "admin_decision", None) or "").lower()
@@ -145,12 +118,7 @@ _TIER_NOTES = {
 
 
 def proctoring_summary(violations: list, risk_tier: str, attempt_status: str | None = None) -> str:
-    """A templated (non-LLM) natural-language summary generated directly
-    from the logged violations. Deterministic and free -- the same
-    violations always produce the same sentence, and nothing here says
-    anything the timeline below it doesn't already show; this just reads it
-    aloud in one line for a reviewer skimming many candidates at once.
-    """
+    """A templated (non-LLM) natural-language summary generated directly from the logged violations."""
     if not violations:
         return "No proctoring violations were recorded during this attempt."
 
@@ -175,17 +143,11 @@ def proctoring_summary(violations: list, risk_tier: str, attempt_status: str | N
     return sentence + _TIER_NOTES[risk_tier]
 
 
-# ---------------------------------------------------------------------------
-# Dashboard overview
-# ---------------------------------------------------------------------------
+# --- - ---
+# Dashboard overview -------------------------------------------------------------------------
 
 def dashboard_summary(db: Session) -> dict:
-    """Counts backing the admin dashboard's seven overview cards. Each reuses
-    the exact same repository calls its own drill-down page is built from
-    (list_examiners/list_candidates/list_all_exams/list_live_attempts/
-    list_all_violations), just taking len() instead of shaping every row, so
-    a card's number can never drift from what clicking into it shows.
-    """
+    """Counts backing the admin dashboard's seven overview cards."""
     now = datetime.now(timezone.utc)
     exams = exam_repository.list_all_exams(db)
     buckets = {"active": 0, "upcoming": 0, "completed": 0}
@@ -195,10 +157,7 @@ def dashboard_summary(db: Session) -> dict:
             buckets[bucket] += 1
     return {
         # The COUNT from the paginated query, not len() of what it returns.
-        # list_examiners/list_candidates now return (rows, total), so len() of
-        # the tuple was 2 -- always, regardless of how many examiners exist.
-        # A cross-check test caught it immediately, which is the entire argument
-        # for having one.
+        # list_examiners/list_candidates now return (rows, total), so len() of the tuple was 2.
         "total_examiners": admin_repository.list_examiners(db, limit=0)[1],
         "total_candidates": admin_repository.list_candidates(db, limit=0)[1],
         "active_exams": buckets["active"],
@@ -210,22 +169,12 @@ def dashboard_summary(db: Session) -> dict:
 
 
 def exams_overview(db: Session, status_filter: str | None = None, search: str | None = None) -> list[dict]:
-    """Platform-wide exam list behind the Active/Upcoming/Completed overview
-    cards -- the same per-exam row shape as examiner_exams below, but across
-    every examiner at once (with that examiner's name attached), since these
-    three cards drill into "every exam on the platform in this bucket," not
-    one examiner's. Kept as its own function rather than a shared helper with
-    examiner_exams -- the two loops are similar but not identical (search,
-    examiner_name, no examiner_id gate here), and examiner_exams is already
-    covered by passing tests this shouldn't risk disturbing.
-    """
+    """Platform-wide exam list behind the Active/Upcoming/Completed overview cards."""
     exams = exam_repository.list_all_exams(db)
     now = datetime.now(timezone.utc)
     all_attempt_ids = [a.id for exam in exams for a in exam.attempts]
     violation_counts = admin_repository.violation_counts_for_attempts(db, all_attempt_ids)
-    # Batched for the same reason violation_counts is, immediately above: the
-    # per-attempt lookup this replaces ran once per candidate per exam, so one
-    # dashboard render cost hundreds of queries on a real cohort.
+    # Batched for the same reason violation_counts is, immediately above.
     results_by_attempt = attempt_repository.results_for_attempts(db, all_attempt_ids)
 
     rows = []
@@ -253,9 +202,8 @@ def exams_overview(db: Session, status_filter: str | None = None, search: str | 
     return rows
 
 
-# ---------------------------------------------------------------------------
-# Examiners
-# ---------------------------------------------------------------------------
+# --- - ---
+# Examiners -------------------------------------------------------------------------
 
 def examiners_overview(db: Session, search: str | None = None, organization_id: int | None = None,
                         status: str | None = None, offset: int | None = None,
@@ -289,10 +237,8 @@ def examiners_overview(db: Session, search: str | None = None, organization_id: 
             "active_exams": counts["active"], "upcoming_exams": counts["upcoming"], "completed_exams": counts["completed"],
             "candidate_count": candidate_counts.get(e.id, 0),
             "is_active": e.user.is_active,
-            # True until the examiner has followed their activation link and
-            # chosen a password -- see examiner_provisioning_service. Lets the
-            # Examiners page offer "Resend activation" only where it means
-            # something, instead of on every row.
+            # True until the examiner has followed their activation link and chosen a password
+            # -- see examiner_provisioning_service.
             "pending_activation": bool(e.user.must_change_password),
         })
     return rows, total
@@ -331,9 +277,7 @@ def examiner_exams(db: Session, examiner_id: int, status_filter: str | None = No
     now = datetime.now(timezone.utc)
     all_attempt_ids = [a.id for exam in exams for a in exam.attempts]
     violation_counts = admin_repository.violation_counts_for_attempts(db, all_attempt_ids)
-    # Batched for the same reason violation_counts is, immediately above: the
-    # per-attempt lookup this replaces ran once per candidate per exam, so one
-    # dashboard render cost hundreds of queries on a real cohort.
+    # Batched for the same reason violation_counts is, immediately above.
     results_by_attempt = attempt_repository.results_for_attempts(db, all_attempt_ids)
 
     rows = []
@@ -366,18 +310,7 @@ def examiner_user(db: Session, examiner_id: int):
 def update_examiner(db: Session, examiner_id: int, first_name: str | None = None,
                      last_name: str | None = None, organization_name: str | None = None,
                      organization_id: int | None = None) -> dict:
-    """Edit an examiner, moving them between organizations properly.
-
-    This used to write `organization_name` only -- a display string -- while
-    `organization_id` is the authoritative tenancy field that decides which
-    students they see, which exams are theirs, and which roster they draw from.
-    So an administrator could type a new organization, watch it save, and have
-    moved nobody: the examiner stayed in the old tenant while the interface said
-    otherwise. Every downstream count and filter kept using the old one.
-
-    Setting the name now resolves it to a real organization row and moves the
-    foreign key with it, so the two can no longer disagree.
-    """
+    """Edit an examiner, moving them between organizations properly."""
     from app.services import organization_service
 
     examiner = user_repository.get_examiner_by_id(db, examiner_id)
@@ -425,16 +358,7 @@ def update_examiner(db: Session, examiner_id: int, first_name: str | None = None
 
 
 def delete_examiner(db: Session, examiner_id: int) -> None:
-    """Hard-deletes an examiner account -- but only when doing so destroys
-    nothing real. If any of their exams has even one candidate attempt, this
-    refuses and points at deactivation instead: cascading that delete would
-    silently erase actual assessment history (scores, violations, results),
-    which is exactly the kind of data loss this codebase avoids elsewhere
-    (see delete_exam's draft-only gate, and AttemptReset's own docstring).
-    An examiner with zero attempts anywhere -- e.g. never got past a draft --
-    has nothing at stake, so the cascade (Examiner -> Exams -> Sections/
-    Questions) is safe to let through.
-    """
+    """Hard-deletes an examiner account -- but only when doing so destroys nothing real."""
     from app.models.attempt import StudentExamAttempt  # local import: avoids a module-load cycle with attempt.py
 
     examiner = user_repository.get_examiner_by_id(db, examiner_id)
@@ -500,10 +424,7 @@ def exam_enrolled_students(db: Session, exam_id: int, *, exam_status: str | None
     exam_closed = exam_bucket(exam, now) == "completed"
     expected = admin_repository.expected_students_for_exam(db, exam)
     attempts_by_student = {a.student_id: a for a in exam.attempts}
-    # Both maps built once, outside the loop. Previously each candidate row cost
-    # one result query AND one proctor-events query -- and proctor_events is the
-    # fastest-growing table here, so a 500-candidate exam made this the most
-    # expensive page in the admin app by a wide margin.
+    # Both maps built once, outside the loop.
     _attempt_ids = [a.id for a in exam.attempts]
     results_by_attempt = attempt_repository.results_for_attempts(db, _attempt_ids)
     events_by_attempt = proctor_repository.events_for_attempts(db, _attempt_ids)
@@ -561,9 +482,8 @@ def exam_enrolled_students(db: Session, exam_id: int, *, exam_status: str | None
     return rows
 
 
-# ---------------------------------------------------------------------------
-# Candidates
-# ---------------------------------------------------------------------------
+# --- - ---
+# Candidates -------------------------------------------------------------------------
 
 def candidates_overview(db: Session, search: str | None = None, organization_id: int | None = None,
                         offset: int | None = None, limit: int | None = None) -> tuple[list[dict], int]:
@@ -622,10 +542,8 @@ def candidate_detail(db: Session, student_id: int) -> dict:
 
     return {
         "id": student.id,
-        # The USER id, not just the student profile id. Every account action
-        # (activate, reset password, delete) is keyed on the user, and the page
-        # had no way to reach it -- which is part of why the account panel was
-        # never built despite the endpoints existing.
+        # The USER id, not just the student profile id. Every account action (activate, reset
+        # password, delete) is keyed on the user, and the page had no way to reach it.
         "user_id": student.user_id,
         "full_name": student.user.full_name, "email": student.user.email,
         "roll_number": student.roll_number,
@@ -633,10 +551,8 @@ def candidate_detail(db: Session, student_id: int) -> dict:
         "is_active": student.user.is_active,
         "face_registered": identity["face_registered"], "id_verified": identity["id_verified"],
         "identity_locked": identity["identity_locked"],
-        # Surfaced so the admin detail page can show an outstanding request
-        # instead of two green ticks that no longer mean the candidate can sit
-        # anything -- the state that made this feature necessary in the first
-        # place.
+        # Surfaced so the admin detail page can show an outstanding request instead of two green
+        # ticks that no longer mean the candidate can sit anything.
         "reverification_required": identity["reverification_required"],
         "reverification_reason": identity["reverification_reason"],
         "reverification_required_at": identity["reverification_required_at"],
@@ -720,10 +636,8 @@ def review_queue(db: Session, *, offset: int, limit: int) -> tuple[list[dict], i
             "description": event.description,
             "has_screenshot": bool(event.screenshot_path),
             "created_at": event.created_at,
-            # How long this candidate has been waiting on a decision. An
-            # undecided flag counts against them (see adjudicated_risk), so
-            # age is not cosmetic -- it is how long someone has carried an
-            # unresolved accusation.
+            # How long this candidate has been waiting on a decision. An undecided flag counts
+            # against them (see adjudicated_risk), so age is not cosmetic.
             "waiting_hours": round((now - created).total_seconds() / 3600, 1) if created else None,
         })
     return rows, total
@@ -733,14 +647,9 @@ def organizations_overview(db: Session) -> list[dict]:
     return admin_repository.organizations_overview(db)
 
 
-# --- exports ------------------------------------------------------------------
-#
-# Deliberately narrow. Every export below is a flat table of facts an
-# administrator already sees on screen -- no identity photographs, no ID card
-# images, no face embeddings, no proctoring screenshots. Those are the most
-# sensitive things this platform holds, they are served through individually
-# authorised endpoints for a reason, and a CSV is exactly the artefact that ends
-# up forwarded, stored on a laptop and forgotten about.
+# --- exports ---
+# Deliberately narrow. Every export below is a flat table
+# of facts an administrator already sees on screen.
 
 CANDIDATE_EXPORT_COLUMNS = ["id", "full_name", "email", "organization_name",
                             "exams_taken", "completed_exams", "in_progress_exams",
@@ -753,12 +662,7 @@ VIOLATION_EXPORT_COLUMNS = ["id", "attempt_id", "student_name", "exam_title", "e
 
 
 def export_rows(db: Session, kind: str, **filters) -> tuple[list[str], list[dict]]:
-    """Column order and rows for one export.
-
-    Returns the columns explicitly rather than deriving them from the first row:
-    a dict's key order is an implementation detail, and a CSV whose columns
-    shift between exports is one nobody can build a spreadsheet against.
-    """
+    """Column order and rows for one export."""
     if kind == "candidates":
         rows, _ = candidates_overview(db, **filters)
         return CANDIDATE_EXPORT_COLUMNS, rows
@@ -771,14 +675,8 @@ def export_rows(db: Session, kind: str, **filters) -> tuple[list[str], list[dict
     raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown export '{kind}'.")
 
 
-# ==============================================================================
-# Candidate account administration
-#
-# Deleting, deactivating and resetting a candidate's password already live in
-# api/v1/users.py, which owns those verbs for every role. What was missing was
-# the two things that are specific to a CANDIDATE: editing the details their
-# identity was verified against, and asking them to verify again.
-# ==============================================================================
+# Candidate account administration Deleting, deactivating and resetting a candidate's password
+# already live in api/v1/users.py, which owns those verbs for every role.
 
 def _candidate(db: Session, student_id: int):
     student = user_repository.get_student_by_id(db, student_id)
@@ -788,12 +686,7 @@ def _candidate(db: Session, student_id: int):
 
 
 def candidate_user(db: Session, student_id: int):
-    """The User row behind a candidate, for activity_service.record.
-
-    Mirrors examiner_user. The audit trail is keyed on users, not on role
-    profiles, so that "everything that happened to this person" is one query
-    rather than a union across profile tables.
-    """
+    """The User row behind a candidate, for activity_service.record."""
     student = user_repository.get_student_by_id(db, student_id)
     return student.user if student else None
 
@@ -801,25 +694,7 @@ def candidate_user(db: Session, student_id: int):
 def update_candidate(db: Session, student_id: int, *, first_name: str | None = None,
                      last_name: str | None = None, email: str | None = None,
                      roll_number: str | None = None) -> dict:
-    """Edit a candidate's account, and report the consequence honestly.
-
-    The delicate part is not the write, it is what the write means. A verified
-    candidate's name was matched against the name printed on their ID card, and
-    `identity_locked` records that this happened. Quietly renaming such an
-    account would leave a "verified" badge attached to a name nobody has ever
-    checked -- which is worse than no badge, because the badge is what an
-    examiner relies on when deciding whether the person on the webcam is the
-    person enrolled.
-
-    So editing a locked account unlocks it AND flags it for re-verification,
-    and the return value says so. The caller is expected to surface that; the
-    admin UI does. The alternative designs were both worse: refusing the edit
-    entirely makes a genuine typo unfixable without a second ceremony, and
-    editing silently is the failure described above.
-
-    Returns the previous values alongside the new ones so the audit entry can
-    record what actually changed rather than what was submitted.
-    """
+    """Edit a candidate's account, and report the consequence honestly."""
     student = _candidate(db, student_id)
     user = student.user
     if user is None:
@@ -860,9 +735,8 @@ def update_candidate(db: Session, student_id: int, *, first_name: str | None = N
                                         "That roll number belongs to another candidate.")
             student.roll_number = new_roll
 
-    # Only name and email were matched against the ID card. A roll number was
-    # not, so changing it alone must not cost the candidate a re-verification
-    # they did nothing to deserve.
+    # Only name and email were matched against the ID card. A roll number was not, so changing
+    # it alone must not cost the candidate a re-verification they did nothing to deserve.
     unlocked = False
     reverification_required = False
     if identity_fields_changed and student.identity_locked:
@@ -899,13 +773,7 @@ def update_candidate(db: Session, student_id: int, *, first_name: str | None = N
 
 def require_candidate_reverification(db: Session, student_id: int, *, reason: str | None,
                                      requested_by_id: int | None) -> dict:
-    """Ask a candidate to re-register their face and re-submit their ID card.
-
-    Refuses when there is nothing to re-verify. A candidate who has never
-    completed verification is already blocked by the ordinary gate, and marking
-    them would produce a confusing second message about redoing something they
-    have not done once.
-    """
+    """Ask a candidate to re-register their face and re-submit their ID card."""
     student = _candidate(db, student_id)
     state = identity_service.verification_state(db, student)
     if not (state["face_registered"] or state["id_verified"]):
@@ -932,29 +800,9 @@ def require_candidate_reverification(db: Session, student_id: int, *, reason: st
 
 
 def assert_deletable(db: Session, target) -> None:
-    """Refuse to delete an account whose assessment record would go with it.
-
-    This guard existed only on DELETE /admin/examiners/{id}. The admin UI also
-    deletes through DELETE /users/{id} -- the route that handles both roles --
-    which had no such check, so the protection was route-dependent: the same
-    examiner the Examiners page refused to delete could be deleted from the
-    candidate/user path, and a candidate with graded results could always be
-    deleted from anywhere.
-
-    Candidates are the more important half. An examiner's departure costs the
-    platform an author; a candidate's deletion destroys submitted answers,
-    marks and the proctoring evidence behind them -- the assessment record
-    itself, which is the one thing an examination platform exists to keep. The
-    cascade is deliberate and correct for a genuine erasure request; it is the
-    wrong default for "this person left".
-
-    Deactivating is offered instead because it achieves what the administrator
-    almost always actually wants (the account stops working) without destroying
-    what nobody asked to destroy.
-    """
-    # Local import, matching delete_examiner above: attempt.py imports from
-    # this module's dependency graph, so a top-level import reintroduces a
-    # module-load cycle.
+    """Refuse to delete an account whose assessment record would go with it."""
+    # Local import, matching delete_examiner above: attempt.py imports from this module's
+    # dependency graph, so a top-level import reintroduces a module-load cycle.
     from app.models.attempt import StudentExamAttempt
 
     role = getattr(getattr(target, "role", None), "name", None)

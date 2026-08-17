@@ -7,20 +7,6 @@ import { btnPrimary, btnGhost, sectionEyebrow } from "../lib/ui.js";
 
 /**
  * Test your device, without an account.
- *
- * A candidate could only discover that their browser, camera or connection was
- * a problem at the moment they tried to start a real exam -- with a clock about
- * to run and an invigilator to convince. The checks already existed inside the
- * exam page's pre-flight; they were simply unreachable until it was too late
- * for them to be useful.
- *
- * Deliberately behind no login. The people most likely to need it are the ones
- * who have not signed up yet, and requiring an account to find out whether the
- * platform works on your laptop is a poor trade.
- *
- * Nothing here is recorded. No camera frame is uploaded and no result is sent
- * anywhere -- this page talks to the browser and nothing else, which is also
- * the honest answer when someone asks what it does with their webcam.
  */
 
 const IDLE = "idle";
@@ -154,9 +140,8 @@ export default function SystemCheck() {
         analyser.fftSize = 512;
         ctx.createMediaStreamSource(stream).connect(analyser);
         const data = new Uint8Array(analyser.frequencyBinCount);
-        // A live meter rather than a pass/fail: "your microphone works" is a
-        // claim someone has to trust, and a bar that moves when they speak is
-        // one they can check for themselves.
+        // A live meter rather than a pass/fail: "your microphone works" is a claim someone has
+        // to trust, and a bar that moves when they speak is one they can check for themselves.
         meterRef.current = setInterval(() => {
           analyser.getByteFrequencyData(data);
           const average = data.reduce((sum, v) => sum + v, 0) / data.length;
@@ -184,9 +169,8 @@ export default function SystemCheck() {
     setScreenError("");
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-      // Stopped immediately. The point is to confirm the browser can do it and
-      // the candidate knows what the prompt looks like -- there is no reason to
-      // keep watching their screen on a page that does nothing with it.
+      // Stopped immediately. The point is to confirm the browser can do it and the candidate
+      // knows what the prompt looks like.
       stream.getTracks().forEach((track) => track.stop());
       setScreen(OK);
     } catch (err) {

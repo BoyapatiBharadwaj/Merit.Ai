@@ -1,33 +1,4 @@
-"""
-The password policy. One definition, used by every path that sets a password.
-
-There were previously two policies and they disagreed. The registration UI
-listed an uppercase letter, a number and a special character; both the frontend
-and the backend enforced only `min_length=8`. So `aaaaaaaa` was accepted while
-the screen said it would not be, and a candidate who followed the instructions
-got no more protection than one who ignored them. Worse, the eight-character
-rule was repeated in six schemas, which is how a policy comes to be tightened in
-four of them.
-
-What is enforced now, and why it is not the composition rule the UI promised:
-
-  * A length floor (PASSWORD_MIN_LENGTH, default 10) and nothing about
-    character classes. Composition rules push people towards `Password1!` --
-    predictable substitutions that add almost nothing against a real cracking
-    dictionary while making passwords harder to remember, so they get reused or
-    written down. NIST SP 800-63B has recommended against them since 2017.
-  * A blocklist, which is what composition rules were badly approximating.
-    `Password1!` satisfies every classic composition rule and appears in every
-    cracking wordlist; rejecting it directly is the check that was actually
-    wanted.
-  * A context check: the password must not simply be the person's own name or
-    the local part of their email. Those are the first things guessed against a
-    named account and no length rule catches them.
-
-The 72-byte ceiling is not arbitrary either. bcrypt truncates at 72 bytes, so
-without it two different long passwords could hash identically and both open the
-account -- silently, with no error anywhere.
-"""
+"""The password policy. One definition, used by every path that sets a password."""
 import re
 import unicodedata
 
@@ -39,11 +10,7 @@ from app.core.config import settings
 # password accepted beyond it would be quietly weaker than it appears.
 MAX_PASSWORD_BYTES = 72
 
-# Deliberately short. This is not a substitute for a breach corpus -- it catches
-# the handful of passwords that show up unprompted in any real signup table,
-# plus the shapes the old composition rule actively encouraged. A proper
-# k-anonymity check against Have I Been Pwned is the real answer and needs an
-# outbound call this application does not currently make on the signup path.
+# Deliberately short. This is not a substitute for a breach corpus.
 _COMMON_PASSWORDS = {
     "password", "password1", "password12", "password123", "password1234",
     "passw0rd", "p@ssword", "p@ssw0rd", "passw0rd123", "p@ssw0rd123",
@@ -58,21 +25,12 @@ _COMMON_PASSWORDS = {
 
 
 def _normalise(value: str) -> str:
-    """NFKC, so visually identical passwords compare and hash consistently.
-
-    Without it a password typed with a composed accent and the same password
-    typed with a combining one are different byte strings, and a user who
-    switches keyboards cannot sign in with what looks like the same password.
-    """
+    """NFKC, so visually identical passwords compare and hash consistently."""
     return unicodedata.normalize("NFKC", value or "")
 
 
 def _is_repetitive(password: str) -> bool:
-    """One character, or one short unit, repeated to reach the length floor.
-
-    `aaaaaaaaaa` and `abababababab` clear a length check while carrying almost
-    no entropy, and a length-only policy invites exactly this.
-    """
+    """One character, or one short unit, repeated to reach the length floor."""
     if len(set(password)) <= 2:
         return True
     for unit in (1, 2, 3):
@@ -91,11 +49,7 @@ def _is_sequential(password: str) -> bool:
 
 
 def check(password: str) -> str | None:
-    """Context-free checks. Returns a reason, or None if the password passes.
-
-    Returns rather than raises so a Pydantic validator and a service call can
-    share it without one of them having to catch the other's exception type.
-    """
+    """Context-free checks. Returns a reason, or None if the password passes."""
     password = _normalise(password)
 
     if len(password) < settings.PASSWORD_MIN_LENGTH:
@@ -133,12 +87,7 @@ def check(password: str) -> str | None:
 
 def check_with_context(password: str, *, email: str | None = None,
                        name: str | None = None) -> str | None:
-    """`check`, plus the parts that need to know whose account this is.
-
-    Split out because the schema layer validating a request body has no user
-    context, while the service layer setting the password always does. Both go
-    through the same rules; this one simply knows more.
-    """
+    """`check`, plus the parts that need to know whose account this is."""
     reason = check(password)
     if reason:
         return reason
@@ -158,35 +107,16 @@ def check_with_context(password: str, *, email: str | None = None,
     return None
 
 
-# How much password has to remain, once the identifier is removed, for the
-# password to be something other than that identifier with decoration.
-#
-# Five, not four, because four lets through the single most common shape of
-# this: username plus a year. `sandhya2005` for sandhya@ leaves exactly four
-# characters and is precisely the password an attacker targeting that account
-# tries in the first hundred guesses.
+# How much password has to remain, once the identifier is removed, for the password to be
+# something other than that identifier with decoration.
 _MIN_REMAINDER = 5
 
 
 def _is_built_from(password: str, identifier: str) -> bool:
-    """Is this password essentially the identifier with bits stapled on?
-
-    The obvious rule -- "reject if the password contains the identifier" -- is
-    too blunt and rejects passwords that are perfectly good. `Sup3rSecret!` for
-    `secret@example.com` contains "secret" and is not remotely derived from it;
-    telling that candidate to think of another password would be the validator
-    being wrong at them.
-
-    What actually matters is whether the identifier is the SUBSTANCE of the
-    password. `secret123` is the username plus three digits and is the first
-    thing guessed against that account; `Sup3rSecret!` has six other characters
-    doing real work. Measuring what is left after removing the identifier
-    separates the two, where a containment test cannot.
-    """
+    """Is this password essentially the identifier with bits stapled on?"""
     if len(identifier) < 4:
-        # Too short to carry meaning -- "john", "ravi", "lee" appear inside
-        # ordinary words constantly, and blocking them would reject far more
-        # good passwords than bad ones.
+        # Too short to carry meaning -- "john", "ravi", "lee" appear inside ordinary words
+        # constantly, and blocking them would reject far more good passwords than bad ones.
         return False
     if identifier not in password:
         return False
@@ -201,13 +131,7 @@ def require(password: str, *, email: str | None = None, name: str | None = None)
 
 
 def describe() -> list[str]:
-    """The rules, in the wording the UI should show.
-
-    Served to the frontend rather than duplicated there, because the previous
-    arrangement -- the UI listing one policy from memory while the server
-    enforced another -- is the bug this module exists to fix, and it would come
-    straight back the moment the two lists were maintained separately.
-    """
+    """The rules, in the wording the UI should show."""
     return [
         f"At least {settings.PASSWORD_MIN_LENGTH} characters",
         "Not a commonly used password",

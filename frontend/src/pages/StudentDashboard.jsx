@@ -7,12 +7,7 @@ import { btnPrimary, btnGhost } from "../lib/ui.js";
 import { Api, ApiError } from "../lib/api.js";
 import { getName } from "../lib/auth.js";
 
-// Every exam returned by GET /exams/available now carries a server-computed
-// `candidate_status` -- one of these four -- derived purely from the exam's
-// schedule window and the candidate's own attempt state (see
-// exam_service.compute_candidate_status). Nothing here re-derives it: the
-// backend is the single source of truth so the dashboard can't drift out of
-// sync with what start_attempt will actually allow.
+// Every exam returned by GET /exams/available now carries a server-computed `candidate_status`.
 const CANDIDATE_STATUS_META = {
   ongoing: { label: "Ongoing", cls: "bg-warning/10 text-warning" },
   upcoming: { label: "Upcoming", cls: "bg-primary/10 text-primary" },
@@ -55,12 +50,10 @@ function StatCard({ label, value, tone = "primary", icon, delay = 0 }) {
   );
 }
 
-/** Live "Xm Ys remaining" countdown for an exam the student is actively
- * taking, computed from the attempt's own started_at + the exam's
- * duration_minutes -- the same deadline attempt_service.remaining_seconds
- * enforces server-side. Ticks every second on the client purely for display;
- * if it ever reaches zero the student is a click away from the exam page,
- * which re-syncs with (and is bound by) the server's own clock. */
+/**
+ * Live "Xm Ys remaining" countdown for an exam the student is actively taking, computed from
+ * the attempt's own started_at + the exam's duration_minutes.
+ */
 function OngoingCountdown({ startedAt, durationMinutes }) {
   const [remainingSeconds, setRemainingSeconds] = useState(() => computeRemaining(startedAt, durationMinutes));
 
@@ -94,12 +87,6 @@ export default function StudentDashboard() {
   const [identity, setIdentity] = useState(null);
   const [loadError, setLoadError] = useState("");
   // "ok" | "unknown" -- whether the identity check itself could be reached.
-  //
-  // The identity fetch swallowed its own failure with `.catch(() => null)`,
-  // which made "we could not check" indistinguishable from "not verified yet".
-  // On a proctored exam those lead to opposite actions: one means go and
-  // register your face, the other means try again in a minute. Telling a
-  // verified candidate to re-register minutes before an exam is a real cost.
   const [identityState, setIdentityState] = useState("ok");
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -108,10 +95,8 @@ export default function StudentDashboard() {
     (async () => {
       setLoadError("");
       try {
-        // Settled, not all: a failing identity check must not blank the exam
-        // list, and a failing exam list must not be masked by a working
-        // identity check. They are independent questions with independent
-        // answers, and Promise.all collapses both into whichever failed first.
+        // Settled, not all: a failing identity check must not blank the exam list, and a
+        // failing exam list must not be masked by a working identity check.
         const [examsResult, identityResult] = await Promise.allSettled([
           Api.get("/exams/available"),
           // Mirrors the server-side gate in start_attempt so the student sees
@@ -324,10 +309,8 @@ export default function StudentDashboard() {
                   ))}
                 </div>
               ) : (
-                // A student who no examiner has enrolled sees an empty list and
-                // has no way to tell that from "my institution hasn't published
-                // anything yet". Naming enrolment as the likely cause turns a
-                // dead end into an actionable next step.
+                // A student who no examiner has enrolled sees an empty list and has no way to
+                // tell that from "my institution hasn't published anything yet".
                 <EmptyState
                   icon="layout"
                   title="No upcoming exams"
@@ -505,10 +488,7 @@ function OngoingCard({ exam, identity, navigate }) {
 }
 
 /**
- * Shown until face + ID verification are both complete. Deliberately a
- * prominent, action-oriented banner rather than a passive notice: a student
- * who discovers this requirement only when clicking "Start Exam" minutes
- * before a deadline has a genuinely bad time.
+ * Shown until face + ID verification are both complete.
  */
 function VerificationBanner({ identity }) {
   const steps = [

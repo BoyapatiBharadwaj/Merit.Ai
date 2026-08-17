@@ -11,10 +11,9 @@ import { isLoggedIn, getRole } from "../lib/auth.js";
 
 const REFRESH_MS = 15000;
 
-/** Every attempt currently IN_PROGRESS, platform-wide -- auto-refreshes on
- * an interval since "live" implies the list is expected to change out from
- * under the admin while they're looking at it (a candidate submits, another
- * starts) without them needing to manually reload the page each time. */
+/**
+ * Every attempt currently IN_PROGRESS, platform-wide.
+ */
 export default function AdminLiveSessions() {
   const navigate = useNavigate();
   const [rows, setRows] = useState(null);

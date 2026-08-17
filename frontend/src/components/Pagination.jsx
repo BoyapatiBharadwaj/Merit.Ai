@@ -1,17 +1,5 @@
 /**
  * Pagination footer for the admin list tables.
- *
- * The note that used to sit here said these endpoints return the whole
- * filtered list in one response because the tables are "platform-scale, not
- * internet-scale". That reasoning does not survive contact with a real
- * institution: violations accumulate per candidate per exam and never stop, and
- * a few thousand candidates is an ordinary year. Downloading all of them to
- * display fifteen rows cost the transfer, the parse and the render every time a
- * filter changed.
- *
- * The endpoints are paginated server-side now (see backend
- * app/schemas/pagination.py). This component only reports which page to fetch;
- * `paginate` below remains for the few small lists still held in memory.
  */
 export default function Pagination({ page, pageCount, onChange, totalCount, pageSize }) {
   if (pageCount <= 1) return null;

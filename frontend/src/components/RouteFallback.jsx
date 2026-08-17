@@ -2,15 +2,6 @@ import LogoMark from "./LogoMark.jsx";
 
 /**
  * Shown while a code-split route chunk downloads.
- *
- * Deliberately quiet: a branded mark and a subtle pulse rather than a spinner
- * with "Loading...". On a fast connection this is visible for a few frames and
- * anything louder reads as a flash of broken layout; on a slow one it needs to
- * look intentional rather than stuck.
- *
- * No timeout or error state here -- a chunk that genuinely fails to load throws,
- * and ErrorBoundary above catches it with a message and a retry. Duplicating
- * that logic here would mean two places deciding what "failed" means.
  */
 export default function RouteFallback() {
   return (

@@ -1,19 +1,4 @@
 # Which frontend is the browser actually being served?
-#
-# Both the OTP reset page and the OTP signup flow have been correct in the
-# source for a while, yet the running site kept showing the old versions. That
-# combination has exactly one cause: the container is serving a bundle built
-# from different source than the one you are reading.
-#
-# The usual reason is subtle and easy to miss. Docker Compose names the project
-# after the directory it runs in, and BOTH copies of this repo are called
-# "Merit.Ai" -- so `docker compose up -d --build` from Downloads\Merit.Ai
-# rebuilds and replaces the very same containers, using the OLD source. It
-# reports success. Nothing about the output tells you which tree it used.
-#
-# This inspects the files nginx is actually serving, so it cannot be fooled by
-# a build that looked fine.
-#
 #   powershell -ExecutionPolicy Bypass -File check-frontend.ps1
 
 $ErrorActionPreference = "Stop"
@@ -25,9 +10,7 @@ Write-Host ""
 Write-Host ("Running from: " + (Get-Location).Path)
 Write-Host ""
 
-# Two markers, one per symptom. Each string exists only in the fixed code:
-# the old ForgotPassword page had no API call at all, and the old Register
-# page never asked for a code.
+# Two markers, one per symptom.
 $markers = @(
     @{ Name = "OTP password reset";  Needle = "password-reset/request" },
     @{ Name = "OTP signup";          Needle = "otp/signup/request"     }

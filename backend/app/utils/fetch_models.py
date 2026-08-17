@@ -1,25 +1,4 @@
-"""
-Download and prepare every AI model the proctoring stack uses, ahead of time.
-
-Run once after `pip install -r requirements.txt`, as part of deployment:
-
-    python -m app.utils.fetch_models                # everything
-    python -m app.utils.fetch_models --only yolo    # just one
-    python -m app.utils.fetch_models --list
-
-Why this exists: every model here lazy-downloads its weights on first use. Left
-alone, that download happens *inside a student's request* -- slow at best, and
-on a host that cannot reach GitHub it fails outright and surfaces as a 503 that
-looks like a broken install. Doing it deliberately at deploy time turns a
-mid-exam failure into a setup-time one.
-
-Everything is idempotent: already-present weights are verified, not refetched.
-
-    face       ArcFace identity matching (InsightFace). ~280MB for buffalo_l.
-    yolo       YOLO11s object detection, plus an ONNX export. ~19MB.
-    antispoof  Optional trained liveness model. Reports how to install it.
-    ocr        EasyOCR detection + recognition weights for ID cards. ~100MB.
-"""
+"""Download and prepare every AI model the proctoring stack uses, ahead of time."""
 import argparse
 import shutil
 import sys
@@ -56,9 +35,8 @@ def _network_hint() -> str:
             "      as a ProxyError or a timeout), or no write permission for the cache dir.")
 
 
-# ---------------------------------------------------------------------------
-# ArcFace
-# ---------------------------------------------------------------------------
+# --- - ---
+# ArcFace -------------------------------------------------------------------------
 
 def fetch_face(step: Step) -> Step:
     print(f"[face]      pack '{settings.FACE_MODEL_NAME}' -> {Path(settings.FACE_MODEL_ROOT).resolve()}")
@@ -75,18 +53,15 @@ def fetch_face(step: Step) -> Step:
         print(_network_hint())
         return step.fail(f"{type(error).__name__}: {error}")
 
-    # A pack without a recognition submodel downloads fine but cannot do
-    # identity matching -- which would otherwise fail much later, somewhere
-    # far less obvious.
+    # A pack without a recognition submodel downloads fine but cannot do identity matching.
     if not any(getattr(m, "taskname", "") == "recognition" for m in model.models.values()):
         return step.fail(f"pack '{settings.FACE_MODEL_NAME}' has no recognition submodel; "
                          "face matching would not work")
     return step.ok(f"submodels: {', '.join(sorted(model.models))}")
 
 
-# ---------------------------------------------------------------------------
-# YOLO
-# ---------------------------------------------------------------------------
+# --- - ---
+# YOLO -------------------------------------------------------------------------
 
 def fetch_yolo(step: Step) -> Step:
     root = Path(settings.OBJECT_MODEL_ROOT)
@@ -129,21 +104,11 @@ def fetch_yolo(step: Step) -> Step:
     return step.ok(f"{onnx_path.name} ready ({onnx_path.stat().st_size / 1e6:.1f}MB)")
 
 
-# ---------------------------------------------------------------------------
-# Anti-spoofing
-# ---------------------------------------------------------------------------
+# --- - ---
+# Anti-spoofing -------------------------------------------------------------------------
 
 def fetch_antispoof(step: Step) -> Step:
-    """The trained liveness model is opt-in and must be supplied deliberately.
-
-    There is no single canonical, stable download URL for a MiniFASNet ONNX
-    export the way there is for ArcFace and YOLO -- the widely-used weights are
-    scattered across forks and re-uploads. Baking one of those URLs in would
-    mean the setup step silently pulls an unverified binary from a third party,
-    which is a bad trade for a system that decides whether a student is
-    cheating. So this reports what to install and where, and the built-in
-    classical detector runs until you do.
-    """
+    """The trained liveness model is opt-in and must be supplied deliberately."""
     root = Path(settings.ANTISPOOF_MODEL_ROOT)
     path = root / settings.ANTISPOOF_MODEL_ONNX
     print(f"[antispoof] {path.resolve()}")
@@ -180,9 +145,8 @@ def _dummy_input(spec):
     return np.zeros(dims, dtype=np.float32)
 
 
-# ---------------------------------------------------------------------------
-# EasyOCR
-# ---------------------------------------------------------------------------
+# --- - ---
+# EasyOCR -------------------------------------------------------------------------
 
 def fetch_ocr(step: Step) -> Step:
     print("[ocr]       EasyOCR english_g2 + craft detector")

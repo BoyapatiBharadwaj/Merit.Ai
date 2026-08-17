@@ -1,80 +1,82 @@
-# Merit.Ai — React Frontend
+# Merit.Ai — Frontend
 
-The React (Vite) frontend for Merit.Ai — "Conduct. Monitor. Evaluate." This is
-the **complete, sole frontend** for the project: the marketing/home pages, a
-full login/registration flow (with OTP signup and OTP password reset), and
-three role-based dashboards (student, admin, examiner) covering exam
-creation, the drag-and-drop question builder and bulk MCQ import, per-student
-violation review with proof screenshots and reviewer decisions, live exam CSV
-export, and the full proctored exam-taking interface — timer, question
-navigator, MCQ + CodeMirror coding questions with sandboxed "Run Sample",
-autosave with retry/backoff, mark-for-review, submit, and live AI proctoring
-(face/object/pose/gaze checks, tab-switch and fullscreen-exit detection, mic
-noise detection) — plus a Results page with report PDF downloads. All wired
-to the real backend; see the root `README.md` for the full feature and API
-reference.
+The React (Vite) single-page application: marketing pages, the full
+authentication flow, three role-based dashboards, and the proctored
+exam-taking interface.
+
+See the [root README](../README.md) for the platform overview, and
+[docs/PROCTORING.md](../docs/PROCTORING.md) for proctoring tuning.
 
 ## Getting started
 
 ```bash
-cd frontend
 npm install
-npm run dev      # http://localhost:5173
+npm run dev       # http://localhost:5173
 ```
 
-`npm run dev` proxies any request to `/api/*` to `http://localhost:8000` (the
-FastAPI backend), so login/register work out of the box as long as the
-backend is running — no CORS setup needed in dev.
+`npm run dev` proxies `/api/*` to `http://localhost:8000`, so sign-in works out
+of the box against a running backend with no CORS setup.
 
-```bash
-npm run build     # production build -> dist/
-npm run preview   # serve the production build locally
-npm run lint       # eslint
-```
+| Script | What it does |
+|---|---|
+| `npm run dev` | Dev server with hot reload |
+| `npm run build` | Production build to `dist/` |
+| `npm run preview` | Serve the production build locally |
+| `npm run lint` | ESLint over `src/` |
+| `npm test` | `node --test` over `src/**/*.test.mjs` |
+| `npm run check` | Finds identifiers used but never imported |
+| `npm run vendor:mediapipe` | Copies the MediaPipe WASM bundle out of `node_modules` (wired into `dev` and `build`) |
+| `npm run fetch:model` | Downloads the face-landmarker weights for self-hosting |
 
 ## Stack
 
-- **Vite 5** + **React 18** — no experimental/bleeding-edge tooling, chosen deliberately for stability.
-- **React Router 6** for client-side routing.
-- **Tailwind CSS 3** (compiled via PostCSS, not the CDN build) with a consistent design-token set
-  (`--primary`, `--card-bg`, `--border`, etc.). Dark mode is toggled by setting `data-theme="dark"`
-  on `<html>`, persisted to `localStorage` under `aep_theme`.
-- **Chart.js** (loaded via CDN `<script>` in `index.html`, used as `window.Chart` — not an npm dependency)
-  for the admin/examiner analytics charts.
-- **CodeMirror 5** (also loaded via CDN `<script>`/`<link>` in `index.html`, used as `window.CodeMirror`)
-  for coding-question answering in the exam interface.
-- **MediaPipe Tasks Vision** (`src/lib/faceMesh.js`) — face/pose/gaze proctoring signals run
-  client-side at ~12fps; see the root `PROCTORING_TUNING.md` for the full rationale.
+- **Vite 5** and **React 18** — stable tooling, no experimental features
+- **React Router 6** for client-side routing
+- **Tailwind CSS 3** compiled through PostCSS, on a design-token set
+  (`--primary`, `--card-bg`, `--border`, …). Dark mode sets `data-theme="dark"`
+  on `<html>` and persists to `localStorage`
+- **Chart.js** and **CodeMirror 5**, loaded from CDN `<script>` tags in
+  `index.html` and used as globals rather than npm dependencies
+- **MediaPipe Tasks Vision** for the in-browser face, pose, and gaze signals
 
 ## Structure
 
 ```
 src/
-  components/      Navbar, Footer, Logo, ThemeToggle, DashboardHeader, CaptureCard,
-                    CodeEditor, Breadcrumbs, Pagination, EmptyState, IdentityPhotoModal, ...
+  components/     Navbar, Footer, Logo, ThemeToggle, DashboardHeader, CaptureCard,
+                  CodeEditor, Breadcrumbs, Pagination, EmptyState, ErrorBoundary,
+                  IdentityPhotoModal, RosterManager, CredentialsHandoff, ...
   lib/
-    theme.js          dark mode helpers (localStorage "aep_theme")
-    ui.js             shared button/badge className recipes (design-system-in-a-file)
-    api.js            fetch wrapper for /api/v1 — auto-attaches the bearer token, clears
-                       session on 401, supports get/post/put/del + downloadFile (blob)
-    auth.js           session helpers (localStorage "aep_token"/"aep_role"/"aep_name"/"aep_user_id")
-    proctoring.js     AI proctoring controller (createProctoring() factory)
-    faceMesh.js       in-browser MediaPipe face/pose/gaze pipeline
-    lockdown.js       fullscreen/tab-switch/copy-paste strike tracking
+    api.js        fetch wrapper for /api/v1 — attaches the bearer token, clears the
+                  session on 401, exposes get/post/put/del and downloadFile
+    auth.js       session helpers backed by localStorage
+    theme.js      dark-mode helpers
+    ui.js         shared className recipes for buttons, fields and badges
+    proctoring.js the proctoring controller — createProctoring()
+    faceMesh.js   in-browser MediaPipe face, pose and gaze pipeline
+    lockdown.js   fullscreen, tab-switch and copy/paste strike tracking
+    autosave.js   the retry queue behind answer autosave
+    eventLogger.js violation batching
+    seo.js        per-route document metadata
   pages/
-    Home, Features, Pricing, About, FAQ, Contact, Privacy, Terms   marketing pages
-    Login, Register, Activate, ForgotPassword, RequestAccess       auth flows
-    Dashboard                    dispatches by role to Student/Admin/ExaminerDashboard
-    StudentDashboard, Profile, Exam, Results                       student-facing app
-    ExaminerDashboard                                              examiner home
-    examiner/
-      ExamsListPage, ExamBuilderPage, QuestionBuilder, panels.jsx    exam authoring +
-      AttemptReport.jsx                                              per-student violation review
-    AdminDashboard, AdminExaminers(Detail), AdminExams(Detail),
-    AdminCandidates(Detail), AdminAttemptReport, AdminLiveSessions,
-    AdminReviewQueue, AdminOrganizations                           admin console
-    SystemCheck                  pre-exam webcam/mic/browser capability check
-    Placeholder                  generic 404 stub
-  App.jsx       route table
-  main.jsx      entry point
+    Home, Features, Pricing, About, FAQ, Contact, Privacy, Terms
+    Login, Register, Activate, ForgotPassword, RequestAccess
+    Dashboard                          dispatches by role
+    StudentDashboard, Profile, Exam, Results, SystemCheck
+    ExaminerDashboard
+    examiner/  ExamsListPage, ExamBuilderPage, QuestionBuilder, panels, AttemptReport
+    AdminDashboard, AdminExaminers, AdminExaminerDetail, AdminExams, AdminExamDetail,
+    AdminCandidates, AdminCandidateDetail, AdminAttemptReport, AdminLiveSessions,
+    AdminReviewQueue, AdminOrganizations
+    Placeholder                        404 stub
+  App.jsx         route table
+  main.jsx        entry point
 ```
+
+## Conventions
+
+- Function components with hooks. `ErrorBoundary` is the one class component,
+  since `componentDidCatch` has no hooks equivalent.
+- Never call `fetch` from a component — go through `src/lib/api.js`.
+- Routes are code-split; `RouteFallback` covers the loading state and
+  `ErrorBoundary` catches a chunk that fails to download.

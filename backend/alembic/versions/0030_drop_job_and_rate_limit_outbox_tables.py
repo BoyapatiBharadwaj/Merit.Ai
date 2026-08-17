@@ -3,31 +3,6 @@
 Revision ID: 0030
 Revises: 0029
 Create Date: 2026-08-06
-
-Redis is back in this stack (see app/core/redis_client.py), scoped to the
-things that are genuinely ephemeral, shared, cross-worker state: rate
-limiting, one-time-passcode state, distributed locks, and the background job
-queue. Two of the three Postgres tables 0029 introduced as Redis substitutes
-are now themselves superseded:
-
-  job_outbox           The job queue is RQ over Redis now (app/core/queues.py,
-                       app/worker/). A job's own durable outcome, where one is
-                       required (email delivery), is recorded in
-                       `email_outbox` -- there was never a requirement that
-                       PDF-report or bulk-email jobs have a permanent Postgres
-                       record, only that permanent data never live ONLY in
-                       Redis, and neither of those produces data that isn't
-                       already durable elsewhere (a generated report file; an
-                       email whose own outcome is tracked in email_outbox).
-
-  rate_limit_counters  Rate limiting is Redis-backed now (app/core/rate_limit.py),
-                       using Redis's own key TTLs for expiry instead of a
-                       sweep over a Postgres table.
-
-`email_outbox` is untouched: it remains the permanent delivery record
-(status, attempts, error, sent_at) this rewrite explicitly requires
-PostgreSQL to keep, independent of whatever queues or retries the delivery
-mechanism uses underneath it.
 """
 import sqlalchemy as sa
 from alembic import op

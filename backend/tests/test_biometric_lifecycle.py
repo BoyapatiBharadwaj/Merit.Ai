@@ -1,12 +1,4 @@
-"""
-Consent, erasure and retention for biometric data.
-
-The property under test throughout is the one that makes this safe to ship:
-erasing biometrics must remove the ability to re-identify someone WITHOUT
-touching their assessment record. Getting either half wrong is bad in a
-different direction -- leaving the embedding behind defeats the deletion
-request, and cascading into attempts destroys results that have to survive it.
-"""
+"""Consent, erasure and retention for biometric data."""
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -195,10 +187,9 @@ def test_a_student_can_see_and_erase_their_own_biometrics(client, seed_roles, db
     token = registered.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
 
-    # Explicit onclause: students now hold two foreign keys into users -- the
-    # owner, and the administrator who asked for re-verification -- so an
-    # unqualified join is genuinely ambiguous and SQLAlchemy refuses it rather
-    # than guessing.
+    # Explicit onclause: students now hold two foreign keys into users -- the owner, and the
+    # administrator who asked for re-verification -- so an unqualified join is genuinely
+    # ambiguous and SQLAlchemy refuses it rather than guessing.
     student = (db_session.query(Student)
                .join(User, Student.user_id == User.id)
                .filter(User.email == "self@example.com")

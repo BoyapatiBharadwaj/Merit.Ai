@@ -16,17 +16,6 @@ const PAGE_SIZE = 10;
 
 /**
  * The reviewer's worklist.
- *
- * The violations table shows everything newest-first, which is the wrong order
- * for someone deciding: the newest event is rarely the most important, and an
- * unreviewed high-severity flag from last week sinks below a week of routine
- * tab switches. Nothing surfaced what still needed a decision, so in practice
- * things stayed undecided — and an undecided flag counts against the candidate
- * (see adjudicated_risk), so "nobody got round to it" is not neutral.
- *
- * Ordered worst and oldest first, one item at a time, with the evidence and the
- * three decisions on the same screen. The waiting time is shown because it is
- * how long a person has carried an unresolved accusation.
  */
 function Evidence({ eventId }) {
   const { loading, url, error } = usePhotoBlob(
@@ -60,9 +49,8 @@ export default function AdminReviewQueue() {
       })
       .catch((err) => {
         if (cancelled) return;
-        // Not an empty list: "nothing to review" and "we could not ask" must
-        // not look the same on the screen whose whole job is showing what is
-        // outstanding.
+        // Not an empty list: "nothing to review" and "we could not ask" must not look the same
+        // on the screen whose whole job is showing what is outstanding.
         setError(err instanceof ApiError ? err.message : "Couldn't load the review queue.");
         setState("error");
       });

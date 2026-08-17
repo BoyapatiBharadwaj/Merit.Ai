@@ -10,22 +10,13 @@ class StartAttemptResponse(BaseModel):
     remaining_seconds: int
     proctoring_enabled: bool
     question_ids_in_order: list[int]
-    # Valid until this attempt's deadline plus a grace period, and accepted
-    # only on this attempt's own endpoints -- so a three-hour exam cannot be
-    # ended by a two-hour session token expiring. See
-    # security.create_attempt_token.
+    # Valid until this attempt's deadline plus a grace period,
+    # and accepted only on this attempt's own endpoints.
     attempt_token: str
 
 
 class AttemptStatusOut(BaseModel):
-    """Authoritative attempt state, for the client's periodic re-sync.
-
-    The exam page used to re-sync its timer by calling POST /attempts/start
-    again and reading remaining_seconds off the response. That worked, but it
-    meant the most frequent call in a live exam was the one endpoint that can
-    also CREATE an attempt, and it returned the full question order every time
-    to read one integer. This is the read-only version.
-    """
+    """Authoritative attempt state, for the client's periodic re-sync."""
     attempt_id: int
     status: str
     remaining_seconds: int
@@ -34,18 +25,7 @@ class AttemptStatusOut(BaseModel):
 
 
 class _AutosaveEnvelope(BaseModel):
-    """Optimistic-concurrency fields shared by every autosave request.
-
-    Both are OPTIONAL. A client that omits them gets the old last-write-wins
-    behaviour, which is what keeps a candidate already mid-exam on a cached
-    bundle working through a server upgrade -- see
-    attempt_repository._should_apply.
-
-    `answer_version` is a per-question counter the CLIENT increments on every
-    local change; the server refuses anything older than what it holds.
-    `idempotency_key` makes a retry of a request that already landed a no-op
-    rather than a second write.
-    """
+    """Optimistic-concurrency fields shared by every autosave request."""
     answer_version: int | None = Field(default=None, ge=0)
     idempotency_key: str | None = Field(default=None, max_length=64)
 
@@ -85,16 +65,7 @@ class CodeRunRequest(BaseModel):
 
 
 class FinalAnswerItem(_AutosaveEnvelope):
-    """One answer in the snapshot sent with a submission.
-
-    All three value fields are optional and mutually exclusive in practice --
-    which one is read is decided by the question's own type on the server, not
-    by which one the client happened to fill in, so a coding answer cannot be
-    smuggled into an MCQ question. `None` means "no value for this question in
-    this snapshot" and leaves whatever is already stored untouched, so a client
-    that only tracks the questions the candidate actually touched does not blank
-    out the rest.
-    """
+    """One answer in the snapshot sent with a submission."""
     question_id: int
     selected_option_id: int | None = None
     selected_option_ids: list[int] | None = None
@@ -102,16 +73,7 @@ class FinalAnswerItem(_AutosaveEnvelope):
 
 
 class FinalizeAttemptRequest(BaseModel):
-    """POST /attempts/{id}/finalize.
-
-    `final_answers` is the candidate's own current state, sent WITH the
-    submission rather than raced against it -- see
-    attempt_service.finalize_attempt for why that ordering was losing answers.
-
-    There is deliberately no `auto` field. Whether this counts as a timeout or a
-    deliberate submission is read from the server's clock; it used to be a query
-    parameter, which let the candidate label their own submission either way.
-    """
+    """POST /attempts/{id}/finalize."""
     final_answers: list[FinalAnswerItem] = Field(default_factory=list, max_length=1000)
 
 
@@ -125,10 +87,8 @@ class AttemptQuestionView(BaseModel):
 
 class ExamResultOut(BaseModel):
     attempt_id: int
-    # False (and every field below it None) when the exam's examiner has
-    # chosen not to show results yet -- see Exam.results_released. Staff
-    # (the owning examiner, or an admin) always get released=True; this only
-    # ever withholds a CANDIDATE's view of their own score.
+    # False (and every field below it None) when the exam's examiner has chosen not to show
+    # results yet -- see Exam.results_released.
     results_released: bool = True
     total_marks: int | None = None
     scored_marks: int | None = None
@@ -175,10 +135,8 @@ class AttemptReportOut(BaseModel):
     submitted_at: datetime | None
     time_taken_seconds: int | None
     status: str
-    # False (and every score field below None, questions empty) when this
-    # exam's examiner has chosen not to show results yet -- see
-    # Exam.results_released. Only ever affects a CANDIDATE's own view; staff
-    # (the owning examiner, or an admin) always get the full report.
+    # False (and every score field below None, questions empty) when this exam's examiner has
+    # chosen not to show results yet -- see Exam.results_released.
     results_released: bool = True
     total_marks: int | None
     scored_marks: int | None

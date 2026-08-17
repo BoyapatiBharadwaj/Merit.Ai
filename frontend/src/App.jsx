@@ -4,26 +4,14 @@ import { PAGE_META, setPageMeta } from "./lib/seo.js";
 import ErrorBoundary from "./components/ErrorBoundary.jsx";
 import RouteFallback from "./components/RouteFallback.jsx";
 
-// Eager: the entry points. Login and the 404 are small, and Home is the first
-// paint for most visitors -- lazy-loading them would add a network round-trip
-// to the very screens where perceived speed matters most.
+// Eager: the entry points. Login and the 404 are small,
+// and Home is the first paint for most visitors.
 import Home from "./pages/Home.jsx";
 import Login from "./pages/Login.jsx";
 import Placeholder from "./pages/Placeholder.jsx";
 
 /**
  * Route-level code splitting.
- *
- * Everything used to be a static import, which produced one ~909KB bundle that
- * every visitor downloaded in full. A candidate on exam-day bandwidth was
- * pulling down the admin dashboard, the examiner exam-builder, the whole
- * marketing site and a charting library before their exam could render -- none
- * of which they will ever open, and some of which they are not authorised to.
- *
- * Splitting by route means each of those becomes a chunk fetched only when its
- * path is actually visited. The grouping below is by audience rather than by
- * file, because that matches how the app is really used: nobody navigates from
- * an admin drill-down into the exam runner.
  */
 
 // --- marketing -------------------------------------------------------------
@@ -48,10 +36,8 @@ const Profile = lazy(() => import("./pages/Profile.jsx"));
 const Results = lazy(() => import("./pages/Results.jsx"));
 
 // --- the exam runner -------------------------------------------------------
-// The single biggest page in the app, and the one whose dependencies (CodeMirror,
-// the proctoring stack) are heaviest. Splitting it out matters in both
-// directions: a marketing visitor never downloads it, and a candidate who does
-// gets a chunk that is not padded with admin code.
+// The single biggest page in the app, and the one whose dependencies
+// (CodeMirror, the proctoring stack) are heaviest.
 const Exam = lazy(() => import("./pages/Exam.jsx"));
 
 // --- admin drill-down ------------------------------------------------------
@@ -68,11 +54,6 @@ const AdminOrganizations = lazy(() => import("./pages/AdminOrganizations.jsx"));
 
 /**
  * Sets the page's metadata whenever the route changes.
- *
- * Every route used to render with index.html's single title and description, so
- * /features, /pricing, /about and /contact shared one search snippet and one
- * link preview. Anything not in the table is a page behind a login and is
- * marked noindex -- a leaked exam or result URL should never be indexable.
  */
 function RouteMeta() {
   const { pathname } = useLocation();
@@ -94,10 +75,8 @@ function RouteMeta() {
 
 export default function App() {
   return (
-    // The boundary wraps the router rather than sitting inside it, so it also
-    // catches a chunk that fails to load -- a real possibility on the flaky
-    // connections this app is explicitly built to tolerate, and one that would
-    // otherwise render a blank white page with nothing in the UI to explain it.
+    // The boundary wraps the router rather than sitting inside
+    // it, so it also catches a chunk that fails to load.
     <ErrorBoundary>
       <RouteMeta />
       <Suspense fallback={<RouteFallback />}>

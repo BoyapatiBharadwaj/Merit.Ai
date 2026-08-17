@@ -1,6 +1,5 @@
-"""
-The admin dashboard's drill-down endpoints: examiners, candidates, exams,
-live sessions, and violations across every organization.
+"""The admin dashboard's drill-down endpoints: examiners, candidates, exams, live sessions, and
+violations across every organization.
 """
 from datetime import datetime, timedelta, timezone
 
@@ -21,9 +20,8 @@ def _log_violation(client, student_headers, attempt_id: int, event_type: str = "
     assert response.status_code == 201, response.text
 
 
-# ---------------------------------------------------------------------------
-# Access gating
-# ---------------------------------------------------------------------------
+# --- - ---
+# Access gating -------------------------------------------------------------------------
 
 def test_admin_routes_reject_non_admins(client, seed_roles, admin_token):
     examiner_token = _create_examiner_and_login(client, admin_token, email="not-admin-examiner@example.com")
@@ -154,9 +152,7 @@ def test_exam_admin_detail_and_enrolled_students(client, seed_roles, admin_token
 
     start = client.post(f"/api/v1/attempts/start/{exam_id}", headers=auth_headers(started_token))
     attempt_id = start.json()["attempt_id"]
-    # Low-severity on purpose (see proctor_service.SEVERITY_MAP) -- this test
-    # checks the "low" tier specifically; risk-tier thresholds themselves are
-    # covered by test_a_terminated_attempt_is_forced_to_high_risk_regardless_of_score.
+    # Low-severity on purpose (see proctor_service.SEVERITY_MAP).
     _log_violation(client, auth_headers(started_token), attempt_id, "copy_paste_attempt")
     submit = client.post(f"/api/v1/attempts/{attempt_id}/submit", headers=auth_headers(started_token))
     assert submit.status_code == 200, submit.text
@@ -208,9 +204,8 @@ def test_a_terminated_attempt_is_forced_to_high_risk_regardless_of_score(client,
     assert attempt_id
 
 
-# ---------------------------------------------------------------------------
-# Candidates
-# ---------------------------------------------------------------------------
+# --- - ---
+# Candidates -------------------------------------------------------------------------
 
 def test_candidates_overview_and_detail(client, seed_roles, admin_token, db_session):
     examiner_token = _create_examiner_and_login(client, admin_token, email="cand-examiner@example.com")
@@ -272,18 +267,15 @@ def test_violations_overview_and_admin_decision_update(client, seed_roles, admin
     assert event["admin_decision"] == "pending"
     assert event["severity"] == "high"  # phone_detected is mapped High in proctor_service.SEVERITY_MAP
 
-    # A DIFFERENT examiner (not this exam's owner) cannot set the decision --
-    # violations now live only inside the owning examiner's own per-attempt
-    # review, and this is the ownership boundary that protects it.
+    # A DIFFERENT examiner (not this exam's owner) cannot set the decision.
     other_examiner_token = _create_examiner_and_login(client, admin_token, email="other-violations-examiner@example.com")
     forbidden = client.patch(f"/api/v1/proctoring/events/{event['id']}/decision", json={"decision": "confirmed"},
                              headers=auth_headers(other_examiner_token))
     assert forbidden.status_code == 403
 
-    # The exam's OWNING examiner can, though -- this is exactly the action
-    # they take from their per-student attempt review (see
-    # GET /attempts/{id}/staff-report and PATCH .../decision no longer being
-    # admin-only).
+    # The exam's OWNING examiner can, though -- this is exactly the action they take
+    # from their per-student attempt review (see GET /attempts/{id}/staff-report and
+    # PATCH .../decision no longer being admin-only).
     updated = client.patch(f"/api/v1/proctoring/events/{event['id']}/decision", json={"decision": "confirmed"},
                            headers=auth_headers(examiner_token))
     assert updated.status_code == 200, updated.text
@@ -390,9 +382,6 @@ def test_dashboard_summary_counts_match_the_drilldown_endpoints(client, seed_rol
     body = summary.json()
 
     # Compared against each list's `total`, not the length of a page.
-    # These endpoints are paginated now, so len(items) is the page size and
-    # would only agree with the summary by coincidence -- while still looking
-    # like a real cross-check.
     examiners = client.get("/api/v1/admin/examiners", headers=auth_headers(admin_token)).json()
     candidates = client.get("/api/v1/admin/candidates", headers=auth_headers(admin_token)).json()
     live = client.get("/api/v1/admin/live-sessions", headers=auth_headers(admin_token)).json()
@@ -420,10 +409,8 @@ def test_platform_wide_exams_list_filters_by_status_and_search(client, seed_role
     completed_only = client.get("/api/v1/admin/exams", params={"status": "completed"}, headers=auth_headers(admin_token)).json()
     assert exam_id not in [r["id"] for r in completed_only]
 
-    # _build_published_exam always titles the exam "Intro Quiz" and
-    # _create_examiner_and_login always names the examiner "Test Examiner"
-    # regardless of the email passed in -- search on those fixed, known
-    # strings rather than the per-test-unique email fragment.
+    # _build_published_exam always titles the exam "Intro Quiz" and _create_examiner_and_login
+    # always names the examiner "Test Examiner" regardless of the email passed in.
     by_title = client.get("/api/v1/admin/exams", params={"search": "intro quiz"},
                           headers=auth_headers(admin_token)).json()
     assert exam_id in [r["id"] for r in by_title]
@@ -476,10 +463,7 @@ def test_an_admin_search_wildcard_is_escaped(client, seed_roles, admin_token):
 
 
 def test_the_examiner_list_does_not_query_per_row(client, seed_roles, admin_token, db_session):
-    """examiners_overview called candidate_ids_for_examiner inside its loop --
-    two queries per examiner, so a page of a hundred staff meant two hundred
-    round trips to render one table, degrading linearly with exactly the thing
-    an admin dashboard exists to show more of."""
+    """examiners_overview called candidate_ids_for_examiner inside its loop."""
     from sqlalchemy import event
 
     for index in range(5):

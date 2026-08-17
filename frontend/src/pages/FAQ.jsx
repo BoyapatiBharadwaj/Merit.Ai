@@ -6,13 +6,7 @@ import Icon from "../components/Icon.jsx";
 import { btnPrimary, btnGhost, sectionEyebrow } from "../lib/ui.js";
 
 /**
- * FAQ page, grouped by audience/category with a plain accordion (no new
- * dependency -- just useState + a Set of open ids, matching the pattern
- * already used for local UI state elsewhere in this app).
- *
- * Every answer describes something the platform genuinely does today --
- * written from the same source of truth as Home.jsx/Features.jsx/Privacy.jsx,
- * not generic SaaS FAQ boilerplate.
+ * FAQ page, grouped by audience/category with a plain accordion (no new dependency.
  */
 
 const CATEGORIES = [
@@ -148,10 +142,8 @@ function AccordionItem({ item, open, onToggle }) {
 }
 
 export default function FAQ() {
-  // Keyed "categoryIndex-itemIndex" so open state survives category
-  // re-renders and multiple items (even across categories) can stay open at
-  // once -- closing one answer to read another is a real annoyance on a page
-  // this long.
+  // Keyed "categoryIndex-itemIndex" so open state survives category re-renders and multiple
+  // items (even across categories) can stay open at once.
   const [openKeys, setOpenKeys] = useState(() => new Set(["0-0"]));
 
   function toggle(key) {

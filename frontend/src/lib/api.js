@@ -1,9 +1,6 @@
 /**
- * Fetch wrapper for the FastAPI backend. In dev, vite.config.js proxies
- * /api/* to http://localhost:8000, so relative paths work with no CORS
- * setup needed. Behavior mirrors the legacy frontend/js/api.js: attach the
- * stored bearer token automatically, clear the session on 401, and surface
- * FastAPI/Pydantic error shapes as a single readable message.
+ * Fetch wrapper for the FastAPI backend. In dev, vite.config.js proxies /api/* to
+ * http://localhost:8000, so relative paths work with no CORS setup needed.
  */
 import { getToken, clearSession } from "./auth.js";
 
@@ -31,12 +28,6 @@ function messageFromDetail(detail, fallback) {
 
 /**
  * Token for the exam attempt currently in progress, if any.
- *
- * Issued by POST /attempts/start and valid until that attempt's deadline plus a
- * grace period, so a long exam cannot be ended by the 120-minute session token
- * expiring underneath it. Held in memory only, never persisted: it is worth
- * nothing after the attempt ends, and a token for a live exam is the last thing
- * that should outlive the tab in localStorage on a shared examination machine.
  */
 let attemptToken = null;
 export function setAttemptToken(token) {
@@ -46,9 +37,7 @@ export function setAttemptToken(token) {
 async function request(path, { method = "GET", body, auth = true, exam = false } = {}) {
   const headers = { "Content-Type": "application/json" };
   if (auth) {
-    // Inside an exam, prefer the attempt token. Falls back to the session token
-    // when there isn't one, so nothing breaks if an attempt started before this
-    // deployment or the field is missing.
+    // Inside an exam, prefer the attempt token.
     const token = (exam && attemptToken) || getToken();
     if (token) headers.Authorization = `Bearer ${token}`;
   }
@@ -65,13 +54,8 @@ async function request(path, { method = "GET", body, auth = true, exam = false }
   }
 
   if (auth && res.status === 401) {
-    // A 401 on an exam request does NOT clear the session.
-    //
-    // clearSession() wipes the stored token, and every other page treats that
-    // as "log in again" -- which, mid-exam, meant one unlucky response threw
-    // away the candidate's session while their unsaved answers were still in
-    // memory. The exam page handles its own 401 by re-authenticating and
-    // retrying; destroying the session first removes any chance of that.
+    // A 401 on an exam request does NOT clear the session. clearSession() wipes the stored
+    // token, and every other page treats that as "log in again".
     if (!exam) clearSession();
     throw new ApiError("Session expired. Please log in again.", 401, null);
   }
@@ -131,11 +115,8 @@ async function downloadFile(path, filename) {
 }
 
 /**
- * Fetches a binary response (e.g. a photo) as a Blob for inline display,
- * rather than triggering a save-to-disk prompt like downloadFile does.
- * A 404 resolves to null -- "nothing on file yet" is a normal, expected
- * state for these endpoints (a student who hasn't verified an ID yet, a
- * face photo that was never registered), not an error worth throwing.
+ * Fetches a binary response (e.g. a photo) as a Blob for inline display, rather than triggering
+ * a save-to-disk prompt like downloadFile does.
  */
 async function fetchBlob(path) {
   const headers = {};
@@ -179,8 +160,7 @@ export const Api = {
   fetchBlob,
 
   /**
-   * Same verbs, but authenticated with the attempt token and non-destructive on
-   * 401. Every call the live exam page makes should go through this.
+   * Same verbs, but authenticated with the attempt token and non-destructive on 401.
    */
   exam: {
     get: (path) => request(path, { exam: true }),

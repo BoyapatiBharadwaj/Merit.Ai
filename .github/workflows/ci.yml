@@ -1,27 +1,23 @@
-# Backend CI.
-#
-# Two jobs, deliberately separate:
-#
-#   tests      -- the fast SQLite suite. Builds the schema with create_all(),
-#                 which is right for testing application behaviour and
-#                 structurally blind to migration bugs.
-#   migrations -- the Alembic chain against a real PostgreSQL service. This is
-#                 the job that catches what the other cannot: the 0017 enum gap
-#                 and 0016's DuplicateObject were both invisible to SQLite and
-#                 would have failed on a real deployment.
-#
-# Splitting them keeps the common feedback loop fast while still gating merges
-# on the slower, higher-fidelity check.
-name: Backend tests
+# Backend and frontend CI. The SQLite suite and the frontend build run on every
+# push; the Postgres job covers the migration and concurrency tests that need
+# real row locks.
+name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  tests:
-    name: Test suite (SQLite)
+  backend:
+    name: Backend tests (SQLite)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -50,9 +46,8 @@ jobs:
 
     services:
       postgres:
-        # Pinned to the major version the app is developed against. Enum
-        # behaviour in particular differs across majors -- ALTER TYPE ADD VALUE
-        # could not run inside a transaction before 12.
+        # Pinned to the major version the app is developed against.
+        # Enum behaviour in particular differs across majors.
         image: postgres:16
         env:
           POSTGRES_USER: postgres
@@ -80,9 +75,37 @@ jobs:
 
       - name: Run migration tests against PostgreSQL
         env:
-          # Set, so the tests use this service container rather than booting
-          # their own pgserver instance. Without it they would still run, just
-          # against a throwaway server -- but testing against the same major
-          # version as production is the entire point of this job.
+          # Set, so the tests use this service container
+          # rather than booting their own pgserver instance.
           TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/postgres
         run: pytest -q -m postgres
+
+  frontend:
+    name: Frontend lint, test and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Import check
+        run: npm run check
+
+      - name: Build
+        run: npm run build

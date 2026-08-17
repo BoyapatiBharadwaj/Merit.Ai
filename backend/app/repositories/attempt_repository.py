@@ -18,12 +18,7 @@ def get_attempt(db: Session, attempt_id: int) -> StudentExamAttempt | None:
 
 
 def get_existing_attempt(db: Session, student_id: int, exam_id: int) -> StudentExamAttempt | None:
-    """This student's LIVE attempt at this exam, ignoring archived ones.
-
-    An attempt archived by a reset must not be found here, or the retake the
-    reset was granted for could never be started -- start_attempt would keep
-    finding the old row and report "you have already attempted this exam".
-    """
+    """This student's LIVE attempt at this exam, ignoring archived ones."""
     return (
         db.query(StudentExamAttempt)
         .filter(StudentExamAttempt.student_id == student_id,
@@ -46,11 +41,9 @@ def create_attempt(db: Session, student_id: int, exam_id: int, question_order: s
 
 
 
-# --- autosave concurrency control ---------------------------------------------
-#
-# Shared by all three answer types (MCQ, multi-select, code), because the race
-# and its fix are identical for each -- only the column being written differs.
-# See StudentAnswer.answer_version for why the version is client-owned.
+# --- autosave concurrency control ---
+# Shared by all three answer types (MCQ, multi-select, code),
+# because the race and its fix are identical for each.
 
 class AnswerWriteOutcome:
     """Why a write was or wasn't applied. Returned alongside the row so the API
@@ -62,31 +55,16 @@ class AnswerWriteOutcome:
 
 
 def _should_apply(answer, answer_version: int | None, idempotency_key: str | None) -> str:
-    """Decide whether an incoming write wins.
-
-    Order matters. Duplicate is checked FIRST: a retry of a request that already
-    landed carries the same version as the stored row, so a version-only check
-    would classify it as a normal same-version write and apply it again. Both
-    outcomes are harmless for a simple option id, but not for a code submission
-    the student has since edited.
-    """
+    """Decide whether an incoming write wins."""
     if answer is None:
         return AnswerWriteOutcome.APPLIED
 
-    # Only the most recently ACCEPTED key is stored, so this recognises a replay
-    # of the latest request but not of an older one. That is sufficient rather
-    # than sloppy: the case it catches (a request that landed and whose reply was
-    # lost, retried immediately) is the one the client's backoff actually
-    # produces, and a replay of anything older necessarily carries an older
-    # version and is refused by the check below. Keeping a full set of seen keys
-    # per answer would buy a more precise error label and nothing else.
+    # Only the most recently ACCEPTED key is stored, so this recognises a replay of the latest
+    # request but not of an older one.
     if idempotency_key and answer.idempotency_key == idempotency_key:
         return AnswerWriteOutcome.DUPLICATE
 
     # No version supplied at all: an older client that predates this field.
-    # Falls back to the previous last-write-wins behaviour rather than rejecting
-    # the save -- a candidate mid-exam on a cached bundle must not start losing
-    # answers because the server was upgraded underneath them.
     if answer_version is None:
         return AnswerWriteOutcome.APPLIED
 
@@ -103,13 +81,7 @@ def _stamp(answer, answer_version: int | None, idempotency_key: str | None) -> N
     answer.saved_at = datetime.now(timezone.utc)
 
 
-# Dialects whose SELECT ... FOR UPDATE actually blocks a second writer. SQLite
-# is absent on purpose rather than by oversight: it has no row locks at all, and
-# does not need them here -- it serialises the entire write transaction, so two
-# concurrent saves can never interleave between the read and the commit in the
-# first place. SQLAlchemy's SQLite compiler silently drops a FOR UPDATE clause,
-# so asking for one would appear to work while doing nothing; naming the
-# dialects that support it keeps that difference visible instead of implied.
+# Dialects whose SELECT ... FOR UPDATE actually blocks a second writer.
 _ROW_LOCKING_DIALECTS = frozenset({"postgresql", "mysql", "mariadb", "oracle", "mssql"})
 
 
@@ -121,21 +93,7 @@ def _supports_row_locks(db: Session) -> bool:
 
 
 def _get_answer(db: Session, attempt_id: int, question_id: int, *, lock: bool = False):
-    """The stored answer for one question, optionally locked for update.
-
-    `lock=True` is what makes the version check mean anything. Without it the
-    sequence is: read version, compare in Python, write, commit -- and two
-    autosaves arriving together (a debounced save racing its own retry, or two
-    tabs, or simply a fast typist on a slow link) can BOTH read version 4, both
-    decide they are newer, and both write. The later-arriving one wins by
-    accident of scheduling rather than by being newer, which is precisely the
-    outcome answer_version exists to prevent.
-
-    With the lock, the second reader blocks until the first commits and then
-    re-reads the row it just wrote, so it sees version 5 and is correctly
-    classified as stale. This relies on READ COMMITTED, which is PostgreSQL's
-    default and the isolation level this application runs at.
-    """
+    """The stored answer for one question, optionally locked for update."""
     query = (
         db.query(StudentAnswer)
         .filter(StudentAnswer.attempt_id == attempt_id, StudentAnswer.question_id == question_id)
@@ -148,20 +106,12 @@ def _get_answer(db: Session, attempt_id: int, question_id: int, *, lock: bool = 
 def _write_answer(db: Session, attempt_id: int, question_id: int, apply_change,
                   *, answer_version: int | None, idempotency_key: str | None,
                   _retrying: bool = False):
-    """Read-check-write for one answer, under a row lock, as one transaction.
-
-    Shared by all three answer types because the race is identical for each and
-    only the column being assigned differs -- `apply_change` is the one line
-    that varies. Three near-identical copies of this is how the lock would come
-    to be added to two of them and forgotten on the third.
-    """
+    """Read-check-write for one answer, under a row lock, as one transaction."""
     answer = _get_answer(db, attempt_id, question_id, lock=True)
     outcome = _should_apply(answer, answer_version, idempotency_key)
     if outcome != AnswerWriteOutcome.APPLIED:
-        # Nothing to write, but the row is locked and must not stay that way
-        # while the response is serialised -- during a whole-hall submit that
-        # would queue every other save behind a write we already decided to
-        # discard. Committing an empty transaction is the cheapest release.
+        # Nothing to write, but the row is locked and must not
+        # stay that way while the response is serialised.
         db.commit()
         return answer, outcome
 
@@ -174,13 +124,7 @@ def _write_answer(db: Session, attempt_id: int, question_id: int, apply_change,
     try:
         db.commit()
     except IntegrityError:
-        # FOR UPDATE locks rows that exist; it cannot lock one that doesn't. Two
-        # saves for a question answered for the very first time can therefore
-        # both find nothing and both INSERT, and uq_attempt_question rejects the
-        # loser. That is the constraint doing its job -- the row it wanted now
-        # exists, so retrying once takes the normal locked path and the version
-        # check decides the winner properly. Bounded to a single retry: a second
-        # failure is not this race and should surface rather than spin.
+        # FOR UPDATE locks rows that exist; it cannot lock one that doesn't.
         db.rollback()
         if _retrying:
             raise
@@ -196,19 +140,7 @@ def _write_answer(db: Session, attempt_id: int, question_id: int, apply_change,
 
 def stage_answer(db: Session, attempt_id: int, question_id: int, apply_change,
                  *, answer_version: int | None, idempotency_key: str | None):
-    """Like _write_answer but flushes instead of committing.
-
-    For attempt_service.finalize_attempt, which writes the candidate's final
-    answers and marks the attempt submitted in one transaction: committing here
-    would release the attempt lock half way through and reintroduce the race the
-    lock exists to close.
-
-    Still takes the per-answer row lock. That is not redundant with the attempt
-    lock -- an autosave already in flight when Submit is pressed does not hold
-    the attempt lock, so this row lock is the only thing that makes it wait,
-    re-read the version finalize just wrote, and correctly conclude it is stale
-    rather than overwriting the submitted answer.
-    """
+    """Like _write_answer but flushes instead of committing."""
     answer = _get_answer(db, attempt_id, question_id, lock=True)
     outcome = _should_apply(answer, answer_version, idempotency_key)
     if outcome != AnswerWriteOutcome.APPLIED:
@@ -235,10 +167,7 @@ def upsert_answer(db: Session, attempt_id: int, question_id: int, selected_optio
 
 def upsert_multi_answer(db: Session, attempt_id: int, question_id: int, selected_option_ids_json: str | None,
                         *, answer_version: int | None = None, idempotency_key: str | None = None):
-    """Like upsert_answer, but for MULTI_SELECT questions: persists a JSON
-    list of option ids rather than a single FK. selected_option_ids_json is
-    None to represent "no options selected" (cleared/unanswered), never an
-    empty-string sentinel."""
+    """Like upsert_answer, but for MULTI_SELECT questions."""
     def _apply(answer):
         answer.selected_option_ids_json = selected_option_ids_json
 
@@ -267,16 +196,7 @@ def set_code_test_results(db: Session, answer_id: int, results_json: str) -> Non
 
 
 def get_attempt_for_update(db: Session, attempt_id: int) -> StudentExamAttempt | None:
-    """The attempt, locked, so a finalize cannot interleave with another.
-
-    Two finalize requests for one attempt is not a hypothetical: the timer's
-    auto-submit firing at the same moment the candidate clicks Submit produces
-    exactly that, and so does a double-click on a slow connection. Without the
-    lock both read status=in_progress, both apply their own final answers, and
-    the answers that end up graded are whichever set happened to commit second.
-    With it the second request waits, then sees the attempt already submitted
-    and returns the existing result instead of re-freezing different answers.
-    """
+    """The attempt, locked, so a finalize cannot interleave with another."""
     query = db.query(StudentExamAttempt).filter(StudentExamAttempt.id == attempt_id)
     if _supports_row_locks(db):
         query = query.with_for_update()
@@ -308,19 +228,7 @@ def get_result(db: Session, attempt_id: int) -> ExamResult | None:
 
 
 def results_for_attempts(db: Session, attempt_ids: list[int]) -> dict[int, ExamResult]:
-    """Every result for these attempts, keyed by attempt id, in ONE query.
-
-    The admin dashboards build rows per exam or per student and previously
-    called `get_result` once per attempt inside those loops -- a textbook N+1.
-    An exam hall of 500 candidates meant 500 round-trips to render one page, and
-    it degraded linearly with the thing an admin dashboard exists to show more
-    of. `admin_repository.violation_counts_for_attempts` already establishes the
-    batching idiom for exactly this shape of problem, a few lines away from the
-    worst offender; this is the same fix applied to results.
-
-    Returns a dict rather than a list so callers can keep their existing
-    per-attempt lookups and simply stop hitting the database inside the loop.
-    """
+    """Every result for these attempts, keyed by attempt id, in ONE query."""
     if not attempt_ids:
         return {}
     rows = db.query(ExamResult).filter(ExamResult.attempt_id.in_(attempt_ids)).all()
@@ -328,13 +236,7 @@ def results_for_attempts(db: Session, attempt_ids: list[int]) -> dict[int, ExamR
 
 
 def list_attempts_for_exam(db: Session, exam_id: int, *, include_archived: bool = False) -> list[StudentExamAttempt]:
-    """Archived attempts are excluded by default.
-
-    Including them would make a candidate who was granted a retake appear twice
-    in the examiner's list and count twice in the analytics -- once with the
-    abandoned score. `include_archived=True` is for the reset-history view,
-    which exists precisely to show them.
-    """
+    """Archived attempts are excluded by default."""
     query = db.query(StudentExamAttempt).filter(StudentExamAttempt.exam_id == exam_id)
     if not include_archived:
         query = query.filter(StudentExamAttempt.archived_at.is_(None))
@@ -361,13 +263,7 @@ def list_archived_attempts_for_exam(db: Session, exam_id: int) -> list[StudentEx
 
 
 def active_attempts_for_exam(db: Session, exam_id: int) -> list[StudentExamAttempt]:
-    """Only the attempts currently being sat.
-
-    The live-monitoring page used to download every attempt for the exam every
-    ten seconds and filter in the browser -- so the cost of watching one live
-    candidate grew with every candidate who had ever sat the exam. Filtering
-    here means the query returns what the page is actually for.
-    """
+    """Only the attempts currently being sat."""
     return (
         db.query(StudentExamAttempt)
         .options(joinedload(StudentExamAttempt.student))
@@ -391,16 +287,7 @@ def archive_attempt(db: Session, attempt: StudentExamAttempt, *, reset_id: int |
 
 
 def delete_attempt(db: Session, attempt: StudentExamAttempt) -> None:
-    """Destroy an attempt and everything under it.
-
-    NOT the reset path any more -- see archive_attempt. Resets used to call this,
-    which took the answers, result, comments, proctoring events and violation
-    screenshots with it by cascade and left only an audit row referring to an id
-    that no longer existed.
-
-    Kept for the cases that genuinely mean "this data should not exist":
-    deleting a candidate's account, and erasing an exam.
-    """
+    """Destroy an attempt and everything under it."""
     db.delete(attempt)
     db.commit()
 
@@ -431,16 +318,7 @@ def list_attempt_resets_for_exam(db: Session, exam_id: int) -> list[AttemptReset
 
 def paginated_attempts_for_exam(db: Session, exam_id: int, *, offset: int, limit: int,
                                 search: str = "") -> tuple[list[StudentExamAttempt], int]:
-    """One page of an exam's attempts, plus the total.
-
-    The whole list used to be returned and sliced in the browser, so viewing 25
-    rows cost the transfer and parse of every attempt the exam had ever had.
-
-    `search` matches the candidate's name or email. Escaped, because `%` and `_`
-    are LIKE wildcards: a candidate searching for "100%" would otherwise match
-    everything, and a deliberately wildcard-heavy string turns one keystroke into
-    a full scan.
-    """
+    """One page of an exam's attempts, plus the total."""
     from app.models.student import Student
     from app.models.user import User
 
@@ -464,11 +342,5 @@ def paginated_attempts_for_exam(db: Session, exam_id: int, *, offset: int, limit
 
 
 def escape_like(value: str) -> str:
-    """Neutralise LIKE wildcards in user input.
-
-    `%` and `_` are wildcards, so an unescaped search box lets any input become
-    a pattern -- "100%" matches every row, and "%_%_%_%" is a cheap way to make
-    the database work hard. The backslash is escaped first, or escaping the
-    others would corrupt it.
-    """
+    """Neutralise LIKE wildcards in user input."""
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

@@ -1,16 +1,4 @@
-"""Local (in-process) YOLO object detection: decoding, filtering, degradation.
-
-The interesting, breakable part of object_service is not "does onnxruntime
-run" -- it is the post-processing: letterbox coordinate mapping, the
-anchor-free class-score layout YOLO11 uses, per-class NMS, and the per-class
-confidence floors. All of that is pure numpy and is exercised here directly
-against tensors shaped exactly like a real YOLO11 head, so these tests are
-meaningful without a 19MB model download in CI.
-
-A synthetic ONNX graph (built with onnx, which onnxruntime already ships
-alongside) covers the one thing pure-numpy tests cannot: that the session is
-actually driven with the right input name, layout and dtype.
-"""
+"""Local (in-process) YOLO object detection: decoding, filtering, degradation."""
 import numpy as np
 import pytest
 
@@ -32,16 +20,11 @@ def _plant(head: np.ndarray, slot: int, class_id: int, confidence: float,
     head[0, 4 + class_id, slot] = confidence
 
 
-# --------------------------------------------------------------------------
-# Decoding
-# --------------------------------------------------------------------------
+# --- - ---
+# Decoding ------------------------------------------------------------------------
 
 def test_decode_reads_the_anchor_free_class_layout():
-    """YOLO11 has no objectness channel -- the class score IS the confidence.
-
-    Multiplying by a non-existent objectness (the v5-era habit) would zero
-    every score here and return nothing.
-    """
+    """YOLO11 has no objectness channel -- the class score IS the confidence."""
     head = _empty_head()
     _plant(head, slot=3, class_id=object_service.COCO_CELL_PHONE, confidence=0.91)
 
@@ -59,13 +42,7 @@ def test_decode_ignores_classes_we_do_not_act_on():
 
 
 def test_a_confident_irrelevant_class_cannot_mask_a_phone_in_the_same_slot():
-    """The argmax must run over the classes we care about, not all 80.
-
-    A single prediction slot carries a score for every class. If the argmax
-    ran over all of them first, this slot would resolve to "chair", get
-    discarded as irrelevant, and the phone in it would vanish -- the exact
-    detection that matters most in an exam.
-    """
+    """The argmax must run over the classes we care about, not all 80."""
     head = _empty_head()
     slot = 5
     head[0, 0, slot], head[0, 1, slot], head[0, 2, slot], head[0, 3, slot] = 100.0, 100.0, 40.0, 80.0
@@ -120,9 +97,8 @@ def test_detections_come_back_most_confident_first():
     assert confidences == sorted(confidences, reverse=True)
 
 
-# --------------------------------------------------------------------------
-# NMS
-# --------------------------------------------------------------------------
+# --- - ---
+# NMS ------------------------------------------------------------------------
 
 def test_nms_collapses_duplicate_boxes_for_the_same_class():
     head = _empty_head()
@@ -161,9 +137,8 @@ def test_nms_helper_handles_the_empty_case():
     assert object_service._nms(np.zeros((0, 4), dtype=np.float32), np.zeros(0, dtype=np.float32), 0.45) == []
 
 
-# --------------------------------------------------------------------------
-# Letterboxing
-# --------------------------------------------------------------------------
+# --- - ---
+# Letterboxing ------------------------------------------------------------------------
 
 def test_letterbox_preserves_aspect_ratio_and_centres_the_image():
     image = np.full((360, 640, 3), 200, dtype=np.uint8)

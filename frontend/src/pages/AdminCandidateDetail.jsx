@@ -19,10 +19,8 @@ export default function AdminCandidateDetail() {
   const [candidate, setCandidate] = useState(null);
   const [loadError, setLoadError] = useState("");
   const [viewingIdentity, setViewingIdentity] = useState(false);
-  // Account actions. Every one of these already existed as an endpoint and had
-  // no button anywhere -- so an administrator asked to suspend an account, or
-  // to erase a candidate's biometrics on request, had no way to do it from the
-  // page about that candidate.
+  // Account actions. Every one of these already existed
+  // as an endpoint and had no button anywhere.
   const [busyAction, setBusyAction] = useState(null);
   const [actionResult, setActionResult] = useState(null); // { tone, message }
   const [confirmText, setConfirmText] = useState("");

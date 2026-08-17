@@ -33,14 +33,7 @@ class AccessRequestOut(BaseModel):
 
 
 class AccessRequestApprove(BaseModel):
-    """Approving mints the examiner account and emails an activation link.
-
-    No password field. The admin used to choose the new examiner's password and
-    it was mailed out in plain text -- which meant the admin knew it, so nothing
-    the account subsequently did could be attributed to its owner alone. The
-    account is now created with an unusable random secret and only its owner
-    ever sets a real one.
-    """
+    """Approving mints the examiner account and emails an activation link."""
     review_note: str | None = Field(default=None, max_length=255)
 
 

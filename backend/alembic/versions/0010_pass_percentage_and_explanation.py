@@ -3,16 +3,6 @@
 Revision ID: 0010
 Revises: 0009
 Create Date: 2026-08-03
-
-Two additive, backward-compatible columns needed for the comprehensive exam
-report and pass/fail status:
-
-- exams.pass_percentage: the minimum score (%) to be marked "Passed". Every
-  existing exam defaults to 40 (the value the frontend used to hardcode), so
-  no exam silently changes its pass/fail outcome after this deploys.
-- questions.explanation: optional per-question rationale shown on the report.
-  NULL for every existing question -- the report simply omits the field when
-  absent, exactly as if it had never been asked for.
 """
 import sqlalchemy as sa
 from alembic import op

@@ -1,14 +1,4 @@
-"""
-Per-question edit and delete in the exam builder
-(PUT/DELETE /exams/questions/{question_id}).
-
-Both actions reuse the same "editable exam" guard as question creation and
-reordering (exam_service._get_editable_exam): only the owning examiner can
-act, and only while the exam is still a draft. That draft-only restriction
-is also what makes delete unconditionally safe here -- an exam can't have
-any attempts or saved answers until it's published, so a question reachable
-by these endpoints can never have real student data attached to it yet.
-"""
+"""Per-question edit and delete in the exam builder (PUT/DELETE /exams/questions/{question_id})."""
 from tests.conftest import auth_headers
 from tests.test_exam_workflow import _create_examiner_and_login
 

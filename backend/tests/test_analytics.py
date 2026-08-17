@@ -32,10 +32,9 @@ def test_exam_analytics_reflects_a_completed_attempt(client, seed_roles, admin_t
     assert data["average_percentage"] == 100.0
     assert data["min_percentage"] == 100.0
     assert data["max_percentage"] == 100.0
-    # Band labels changed with the bucketing fix: they used to be (0,20),
-    # (21,40)... matched inclusively at both ends, which left every decimal
-    # percentage between bands counted nowhere. They are now half-open, with
-    # only the last band closed so 100% still has a home.
+    # Band labels changed with the bucketing fix: they used to be
+    # (0,20), (21,40)... matched inclusively at both ends, which
+    # left every decimal percentage between bands counted nowhere.
     top_bucket = next(bucket for bucket in data["score_distribution"] if bucket["range"] == "80-100%")
     assert top_bucket["count"] == 1
     assert sum(bucket["count"] for bucket in data["score_distribution"]) == 1
@@ -81,11 +80,10 @@ def test_platform_analytics_counts_exams_and_violations(client, seed_roles, admi
 
 
 def test_noise_detected_loud_is_a_valid_event_type_logged_as_high_severity(client, seed_roles, admin_token):
-    """The second, louder noise tier (proctoring.js) needs its own EventType
-    value (added in migration 0007) to actually be accepted by this endpoint,
-    and must come back tagged "high" severity -- not silently rejected as an
-    unknown enum value, and not conflated with the original, "low"-severity
-    noise_detected tier."""
+    """The second, louder noise tier (proctoring.js) needs its own
+    EventType value (added in migration 0007) to actually be accepted
+    by this endpoint, and must come back tagged "high" severity.
+    """
     examiner_headers = auth_headers(_create_examiner_and_login(client, admin_token))
     exam_id = _build_published_exam(client, examiner_headers)
     student_headers = auth_headers(_register_student_and_login(client))
@@ -104,11 +102,7 @@ def test_noise_detected_loud_is_a_valid_event_type_logged_as_high_severity(clien
 
 
 def test_violation_event_accepts_a_screenshot_in_the_request_body(client, seed_roles, admin_token):
-    """screenshot_base64 used to be bound as a query-string parameter (a
-    FastAPI footgun: a bare scalar param alongside a Pydantic body model binds
-    to the query string, not the body, unless wrapped in Body()). It now lives
-    on ProctorEventCreate, so a real image should actually reach disk instead
-    of being silently dropped or forced through a URL."""
+    """screenshot_base64 used to be bound as a query-string parameter (a FastAPI footgun."""
     examiner_headers = auth_headers(_create_examiner_and_login(client, admin_token))
     exam_id = _build_published_exam(client, examiner_headers)
     student_headers = auth_headers(_register_student_and_login(client))

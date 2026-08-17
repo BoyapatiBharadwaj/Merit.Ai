@@ -1,10 +1,4 @@
-"""
-Examiner access requests.
-
-One public endpoint (the marketing site's request form) and three admin-only
-ones for reviewing the queue. Examiners cannot self-register, so this is the
-supported route from "interested institution" to "examiner account".
-"""
+"""Examiner access requests."""
 from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlalchemy.orm import Session
 

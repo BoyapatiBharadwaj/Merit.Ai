@@ -1,24 +1,4 @@
-"""
-Download the ArcFace model pack ahead of time.
-
-For most setups prefer `python -m app.utils.fetch_models`, which prepares this
-pack *and* the YOLO, anti-spoofing and OCR models in one pass. This script
-remains as the focused face-only entry point (and is what the ArcFace error
-messages point at), with pack/root overrides this one exposes and that one
-does not.
-
-InsightFace fetches its weights from GitHub releases the first time a model is
-prepared. Left alone, that download happens inside a student's face-registration
-request: it is slow (~280MB for buffalo_l), and on a host that cannot reach
-GitHub it fails outright and surfaces as a 503 that looks like a broken install.
-
-Run this once after `pip install -r requirements.txt`, as part of deployment:
-
-    python -m app.utils.fetch_face_model
-    python -m app.utils.fetch_face_model --model buffalo_s
-
-It is idempotent -- if the pack is already present it just verifies it loads.
-"""
+"""Download the ArcFace model pack ahead of time."""
 import argparse
 import sys
 import time
@@ -63,9 +43,8 @@ def run(model_name: str, model_root: str) -> int:
         return 1
 
     elapsed = time.time() - started
-    # A loaded pack should expose a recognition model; if it does not, the
-    # download succeeded but this pack cannot do identity, which would fail
-    # later in a much more confusing place.
+    # A loaded pack should expose a recognition model; if it does not, the download succeeded
+    # but this pack cannot do identity, which would fail later in a much more confusing place.
     has_recognition = any(getattr(m, "taskname", "") == "recognition" for m in model.models.values())
     print(f"\nOK -- model ready in {elapsed:.1f}s")
     print(f"   submodels: {', '.join(sorted(model.models))}")

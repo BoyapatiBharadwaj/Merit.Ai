@@ -1,10 +1,9 @@
-"""add coding questions (question_type, language, starter_code, test cases,
-time limit) and per-attempt code submissions/results
+"""add coding questions (question_type, language, starter_code, test cases, time limit) and
+per-attempt code submissions/results
 
 Revision ID: 0004
 Revises: 0003
 Create Date: 2026-08-01
-
 """
 import sqlalchemy as sa
 from alembic import op

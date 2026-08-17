@@ -1,18 +1,5 @@
 /**
  * Finds identifiers used but never imported or defined, with no dependencies.
- *
- * ESLint's `no-undef` is the real answer and is configured in eslint.config.js,
- * but it needs an npm install. This runs on a bare checkout with nothing but
- * Node, so the check that would have caught the four missing imports from the
- * examiner split is available immediately and in CI without an install step.
- *
- * Deliberately narrow: it looks at JSX element names and a list of known
- * cross-module helpers, and reports anything used in a file that the file
- * neither imports nor defines. That is the exact failure mode a bundler misses
- * -- `vite build` resolves module specifiers and never evaluates JSX bodies, so
- * an undefined component is a clean build and a blank screen.
- *
- *   node scripts/check-imports.mjs
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -39,16 +26,11 @@ function walk(dir) {
 
 let failures = 0;
 for (const file of walk(ROOT)) {
-  // Comments are stripped first. Prose describing code ("mirroring the
-  // isLoggedIn/getRole guard idiom", "nested <Route>s per tab") mentions
-  // identifiers the file does not use, and reporting those trains people to
-  // ignore the output -- which is worse than not running the check.
+  // Comments are stripped first.
   const source = readFileSync(file, "utf8")
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/^\s*\/\/.*$/gm, "");
-  // Remove the import statements from the body rather than slicing at an
-  // offset: a joined match string does not appear verbatim in the source, so
-  // indexOf on it returns -1 and the slice silently keeps everything.
+  // Remove the import statements from the body rather than slicing at an offset.
   const importStatements = source.match(/^import[^;]*?;$/gm) || [];
   const body = source.replace(/^import[^;]*?;$/gm, "");
 

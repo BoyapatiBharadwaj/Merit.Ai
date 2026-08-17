@@ -1,45 +1,4 @@
-"""
-In-process object detection (phone / book / extra person) for proctoring.
-
-WHY THIS EXISTS
----------------
-Object detection used to live *only* in the optional ai_worker container. With
-the Docker worker deferred (AI_SERVICE_URL blank -- see deferred-docker/README),
-that meant phone, book and second-person detection were not merely degraded but
-switched off completely: every /detect call returned "unavailable" and the
-frontend stopped polling by design. Face matching had already been given an
-in-process path for exactly this reason; this module closes the same gap for
-object detection, so a default install actually proctors what it claims to.
-
-MODEL
------
-YOLO11s (Ultralytics), the small tier: ~19MB of weights, meaningfully stronger
-than the yolov8n the worker used, and still fast enough on CPU for a signal
-that is polled every few seconds rather than every frame.
-
-TWO EXECUTION PATHS, PREFERRED FIRST
-------------------------------------
-1. onnxruntime against an exported ``yolo11s.onnx``. Preferred because
-   onnxruntime is *already* a hard dependency (ArcFace runs on it), so this
-   path adds no new runtime requirement, and ONNX CPU inference is several
-   times faster than the equivalent PyTorch graph.
-2. ultralytics' own ``YOLO`` class, if the ONNX export is missing but the
-   package is installed. Slower and drags in torch, but it self-downloads its
-   weights, so a user who has not run the fetch script still gets working
-   detection rather than a dead feature.
-
-If neither is available the service reports ``available: False`` with an
-actionable message -- the same contract proctor_service already relies on, so
-the frontend degrades exactly as it does today rather than erroring.
-
-THREAD SAFETY
--------------
-FastAPI runs each sync route in its own worker thread and this endpoint is
-polled throughout an exam, so two calls are routinely in flight at once. An
-onnxruntime InferenceSession is documented as thread-safe for concurrent
-``run()``; the ultralytics path is not, so it gets a lock. Loading is guarded
-either way so a cold start cannot race two model loads.
-"""
+"""In-process object detection (phone / book / extra person) for proctoring."""
 import logging
 import threading
 from pathlib import Path
@@ -50,11 +9,7 @@ from app.core.config import settings
 
 logger = logging.getLogger("app")
 
-# COCO class ids for the three things worth flagging in an exam. Hard-coded
-# rather than read from model metadata: these indices are fixed by the COCO
-# dataset itself and every YOLO variant trained on it shares them, and pinning
-# them means a model whose metadata is missing or malformed still detects the
-# right things instead of silently matching nothing.
+# COCO class ids for the three things worth flagging in an exam.
 COCO_PERSON = 0
 COCO_BOOK = 73
 COCO_CELL_PHONE = 67
@@ -65,11 +20,8 @@ CLASS_LABELS = {
     COCO_BOOK: "book",
 }
 
-# Per-class confidence floors. A phone is the highest-value catch and the
-# easiest to hide (edge-on in a lap, half under a desk), so it gets the most
-# permissive floor. "book" is the noisiest class in COCO -- it fires on
-# laptops, keyboards, folded paper and monitor bezels -- so it needs the
-# strictest floor to stay useful rather than crying wolf every poll.
+# Per-class confidence floors. A phone is the highest-value catch and the easiest to hide
+# (edge-on in a lap, half under a desk), so it gets the most permissive floor.
 CONFIDENCE_FLOORS = {
     "cell phone": 0.35,
     "person": 0.45,
@@ -105,9 +57,8 @@ def _load_onnx_session():
         import onnxruntime as ort
 
         options = ort.SessionOptions()
-        # One intra-op thread per session keeps a burst of concurrent polls
-        # from oversubscribing the CPU and starving the request handlers --
-        # this is a background signal, not the thing the user is waiting on.
+        # One intra-op thread per session keeps a burst of concurrent polls from oversubscribing
+        # the CPU and starving the request handlers.
         options.intra_op_num_threads = 1
         options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         _session = ort.InferenceSession(str(path), options, providers=["CPUExecutionProvider"])
@@ -134,14 +85,7 @@ def _load_ultralytics():
 
 
 def _letterbox(image: np.ndarray, size: int = INPUT_SIZE) -> tuple[np.ndarray, float, int, int]:
-    """Resize preserving aspect ratio and pad to a square, YOLO-style.
-
-    Returns the padded image plus the scale and padding actually applied, which
-    the caller needs to map boxes back to original-image coordinates. Squashing
-    to a square instead (the naive resize) distorts every object and measurably
-    costs recall on the thin, elongated shapes that matter most here -- a phone
-    seen edge-on being the obvious one.
-    """
+    """Resize preserving aspect ratio and pad to a square, YOLO-style."""
     height, width = image.shape[:2]
     scale = min(size / height, size / width)
     new_h, new_w = int(round(height * scale)), int(round(width * scale))
@@ -160,11 +104,7 @@ def _letterbox(image: np.ndarray, size: int = INPUT_SIZE) -> tuple[np.ndarray, f
 
 
 def _nms(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float) -> list[int]:
-    """Greedy non-maximum suppression over xyxy boxes. Returns kept indices.
-
-    Written out rather than pulled from torchvision/cv2 so this module stays
-    on numpy alone -- the whole point of the ONNX path is not needing torch.
-    """
+    """Greedy non-maximum suppression over xyxy boxes. Returns kept indices."""
     if len(boxes) == 0:
         return []
     x1, y1, x2, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
@@ -188,23 +128,14 @@ def _nms(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float) -> list[in
 
 
 def _decode(output: np.ndarray, scale: float, pad_x: int, pad_y: int) -> list[dict]:
-    """Turn a raw YOLO11 head tensor into a list of {label, confidence}.
-
-    YOLO11 (like v8) is anchor-free and NMS-free in the graph: the single
-    output is (1, 4 + num_classes, num_predictions) holding cx, cy, w, h
-    followed by one sigmoid score per class -- there is no separate
-    objectness channel to multiply in, which is the classic mistake when
-    porting v5-era post-processing. We transpose to (num_predictions, 4 +
-    num_classes) and reduce over the class axis.
-    """
+    """Turn a raw YOLO11 head tensor into a list of {label, confidence}."""
     predictions = np.squeeze(output, axis=0).T  # -> (num_predictions, 4 + num_classes)
     if predictions.ndim != 2 or predictions.shape[1] <= 4:
         return []
 
     class_scores = predictions[:, 4:]
-    # Restrict to the three classes we act on *before* the argmax, so a
-    # high-confidence "chair" can never mask a lower-confidence "cell phone"
-    # sharing the same prediction slot.
+    # Restrict to the three classes we act on *before* the argmax, so a high-confidence "chair"
+    # can never mask a lower-confidence "cell phone" sharing the same prediction slot.
     wanted = np.array(sorted(CLASS_LABELS), dtype=np.int32)
     wanted = wanted[wanted < class_scores.shape[1]]
     if wanted.size == 0:
@@ -232,9 +163,8 @@ def _decode(output: np.ndarray, scale: float, pad_x: int, pad_y: int) -> list[di
     ], axis=1)
 
     detections = []
-    # NMS per class: a person and the phone they are holding overlap heavily,
-    # and suppressing across classes would drop exactly the detection we care
-    # about most.
+    # NMS per class: a person and the phone they are holding overlap heavily, and suppressing
+    # across classes would drop exactly the detection we care about most.
     for class_id in np.unique(class_ids):
         mask = class_ids == class_id
         label = CLASS_LABELS[int(class_id)]
@@ -293,12 +223,7 @@ def unavailable_message() -> str:
 
 
 def detect(image: np.ndarray) -> dict:
-    """Detect phones/books/people in an RGB uint8 frame.
-
-    Never raises: a detection failure must not break an exam, so every error
-    path degrades to the same "unavailable" contract the caller already
-    handles. The reason is logged once rather than on every poll.
-    """
+    """Detect phones/books/people in an RGB uint8 frame."""
     global _load_failure
 
     image = np.ascontiguousarray(image[:, :, :3], dtype=np.uint8)

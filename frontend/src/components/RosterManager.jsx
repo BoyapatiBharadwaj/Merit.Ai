@@ -6,15 +6,6 @@ import { btnPrimary, btnGhost, fieldLabelCompact } from "../lib/ui.js";
 
 /**
  * Organization student roster.
- *
- * This is the control that decides who can see this organization's exams at
- * all. Before organizations existed, every published exam was visible to
- * every student on the platform; enrolment here is what replaced that.
- *
- * The roster keys on email rather than on existing accounts, because
- * examiners enrol a cohort before those people have signed up. An entry with
- * no linked account is an outstanding invitation, which is a normal state and
- * is labelled as such rather than looking like an error.
  */
 export default function RosterManager() {
   const [members, setMembers] = useState(null);
@@ -51,9 +42,7 @@ export default function RosterManager() {
     setSaving(true);
     setFeedback(null);
     try {
-      // The textarea is sent as one string on purpose -- the backend splits on
-      // commas, semicolons, whitespace and newlines, so a column pasted
-      // straight out of a spreadsheet works without reformatting.
+      // The textarea is sent as one string on purpose.
       const result = await Api.post("/organizations/me/roster", { emails });
       const parts = [];
       if (result.added.length) parts.push(`${result.added.length} added`);
@@ -70,9 +59,7 @@ export default function RosterManager() {
           elsewhere.slice(0, 3).join(", ")}${elsewhere.length > 3 ? "…" : ""}`);
       }
       setFeedback({
-        // Anything skipped or blocked is worth a warning colour even when the
-        // rest succeeded -- a silently dropped address becomes a student who
-        // cannot sit the exam, discovered on the day.
+        // Anything skipped or blocked is worth a warning colour even when the rest succeeded.
         tone: invalid.length || elsewhere.length ? "warn"
           : result.added.length ? "success" : "muted",
         message: parts.join(" · ") || "Nothing to add.",
@@ -89,10 +76,9 @@ export default function RosterManager() {
   }
 
   async function handleRemove(member) {
-    // A Set rather than a single id: with one id, removing two students in
-    // quick succession let the second request's cleanup clear the flag while
-    // the first was still in flight, re-enabling a button whose row was about
-    // to disappear.
+    // A Set rather than a single id: with one id, removing two students in quick succession let
+    // the second request's cleanup clear the flag while the first was still in flight,
+    // re-enabling a button whose row was about to disappear.
     setRemovingIds((prev) => new Set(prev).add(member.id));
     setFeedback(null);
     try {

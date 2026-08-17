@@ -62,10 +62,9 @@ export default function AdminExams() {
 
   if (!isLoggedIn() || getRole() !== "admin") return <RedirectToLogin />;
 
-  // Client-side, deliberately: /admin/exams is one row per exam an institution
-  // has ever created, which is bounded by staff activity rather than by
-  // candidate numbers -- unlike candidates and violations, which grow with
-  // every sitting and are paged by the server.
+  // Client-side, deliberately: /admin/exams is one row per exam an institution has ever
+  // created, which is bounded by staff activity rather than by candidate numbers -- unlike
+  // candidates and violations, which grow with every sitting and are paged by the server.
   const { pageRows, pageCount, safePage } = paginate(rows || [], page, PAGE_SIZE);
 
   return (

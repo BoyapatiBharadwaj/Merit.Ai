@@ -1,19 +1,5 @@
 /**
- * The brand tagline, in one place. Previously this was three hand-copied
- * blocks of near-identical markup (Home.jsx hero, Footer.jsx, AuthLayout.jsx)
- * that had already started to drift in wording and letter-spacing. Now every
- * call site renders the same three words with the same separator, and only
- * the presentation (pill kicker vs. plain line, light vs. dark background)
- * varies by variant.
- *
- * - "eyebrow": the hero kicker -- a pill with a status dot, replacing the
- *   generic "AI Proctoring & Exam Lockdown" category label that used to sit
- *   above the H1. The tagline IS the positioning statement; a second line
- *   restating it a few pixels below was redundant, so this replaces that
- *   line rather than sitting alongside it.
- * - "text": a plain colored line for light surfaces (footer).
- * - "on-dark": the same plain line, dimmed white for dark/brand surfaces
- *   (the auth split-panel).
+ * The brand tagline, in one place.
  */
 const WORDS = ["Conduct", "Monitor", "Evaluate"];
 

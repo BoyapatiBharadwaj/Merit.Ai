@@ -15,9 +15,8 @@ const BROWSER_EVENT_TYPES = new Set([
   "tab_switch", "fullscreen_exit", "right_click_attempt", "copy_paste_attempt", "screenshot_attempt", "screen_share_stopped",
 ]);
 
-// "dismissed" is the stored value (AdminDecision.DISMISSED, unchanged on the
-// backend) but "Misleading" is what the judgement actually means: the flag
-// was looked at and was not genuine misconduct.
+// "dismissed" is the stored value (AdminDecision.DISMISSED, unchanged on the backend) but
+// "Misleading" is what the judgement actually means.
 const DECISIONS = [
   { value: "pending", label: "Pending" },
   { value: "confirmed", label: "Confirmed" },

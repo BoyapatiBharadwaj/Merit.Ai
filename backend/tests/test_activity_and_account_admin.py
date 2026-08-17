@@ -1,11 +1,4 @@
-"""
-The account activity trail, and the admin's delete/reset powers over accounts.
-
-The trail's whole value is that it is complete and honest, so these tests check
-the properties that make it worth trusting: it records who acted (not just what
-happened), it survives the account being deleted, and it never contains a
-secret.
-"""
+"""The account activity trail, and the admin's delete/reset powers over accounts."""
 import pytest
 
 from tests.conftest import auth_headers

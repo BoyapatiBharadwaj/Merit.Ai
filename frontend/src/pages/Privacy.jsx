@@ -5,37 +5,19 @@ import Icon from "../components/Icon.jsx";
 import { sectionEyebrow } from "../lib/ui.js";
 
 /**
- * What Merit.Ai actually collects and why -- linked from Register.jsx's
- * consent checkboxes.
- *
- * Written directly from the real data flows in this codebase (face_service,
- * ocr_service, proctor_service, code_runner_service), not generic
- * boilerplate -- every claim below is something the app genuinely does.
- * This is a plain-language notice, not a Terms of Service contract: a real
- * legal ToS binding candidates and institutions needs an actual lawyer's
- * review before this platform handles real exams, and nothing here should
- * be mistaken for that.
+ * What Merit.Ai actually collects and why -- linked from Register.jsx's consent checkboxes.
  */
 const COLLECTS = [
   {
     icon: "camera",
     title: "A registered face photo",
-    // CORRECTED. This said "stored as a numeric face signature, not the raw
-    // photo" -- and proctor_service.register_face writes a JPEG to
-    // FACES_DIR and stores its path on FaceProfile.image_path, with an
-    // authenticated endpoint that serves it back. The page was telling
-    // candidates their photograph was discarded when it was kept. On a
-    // platform whose whole proposition is transparency about biometric
-    // collection, that is the worst possible sentence to have been wrong.
+    // CORRECTED. This said "stored as a numeric face signature, not the raw photo".
     body: "Captured once from your webcam during account setup. BOTH the photograph and a numeric face signature derived from it are stored: the signature is what future exams compare against, and the photo is kept so an examiner or administrator can confirm a disputed identity check by eye. You can view your own photo from your Profile page, and delete your biometric data from there at any time.",
   },
   {
     icon: "doc",
     title: "Your ID card image and the name read off it",
-    // CORRECTED. "Used only for that one comparison" was not true: the image
-    // is written to ID_CARDS_DIR, its path stored on Student.id_card_image_path,
-    // and served afterwards to you, to administrators, and to examiners
-    // connected to you.
+    // CORRECTED.
     body: "Captured once to confirm your registered name matches a government or institution-issued ID. The image is stored, not discarded after the check -- you, administrators, and examiners running your exams can view it, so a failed or disputed match can be resolved by a person rather than by the OCR alone.",
   },
   {

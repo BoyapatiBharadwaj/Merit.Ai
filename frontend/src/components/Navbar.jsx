@@ -4,10 +4,9 @@ import Logo from "./Logo.jsx";
 import ThemeToggle from "./ThemeToggle.jsx";
 import { btnGhost, btnPrimary } from "../lib/ui.js";
 
-// Real routes, not anchor scrolls -- each of these is now its own page, so a
-// visitor can land directly on /pricing or /contact (from a search engine, a
-// bookmark, a shared link) and get the whole page, not a blank Home with no
-// matching section to scroll to.
+// Real routes, not anchor scrolls -- each of these is now its own page, so a visitor can land
+// directly on /pricing or /contact (from a search engine, a bookmark, a shared link) and get
+// the whole page, not a blank Home with no matching section to scroll to.
 const NAV_LINKS = [
   { to: "/features", label: "Features" },
   { to: "/pricing", label: "Pricing" },

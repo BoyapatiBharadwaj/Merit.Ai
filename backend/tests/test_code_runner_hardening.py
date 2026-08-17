@@ -1,10 +1,5 @@
-"""
-Hardening of the Docker sandbox used for coding-question execution
-(app/services/code_runner_service.py). Real Docker isn't available in this
-test environment (see test_coding_questions.py's module docstring for why),
-so these tests capture the exact `docker run` argv that `_run_one` builds
-and assert the isolation flags are present, rather than actually running a
-container.
+"""Hardening of the Docker sandbox used for coding-question execution
+(app/services/code_runner_service.py).
 """
 import subprocess
 

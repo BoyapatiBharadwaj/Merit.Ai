@@ -3,18 +3,8 @@ import Icon from "./Icon.jsx";
 import { Api, ApiError } from "../lib/api.js";
 
 /**
- * Registered face photo + ID card photo for one student, fetched on demand
- * as authenticated blobs -- a plain <img src="/api/..."> can't carry a
- * Bearer token, and these endpoints are deliberately not public (see
- * backend/app/api/v1/proctoring.py's _can_view_student_identity). Shared by
- * the examiner's Attempts table and the admin's Student Users table, the two
- * places staff already look at one specific student and might reasonably
- * need to confirm who they actually are.
- *
- * A 403 here (student outside the viewer's organization and never invited
- * to any of their exams) is treated the same as "not available" rather than
- * shown as an alarming error -- the button that opens this modal shouldn't
- * exist for someone the viewer has no relationship to in the first place.
+ * Registered face photo + ID card photo for one
+ * student, fetched on demand as authenticated blobs.
  */
 /** Exported so other staff-only image viewers (the Candidate Exam Report's
  * violation-evidence viewer) can reuse the exact same fetch-and-revoke
@@ -77,10 +67,9 @@ export function PhotoBox({ label, path, active }) {
 }
 
 /**
- * `studentId` doubles as the open/closed flag -- render
- * `<IdentityPhotoModal studentId={viewing?.id} .../>` and set `viewing` back
- * to null to close, so callers don't need a separate boolean to keep in
- * sync with which student is showing.
+ * `studentId` doubles as the open/closed flag -- render `<IdentityPhotoModal
+ * studentId={viewing?.id} .../>` and set `viewing` back to null to close, so callers don't need
+ * a separate boolean to keep in sync with which student is showing.
  */
 export default function IdentityPhotoModal({ studentId, studentName, onClose }) {
   useEffect(() => {

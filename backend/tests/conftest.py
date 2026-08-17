@@ -1,11 +1,4 @@
-"""
-Pytest configuration for the backend test suite.
-
-Uses an in-memory SQLite database (see the SQLite-specific engine options in
-app/database/session.py) so the suite runs without a Postgres instance, and
-overrides FastAPI's `get_db` dependency so every request made through the
-TestClient uses a session bound to that database.
-"""
+"""Pytest configuration for the backend test suite."""
 import os
 import tempfile
 
@@ -16,17 +9,10 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production")
 os.environ.setdefault("CORS_ORIGINS", "http://testserver")
 os.environ.setdefault("AI_SERVICE_URL", "")
 os.environ.setdefault("UPLOAD_DIR", tempfile.mkdtemp(prefix="exam_proctor_test_uploads_"))
-# The suite has no SMTP, so it IS the "cannot send email" deployment this
-# setting exists for -- requiring verification here would mean no test could
-# create a student, which would say nothing about verification and break
-# everything else. The gate itself is covered directly in
-# tests/test_auth_hardening.py, which turns it on and asserts the refusal.
+# The suite has no SMTP, so it IS the "cannot send email" deployment this setting exists for.
 os.environ.setdefault("REQUIRE_EMAIL_VERIFICATION", "false")
-# Same reasoning: the suite's ~30 registrations exist to set up other tests, and
-# threading two consent booleans through every one of them would obscure what
-# each is actually about. The gate itself is covered directly in
-# tests/test_auth_hardening.py, which turns it on and asserts both the refusal
-# and that the acceptance is persisted with its version.
+# Same reasoning: the suite's ~30 registrations exist to set up other tests, and threading two
+# consent booleans through every one of them would obscure what each is actually about.
 os.environ.setdefault("REQUIRE_CONSENT_ON_SIGNUP", "false")
 
 import fakeredis
@@ -40,15 +26,8 @@ from app.core import redis_client as _redis_client
 from app.core import security as _security
 from app.core.rate_limit import _reset_all as _reset_rate_limit_counters
 
-# Drop bcrypt's work factor to the minimum for tests only.
-#
-# bcrypt's cost is deliberately punishing -- that is the entire point of it in
-# production -- but this suite creates and logs in users constantly, and at
-# the default 12 rounds hashing dominated the runtime to the point where the
-# full suite couldn't finish in a single CI step. Rounds are a property of
-# each stored hash, so this changes nothing about the algorithm under test:
-# hashes produced here still verify through exactly the same passlib code
-# path, just cheaply. Production cost is untouched (app/core/security.py).
+# Drop bcrypt's work factor to the minimum for tests
+# only. bcrypt's cost is deliberately punishing.
 _security.pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=4)
 
 from app.core.security import hash_password  # noqa: E402  must follow the cost override above
@@ -69,20 +48,10 @@ def _fresh_database():
 
 @pytest.fixture(autouse=True)
 def _fake_redis():
-    """Every Redis-backed module -- rate limiting, OTP state, distributed
-    locks, the RQ queues (see app/core/rate_limit.py,
-    app/services/otp_redis_store.py, app/core/locks.py, app/core/queues.py)
-    -- talks to an in-memory fake for the life of one test, the same reasoning
-    an in-memory SQLite database exists for Postgres above.
-
-    Queues additionally run EAGERLY: `queue.enqueue_call(...)` executes the
-    job function immediately, in this process, instead of leaving it for a
-    separate worker to pick up. Nothing here spins up an actual RQ Worker, so
-    without this a queued job (an OTP email, an access-request notification)
-    would simply never run during a test -- see app/core/queues.py's module
-    docstring for the full reasoning, including why a job's own code, not RQ's
-    retry machinery, is what tests exercising retry/failure behaviour call
-    directly.
+    """Every Redis-backed module -- rate limiting, OTP state, distributed locks, the RQ queues
+    (see app/core/rate_limit.py, app/services/otp_redis_store.py, app/core/locks.py,
+    app/core/queues.py) -- talks to an in-memory fake for the life of one test, the same
+    reasoning an in-memory SQLite database exists for Postgres above.
     """
     fake_server = fakeredis.FakeServer()
     decoded = fakeredis.FakeStrictRedis(server=fake_server, decode_responses=True)
@@ -160,23 +129,7 @@ def auth_headers(token: str) -> dict:
 
 @pytest.fixture
 def outbox(monkeypatch):
-    """Every message the app tried to send, in order, with one shape.
-
-    Both delivery paths are captured. `send` is the SMTP choke point every
-    helper funnels through; `queue` is patched too because BackgroundTasks
-    defers the call past the point TestClient returns, which would make
-    assertions depend on timing.
-
-    Normalised to the same keys either way ("text", "html"). They previously
-    were not -- the queue path recorded raw kwargs (text_body) and the send path
-    recorded normalised ones -- so an assertion read a different key depending
-    on which route the message took, and would silently stop checking anything
-    if the route changed.
-
-    Exists so that activation and reset tests can recover a token the only way a
-    real recipient can: out of the message body. The database stores nothing but
-    the digest, which is precisely the property under test.
-    """
+    """Every message the app tried to send, in order, with one shape."""
     from app.services import email_service
 
     sent = []

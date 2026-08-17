@@ -3,24 +3,6 @@
 Revision ID: 0029
 Revises: 0028
 Create Date: 2026-08-06
-
-Three tables, one theme: replace the pieces of this application that used to
-depend on Redis with the database every part of it already requires.
-
-  email_outbox        Durable delivery tracking for transactional email. A
-                       row is written before the first send attempt, so a
-                       notification that fails (or a process that crashes
-                       mid-send) leaves something retryable rather than
-                       nothing at all. See app/models/email_outbox.py.
-
-  job_outbox           Replaces the Redis/RQ background job queue. See
-                       app/models/job_outbox.py.
-
-  rate_limit_counters  Replaces the Redis-backed shared rate-limit counter.
-                       See app/models/rate_limit_counter.py.
-
-None of these back-fill anything -- they are all new, empty tables with no
-existing data to migrate.
 """
 import sqlalchemy as sa
 from alembic import op

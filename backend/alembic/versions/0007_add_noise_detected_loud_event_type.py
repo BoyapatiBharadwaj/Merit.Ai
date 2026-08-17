@@ -3,11 +3,6 @@
 Revision ID: 0007
 Revises: 0006
 Create Date: 2026-08-02
-
-Second, louder tier for the microphone-noise detector (see
-frontend/src/lib/proctoring.js): NOISE_DETECTED stays the lower "background
-noise / brief chatter" tier, and this new value is the higher "sustained
-loud conversation" tier, logged at "high" severity instead of "low".
 """
 from alembic import op
 

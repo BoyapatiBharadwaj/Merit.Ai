@@ -1,21 +1,5 @@
 /**
  * Per-route page metadata.
- *
- * Every route rendered with the single title and description from index.html,
- * so /features, /pricing, /about and /contact shared one search snippet -- a
- * search engine had nothing to distinguish them, and a link shared in a message
- * or a Slack channel previewed as the generic homepage regardless of what was
- * being shared.
- *
- * Deliberately not react-helmet-async. The whole requirement is "set a few tags
- * when the route changes", which is a dozen lines of DOM against a dependency,
- * a provider and a render-phase side-effect model. Setting them directly also
- * means no flash of the previous route's title.
- *
- * This is a client-rendered app, so a crawler that does not execute JavaScript
- * still sees index.html's defaults. Google does execute it; if the marketing
- * pages ever need to rank against competitors, pre-rendering them at build time
- * is the real answer and this is the interface it would keep.
  */
 
 const SITE_NAME = "Merit.Ai";
@@ -80,10 +64,6 @@ export function setPageMeta({ title, description, path, noindex = false }) {
 
 /**
  * What each route says about itself.
- *
- * Descriptions are written to be true rather than to be enticing -- this is a
- * proctoring platform, and a search snippet that oversells what the browser can
- * enforce is the same mistake the Home page copy was making.
  */
 export const PAGE_META = {
   "/": {

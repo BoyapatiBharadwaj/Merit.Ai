@@ -1,21 +1,4 @@
-"""
-Why is no mail arriving?
-
-Run this INSIDE the running container, so it sees exactly the configuration and
-network the application sees:
-
-    docker compose exec core-api python scripts/check_email.py
-    docker compose exec core-api python scripts/check_email.py you@example.com
-
-Diagnosing this from the outside is unreliable for one specific reason:
-email_service.send() never raises. It catches every SMTP and socket error,
-logs it, and returns False -- which is correct for production (a mail outage
-must never break a signup) and unhelpful when you are trying to find out why
-nothing arrived. This walks the same path and reports each stage out loud.
-
-The stages are checked in dependency order, so the FIRST failure is the one to
-fix; later ones are usually consequences.
-"""
+"""Why is no mail arriving?"""
 import os
 import socket
 import ssl
@@ -53,13 +36,8 @@ def main() -> None:
     print("Merit.Ai email diagnostics")
     print("=" * 60)
 
-    # --- 1. What the RUNNING PROCESS believes -------------------------------
-    #
-    # Read from settings, not from the .env file on disk. Those are two
-    # different things and the gap between them is the single most common cause
-    # of "I set EMAIL_ENABLED=true and nothing happened": `docker compose up -d`
-    # does NOT push changed environment variables into a container that is
-    # already running. The file says true, the process still has false.
+    # --- 1. What the RUNNING PROCESS believes ---
+    # Read from settings, not from the .env file on disk.
     print()
     print("1. Configuration, as this process actually sees it")
     print(f"      EMAIL_ENABLED   = {settings.EMAIL_ENABLED}")

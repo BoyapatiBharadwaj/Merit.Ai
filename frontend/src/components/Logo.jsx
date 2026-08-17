@@ -1,10 +1,7 @@
 import LogoMark from "./LogoMark.jsx";
 
 export default function Logo({ className = "", size = "md" }) {
-  // "lg" is the auth pages' brand header (Login/Register, both sides of
-  // AuthLayout) -- a bigger mark and wordmark than the app chrome uses
-  // elsewhere, so the sign-in flow reads as a deliberate front door rather
-  // than a shrunk-down copy of the dashboard navbar.
+  // "lg" is the auth pages' brand header (Login/Register, both sides of AuthLayout).
   const box = size === "lg" ? 38 : size === "sm" ? 28 : 32;
   const icon = size === "lg" ? 18 : size === "sm" ? 14 : 16;
   const textSize = size === "lg" ? "text-[21px]" : size === "sm" ? "text-base" : "text-lg";

@@ -1,10 +1,5 @@
-"""
-Tracked, retryable email delivery (the email_outbox table), and the shared
+"""Tracked, retryable email delivery (the email_outbox table), and the shared
 examiner-provisioning path both account-creation flows now use.
-
-The property under test throughout: this application must never claim an
-email was delivered when it was not, and a failed transactional message (an
-admin notification, an activation link) must be retryable rather than lost.
 """
 import re
 from urllib.parse import unquote
@@ -27,10 +22,8 @@ def test_a_successful_send_is_recorded_sent(db_session, email_on, outbox):
     from app.models.email_outbox import EmailOutboxStatus
     from app.services import email_service
 
-    # Queues run eagerly in the test suite (see conftest.py's _fake_redis
-    # fixture), so the job behind enqueue_tracked has already run by the time
-    # this call returns -- a real deployment only guarantees the row exists,
-    # not yet delivered, at this point (see app/worker/jobs.py).
+    # Queues run eagerly in the test suite (see conftest.py's _fake_redis fixture), so the job
+    # behind enqueue_tracked has already run by the time this call returns.
     row = email_service.enqueue_tracked(db_session, to="ok@example.com", subject="Hi", text_body="body")
     db_session.refresh(row)
 
@@ -68,11 +61,7 @@ def test_never_silently_reports_success_on_failure(db_session, email_on, monkeyp
 
 
 def test_a_previously_failed_message_delivers_once_retried(db_session, email_on, monkeypatch):
-    """Stands in for RQ's own Retry/backoff re-running the job (see
-    app/core/queues.py) -- exercised here by calling the job function again
-    directly, the same way the old job_outbox suite called `process_due()` in
-    a loop to simulate the worker's poll tick rather than running a real
-    worker process."""
+    """Stands in for RQ's own Retry/backoff re-running the job (see app/core/queues.py)."""
     from app.models.email_outbox import EmailOutboxStatus
     from app.services import email_service
     from app.worker import jobs
@@ -186,13 +175,7 @@ def test_a_manually_created_examiner_activates_the_same_way_an_approved_one_does
 
 def test_manual_creation_queues_the_activation_email_even_when_delivery_will_fail(client, seed_roles,
                                                                                   admin_token, email_on, monkeypatch):
-    """`activation_sent` now means "queued for delivery", not "confirmed
-    delivered" -- delivery is asynchronous (Redis + RQ, see
-    email_service.enqueue_tracked), so the response can only ever answer the
-    first question, and always does as long as Redis itself is reachable.
-    The eventual, real delivery outcome -- sent, or failed after every retry
-    -- is always in `email_outbox`, which this checks directly instead.
-    """
+    """`activation_sent` now means "queued for delivery", not "confirmed delivered"."""
     from app.models.email_outbox import EmailOutbox, EmailOutboxStatus
     from app.database.session import SessionLocal
     from app.services import email_service

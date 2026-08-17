@@ -7,42 +7,13 @@ import Icon, { IconBadge } from "../components/Icon.jsx";
 
 /**
  * Marketing landing page — "/".
- *
- * Deliberately short. This used to carry the full feature grid and the full
- * six-layer security breakdown inline, which made it read as one long
- * undifferentiated page. Both now live on their own dedicated page
- * (Features.jsx, linked from the nav and from the teaser section below) so a
- * first-time visitor gets a fast, confident pitch here and a deep evaluator
- * has one clear page to go read everything.
- *
- * A note on copy, because it matters more here than anywhere else in the app:
- * every claim below is written to match what the code actually does. The
- * lockdown layer genuinely enforces fullscreen, focus, and clipboard rules and
- * genuinely auto-submits on the third breach -- so it is described in those
- * terms. Screenshots and screen recording are NOT preventable from a browser
- * tab, so nothing here claims otherwise -- the full honesty panel about that
- * lives on the Features page.
  */
 
 /**
- * Every figure here is checkable against the code rather than rounded up for
- * effect: 19 is the EventType enum minus `lockdown_terminated` (an outcome,
- * not a detected behaviour), 3 is LOCKDOWN_STRIKE_LIMIT, 2 is the face + ID
- * gate in identity_service, and 0 is literal -- the platform is browser-only.
+ * Every figure here is checkable against the code rather than rounded up for effect.
  */
 /**
  * Facts about what the software does, not claims about how many people use it.
- *
- * Deliberately no "10,000 exams proctored" or "99.9% uptime": this deployment
- * has no such figures, and a number a visitor cannot check is worth less than
- * no number on a page whose entire argument is that the platform is honest
- * about what it can and cannot see.
- *
- * Each of these is checkable in the source, and each was checked. "19 violation
- * types" was wrong -- EventType has twenty members -- which is exactly the drift
- * a hardcoded marketing figure invites: the code grew one and the homepage did
- * not notice. LOCKDOWN_STRIKE_LIMIT is 3 and is configurable, so the label says
- * "by default" rather than stating it as a law.
  */
 const STATS = [
   { value: "20", label: "Violation Types Tracked" },
@@ -52,10 +23,8 @@ const STATS = [
 ];
 
 /**
- * Four compact highlights, not the full feature grid -- this is a teaser
- * with a "see everything" door, not the whole catalog. Picked as the four
- * things that most directly answer "why would I trust this over a plain
- * timed form": enforcement, identity, live AI signals, and safe code grading.
+ * Four compact highlights, not the full feature grid -- this is a teaser with a "see
+ * everything" door, not the whole catalog.
  */
 const HIGHLIGHTS = [
   {
@@ -99,19 +68,13 @@ const STEPS = [
   {
     n: "4",
     title: "Results, When You Choose",
-    // Was "Results, Immediately", which stopped being true when result release
-    // became the examiner's decision. The first candidate to finish used to
-    // hold the complete answer key while everyone else was still writing.
     desc: "Scores compute automatically — including partial credit on coding tests. Release them the moment an attempt ends, or hold every result until the paper closes.",
   },
 ];
 
 /**
- * Two audiences, matching the two routes a visitor can actually take from
- * here: candidates self-register, examiners submit a request an admin
- * reviews. The admin card was removed deliberately -- admin accounts are
- * provisioned internally, never signed up for, so a public "Log in as Admin"
- * card offered a door with nothing behind it.
+ * Two audiences, matching the two routes a visitor can actually take from here: candidates
+ * self-register, examiners submit a request an admin reviews.
  */
 const AUDIENCES = [
   {
@@ -137,9 +100,6 @@ const AUDIENCES = [
       "Real-time attempt monitoring",
       "Violation & performance reports",
     ],
-    // Was "Create an Exam" pointing at /request-access, which submits an
-    // application form. A visitor clicking it expected a builder and got a
-    // waiting list.
     cta: { label: "Request Institution Access", to: "/request-access" },
     note: "See Pricing for how institution accounts work.",
   },
@@ -147,12 +107,6 @@ const AUDIENCES = [
 
 /**
  * Who actually runs exams on this, and what each one needs.
- *
- * The page described features and roles but never a situation. "Multi-signal
- * proctoring" tells a university registrar nothing about whether this fits a
- * 400-seat first-year paper; a sentence about a 400-seat first-year paper does.
- * Each of these is deliberately tied to a capability that exists rather than
- * one that would be nice to advertise.
  */
 const USE_CASES = [
   {
@@ -179,14 +133,6 @@ const USE_CASES = [
 
 /**
  * What the platform will not claim.
- *
- * This section exists because everything above it is a sales pitch, and an exam
- * platform asking for a webcam in someone's bedroom owes them the other half.
- * Every line here is a real limit in the code, not modesty: the lockdown is
- * best-effort because a browser cannot police an operating system, the AI
- * signals are indicators because they are, and a second device is genuinely
- * undetectable. An institution that reads this and walks away was going to be
- * disappointed later anyway.
  */
 const TRUST = [
   {
@@ -226,23 +172,6 @@ function SectionHeader({ eyebrow, icon, title, children, className = "" }) {
 
 /**
  * Card styling, split by whether the card actually does anything.
- *
- * `cardBase` used to include a lift-and-shadow hover on every card on the page,
- * including the ones that are pure text. Hover feedback is a promise: it says
- * "this responds to you", and every card that rose under the cursor and then
- * did nothing when clicked spent a little of the page's credibility. On a site
- * whose argument is that it tells you the truth about what it does, that is
- * worse than merely untidy.
- *
- * Static cards keep the border transition, so they still feel alive on a
- * pointer without claiming to be a target.
- *
- * Every card on this page is now static. The audience cards come closest to an
- * exception -- they contain a real call to action -- but the clickable thing
- * there is the button inside, not the card, and giving the card the hover of a
- * link would misdirect the cursor by a hundred pixels. No `cardInteractive`
- * constant is defined for the same reason: an unused style waiting for a use is
- * how the original problem got in.
  */
 const cardBase =
   "rounded-2xl border border-border transition-colors duration-200 " +
@@ -253,20 +182,12 @@ const cardBase =
    ========================================================================== */
 
 /**
- * Hero product mockup — a stylised recreation of the real exam header and
- * proctoring panel, including the warning counter that appears after a
- * lockdown breach. Deliberately shows a "Warning 1 of 3" state rather than an
- * all-green one: the strike system is the product's most distinctive feature,
- * so the hero should actually depict it.
+ * Hero product mockup — a stylised recreation of the real exam header and proctoring panel,
+ * including the warning counter that appears after a lockdown breach.
  */
 function BrowserMockup() {
-  // "Fullscreen locked" claimed something a browser cannot do. A web page can
-// REQUEST fullscreen and detect leaving it; it cannot prevent the operating
-// system minimising the window, switching applications, recording the screen,
-// or a second device sitting next to the candidate. lockdown.js documents those
-// limits accurately; the marketing copy did not, and overstating enforcement to
-// an institution buying an exam platform is the kind of claim that gets found
-// out during an incident.
+  // "Fullscreen locked" claimed something a browser cannot do. A web page can REQUEST
+  // fullscreen and detect leaving it.
 const signals = ["Identity verified", "Fullscreen active", "Gaze on screen", "Focus monitored"];
 
   return (

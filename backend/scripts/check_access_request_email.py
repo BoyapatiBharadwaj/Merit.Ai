@@ -1,27 +1,4 @@
-"""
-Why is no mail arriving when an examiner requests access?
-
-Run this INSIDE the running container:
-
-    docker compose exec core-api python scripts/check_access_request_email.py
-
-SMTP working (scripts/check_email.py) does not mean THIS path works. Between
-"the server can send mail" and "the admin got an email" sit four separate
-things that can each silently produce nothing:
-
-  1. The build. If the container predates the re-notification fix, a pending
-     request suppresses its own notification permanently.
-  2. The de-dupe cooldown. A request notified five minutes ago will not
-     re-notify, by design.
-  3. The recipient list. With no ADMIN_NOTIFICATION_EMAIL and no admin
-     account, the request is recorded and nobody is told.
-  4. Gmail's self-send filing. A message from an address TO ITSELF is filed
-     under Sent, not Inbox -- indistinguishable from never arriving.
-
-This walks all four and, at the end, actually sends the real notification
-inline (not via BackgroundTasks, which would hide the result) and reports what
-happened. Read-only apart from that one message and the timestamp it stamps.
-"""
+"""Why is no mail arriving when an examiner requests access?"""
 import os
 import sys
 from datetime import datetime, timezone

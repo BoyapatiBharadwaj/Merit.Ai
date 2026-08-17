@@ -1,16 +1,5 @@
-"""
-Two new per-exam settings an examiner can choose when creating (or, while
-still a draft, editing) an exam:
-
-  * show_results -- whether a candidate ever sees their own score/pass-fail
-    at all.
-  * results_release_mode -- if shown, whether that happens as soon as the
-    candidate submits ("immediate") or only once the exam's own end_time has
-    passed ("after_end_time").
-
-Plus the live CSV export of one exam's attempts (name, violation count,
-start/end time, result), available to the exam's owning examiner and to any
-admin.
+"""Two new per-exam settings an examiner can choose when
+creating (or, while still a draft, editing) an exam:
 """
 from datetime import datetime, timedelta, timezone
 
@@ -57,9 +46,8 @@ def _sit_answer_and_submit(client, student_headers, exam_id, question_id, correc
     return attempt_id, submit.json()
 
 
-# ---------------------------------------------------------------------------
-# show_results
-# ---------------------------------------------------------------------------
+# --- - ---
+# show_results -------------------------------------------------------------------------
 
 def test_defaults_preserve_the_original_always_shown_behaviour(client, seed_roles, admin_token):
     """Every exam created before this feature existed must keep behaving
@@ -184,9 +172,8 @@ def test_release_results_at_still_only_gates_the_answer_key_not_the_score(client
     assert report["questions"][0]["correct_answer"] is None
 
 
-# ---------------------------------------------------------------------------
-# Exam CSV export
-# ---------------------------------------------------------------------------
+# --- - ---
+# Exam CSV export -------------------------------------------------------------------------
 
 def test_exam_csv_export_reflects_every_attempt_so_far(client, seed_roles, admin_token):
     examiner_headers = auth_headers(_create_examiner_and_login(client, admin_token, email="csv-examiner@example.com"))

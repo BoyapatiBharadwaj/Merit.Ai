@@ -15,9 +15,8 @@ const BROWSER_EVENT_TYPES = new Set([
   "tab_switch", "fullscreen_exit", "right_click_attempt", "copy_paste_attempt", "screenshot_attempt", "screen_share_stopped",
 ]);
 
-// "dismissed" is the stored value (AdminDecision.DISMISSED, unchanged on the
-// backend) but "Misleading" is what the judgement actually means here: the
-// flag was looked at and was not genuine misconduct.
+// "dismissed" is the stored value (AdminDecision.DISMISSED, unchanged on the backend) but
+// "Misleading" is what the judgement actually means here.
 const DECISIONS = [
   { value: "pending", label: "Pending" },
   { value: "confirmed", label: "Confirmed" },
@@ -51,21 +50,9 @@ function EvidenceModal({ eventId, onClose }) {
 }
 
 /**
- * The examiner's per-student attempt review: every violation this candidate
- * triggered, with proof images and the risk score, plus the ability to mark
- * each one pending/confirmed/misleading.
- *
- * Deliberately the ONLY place an examiner can see violations. There used to
- * also be a "Violations" tab on the exam builder listing every flag across
- * the whole exam at once -- that's gone (see AttemptsPanel's "Review"
- * button, which is how you get here) because reviewing a candidate's
- * conduct is inherently a per-candidate judgement, and a flat cross-exam
- * list encouraged deciding on rows out of context.
- *
- * Reuses the exact endpoint the admin's Candidate Exam Report is built on
- * (GET /attempts/{id}/staff-report is role-aware: admin or the exam's own
- * owning examiner) -- nothing here needed a new backend shape, only a
- * frontend page and an examiner-facing route to reach it from.
+ * The examiner's per-student attempt review: every violation this
+ * candidate triggered, with proof images and the risk score, plus
+ * the ability to mark each one pending/confirmed/misleading.
  */
 export default function ExaminerAttemptReport() {
   const { attemptId } = useParams();

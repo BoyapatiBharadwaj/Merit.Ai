@@ -3,25 +3,12 @@ import { Link } from "react-router-dom";
 const TONES = { primary: "text-primary", success: "text-success", warning: "text-warning", danger: "text-danger", muted: "text-muted" };
 
 /**
- * One overview number, shared by the admin dashboard's top-level cards and
- * every detail page's read-only summary cards (Examiner Detail, Exam Detail,
- * Candidate Exam Report, Candidate Profile). Renders as a <Link> when `to`
- * is given -- every admin dashboard overview card is clickable per spec --
- * and a plain <div> otherwise, so the same component covers both cases
- * instead of two near-duplicate ones drifting apart over time.
- *
- * `value === null` renders the same loading skeleton the original
- * AdminDashboard.jsx StatCard used, so a card never flashes "0" while its
- * fetch is still in flight.
+ * One overview number, shared by the admin dashboard's top-level
+ * cards and every detail page's read-only summary cards (Examiner
+ * Detail, Exam Detail, Candidate Exam Report, Candidate Profile).
  */
 /**
  * `hint` says what the number actually counts.
- *
- * Several of these labels were ambiguous in ways that matter to somebody making
- * a decision from them: "Total Violations" does not say whether dismissed flags
- * are included, and "Total Exams" on a candidate does not say whether an exam
- * they were assigned but never opened is in there. A number an administrator
- * cannot interpret is worse than no number, because it gets acted on anyway.
  */
 export default function StatCard({ label, value, hint, tone = "primary", to, prominent = false }) {
   const Wrapper = to ? Link : "div";

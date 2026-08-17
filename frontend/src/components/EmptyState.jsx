@@ -1,9 +1,8 @@
 import Icon from "./Icon.jsx";
 
-/** Shared "nothing here yet" pattern for dashboard lists/tables -- a dashed
- * card with an icon, a short title, and optional supporting copy or action,
- * instead of a single line of muted text. Used across the student, admin,
- * and examiner dashboards so an empty list never reads as unfinished UI. */
+/**
+ * Shared "nothing here yet" pattern for dashboard lists/tables.
+ */
 export default function EmptyState({ icon = "layout", title, description, action, className = "" }) {
   return (
     <div

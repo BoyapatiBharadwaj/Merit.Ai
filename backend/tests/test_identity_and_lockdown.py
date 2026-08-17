@@ -1,12 +1,4 @@
-"""
-Identity verification lock and exam lockdown strike enforcement.
-
-These cover the two rules that are easy to get subtly wrong:
-  * a verified student's name/email must become immutable, while their
-    password stays changeable
-  * lockdown strikes must be counted from persisted rows (so a refresh can't
-    reset them) and must force-submit the attempt at the limit
-"""
+"""Identity verification lock and exam lockdown strike enforcement."""
 import pytest
 
 from app.core.config import settings
@@ -32,9 +24,8 @@ def _student_row(db_session, email="student@example.com"):
     return user_repository.get_student_by_user_id(db_session, user.id)
 
 
-# --------------------------------------------------------------------------
-# Identity lock
-# --------------------------------------------------------------------------
+# --- - ---
+# Identity lock ------------------------------------------------------------------------
 
 def test_identity_locks_only_when_both_checks_pass(client, seed_roles, db_session):
     _register_student_and_login(client)
@@ -89,14 +80,9 @@ def test_unlocked_student_can_change_name(client, seed_roles):
 
 
 def test_an_identity_locked_student_is_not_stuck_without_a_password_route(client, seed_roles, db_session, admin_token):
-    """Identity locking freezes a student's name and email, and passwords are
-    now administrator-managed -- so the thing worth proving is that the two
-    together do not strand someone.
-
-    This previously asserted that a locked student could change their own
-    password. That route is gone by design (users.change_my_password is
-    admin-only now), so the test asserts the remaining route instead: an admin
-    can still reset it, and the new password works.
+    """Identity locking freezes a student's name and email, and
+    passwords are now administrator-managed -- so the thing worth
+    proving is that the two together do not strand someone.
     """
     _register_student_and_login(client)
     student = _student_row(db_session)
@@ -181,9 +167,8 @@ def test_admin_cannot_deactivate_their_own_account(client, seed_roles, admin_tok
     assert response.status_code == 400
 
 
-# --------------------------------------------------------------------------
-# Lockdown strikes
-# --------------------------------------------------------------------------
+# --- - ---
+# Lockdown strikes ------------------------------------------------------------------------
 
 def _start_unproctored_attempt(client, admin_token):
     examiner_headers = auth_headers(_create_examiner_and_login(client, admin_token))
@@ -195,10 +180,8 @@ def _start_unproctored_attempt(client, admin_token):
 
 
 def test_strikes_accumulate_and_terminate_at_the_limit(client, seed_roles, admin_token, db_session, monkeypatch):
-    # The debounce window exists to stop one Alt-Tab costing three strikes
-    # (covered separately by test_burst_of_events_collapses_into_one_strike).
-    # A test firing three requests back-to-back looks exactly like that burst,
-    # so disable it here to exercise the accumulate-and-terminate path itself.
+    # The debounce window exists to stop one Alt-Tab costing three strikes (covered separately
+    # by test_burst_of_events_collapses_into_one_strike).
     monkeypatch.setattr(settings, "LOCKDOWN_STRIKE_DEBOUNCE_SECONDS", 0.0)
 
     student_token, attempt_id = _start_unproctored_attempt(client, admin_token)
@@ -243,10 +226,9 @@ def test_strike_count_survives_a_reload(client, seed_roles, admin_token):
 
 
 def test_screen_share_stopped_counts_as_a_strike(client, seed_roles, admin_token):
-    """Ending the shared-screen stream mid-exam (lib/lockdown.js's
-    watchScreenShare -> track 'ended') is as strike-worthy as leaving
-    fullscreen or switching tabs -- it goes through the same endpoint and
-    the same STRIKE_EVENT_TYPES list."""
+    """Ending the shared-screen stream mid-exam (lib/lockdown.js's watchScreenShare -> track
+    'ended') is as strike-worthy as leaving fullscreen or switching tabs.
+    """
     student_token, attempt_id = _start_unproctored_attempt(client, admin_token)
     headers = auth_headers(student_token)
 

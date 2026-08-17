@@ -3,20 +3,6 @@
 Revision ID: 0013
 Revises: 0012
 Create Date: 2026-08-03
-
-Three additive, backward-compatible columns for this feature set:
-  * exams.instructions -- optional longer-form candidate guidance, distinct
-    from the existing `description` (a short card blurb).
-  * exams.randomize_options -- independent of randomize_questions; shuffles
-    each MCQ/multi_select question's own option order per attempt.
-  * student_exam_attempts.option_order_json -- where that per-attempt
-    shuffle is actually stored (see attempt_service._build_option_order),
-    mirroring the existing question_order column's role for questions.
-
-randomize_options defaults to true (server_default), matching
-randomize_questions' existing default, so every already-published exam
-starts behaving the same way a newly created one would rather than silently
-opting out.
 """
 import sqlalchemy as sa
 from alembic import op

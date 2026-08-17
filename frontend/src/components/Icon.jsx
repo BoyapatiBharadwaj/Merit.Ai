@@ -1,7 +1,6 @@
 /**
- * Single shared icon set (stroke-based, 24x24 viewBox) used across the
- * marketing page and the auth forms, so icon weight/style never drifts
- * between sections.
+ * Single shared icon set (stroke-based, 24x24 viewBox) used across the marketing page and the
+ * auth forms, so icon weight/style never drifts between sections.
  */
 export default function Icon({ name, ...props }) {
   const common = {
@@ -15,9 +14,7 @@ export default function Icon({ name, ...props }) {
     strokeLinejoin: "round",
     // Every call site in this app pairs the icon with adjacent visible text
     // (a button label, a heading, a bullet's own copy), so the icon itself
-    // carries no independent meaning for assistive tech by default. Callers
-    // that genuinely need an icon-only accessible name can still override
-    // this via props (e.g. <Icon name="x" aria-hidden={undefined} aria-label="Close" />).
+    // carries no independent meaning for assistive tech by default.
     "aria-hidden": true,
     ...props,
   };

@@ -21,34 +21,22 @@ export default function Register() {
   // shows its error -- see the identical comment in Login.jsx for why.
   const [touched, setTouched] = useState({});
   const [formError, setFormError] = useState("");
-  // Focus moves to the error when one appears. Without it a screen-reader user
-  // submits, hears nothing, and is left at the bottom of a form with no
-  // indication that anything happened -- the message was rendered above them
-  // with no announcement and no way to find it but to read the page again.
+  // Focus moves to the error when one appears. Without it a screen-reader user submits, hears
+  // nothing, and is left at the bottom of a form with no indication that anything happened.
   const errorRef = useRef(null);
   const [loading, setLoading] = useState(false);
 
-  // Email verification. Signup is two phases now: request a code, then create
-  // the account with it. The account does NOT exist until the code checks out
-  // (POST /auth/register/student/verified verifies BEFORE creating), so no
-  // unverified rows can accumulate.
-  //
-  // `codeSent` doubles as the phase flag rather than a separate step counter --
-  // there are only two states and one of them is "we have sent a code".
+  // Email verification. Signup is two phases now:
+  // request a code, then create the account with it.
   const [codeSent, setCodeSent] = useState(false);
   const [code, setCode] = useState("");
 
-  // Everything about the code comes from the server's own response rather than
-  // being guessed here. The screen used to hard-code a six-digit placeholder, a
-  // ten-minute expiry and a 60-second resend cooldown, none of which tracked the
-  // settings they were describing -- so raising OTP_LENGTH would have left the
-  // form telling candidates to enter six digits for an eight-digit code.
+  // Everything about the code comes from the server's
+  // own response rather than being guessed here.
   const [codeShape, setCodeShape] = useState({ length: 6, expiresIn: 10, resendAfter: 60 });
   const [cooldown, setCooldown] = useState(0);
 
-  // The rules the SERVER enforces. Previously this screen listed an uppercase
-  // letter, a number and a special character while the backend checked only
-  // length -- instructions describing a policy nothing implemented.
+  // The rules the SERVER enforces.
   const [policy, setPolicy] = useState(null);
 
   useEffect(() => {
@@ -65,12 +53,7 @@ export default function Register() {
     return () => { cancelled = true; };
   }, []);
 
-  // Signup is now a single step, so an already-signed-in visitor is simply
-  // sent onward -- there is no longer a second wizard stage this could yank
-  // someone out of mid-flow.
-  //
-  // Placed after every hook above (not as an early return before them) for
-  // the same Rules-of-Hooks reason documented in Profile.jsx and Exam.jsx.
+  // Signup is now a single step, so an already-signed-in visitor is simply sent onward.
   if (isLoggedIn()) return <Navigate to="/dashboard" replace />;
 
   function computeErrors(values) {
@@ -83,9 +66,7 @@ export default function Register() {
     if (!values.email.trim()) next.email = "Email is required.";
     else if (!EMAIL_RE.test(values.email.trim())) next.email = "Enter a valid email address.";
     else if (values.email.trim().length > 150) next.email = "That email address is too long.";
-    // Mirrors the server's floor rather than a number picked here. The server
-    // does the real checking (blocklist, name/email derivation) and its message
-    // is shown verbatim if it refuses -- this is only the immediate hint.
+    // Mirrors the server's floor rather than a number picked here.
     const minLength = policy?.min_length ?? 10;
     if (values.password.length < minLength) next.password = `Use at least ${minLength} characters.`;
     if (values.confirmPassword !== values.password) next.confirmPassword = "Passwords don't match.";
@@ -157,39 +138,22 @@ export default function Register() {
         return;
       }
 
-      // Phase 2: create the account. The verified endpoint checks the code
-      // first, so a wrong code never leaves a half-made account behind.
-      //
-      // There used to be a fallback here: if requesting the code came back
-      // 503 (this deployment has no mail configured), the form silently
-      // registered the account without ever asking for a code at all. That
-      // meant OTP verification was optional in practice, not mandatory --
-      // exactly the outcome REQUIRE_EMAIL_VERIFICATION exists to prevent. If
-      // email is genuinely unavailable, the honest thing is to say so and stop,
-      // not to quietly skip the step the server was configured to require.
+      // Phase 2: create the account. The verified endpoint checks the code first, so a wrong
+      // code never leaves a half-made account behind.
       const payload = {
         first_name: form.firstName.trim(),
         last_name: form.lastName.trim(),
         email: form.email.trim(),
         password: form.password,
         roll_number: form.studentId.trim() || null,
-        // Sent, not merely checked in the browser. Both checkboxes were
-        // enforced only in React, so a direct API call registered without
-        // agreeing to anything, and nothing recorded the agreement of the
-        // people who did tick them.
+        // Sent, not merely checked in the browser.
         accepted_terms: form.agreeTerms,
         accepted_proctoring: form.agreeProctoring,
         terms_version: TERMS_VERSION,
       };
       const data = await Api.post("/auth/register/student/verified", { ...payload, code: code.trim() });
       setSession(data);
-      // Straight to the dashboard. Identity verification used to be a second
-      // signup step, which put a camera prompt in front of someone who had not
-      // yet seen the product and could not yet know whether they needed an
-      // account at all. It now lives on Profile, where the candidate chooses
-      // the moment -- and attempt_service still refuses to start a proctored
-      // exam until it is done, so nothing about the identity guarantee is
-      // weakened by moving where it is collected.
+      // Straight to the dashboard.
       navigate("/dashboard", { replace: true });
     } catch (err) {
       setFormError(describeError(err));
@@ -216,11 +180,7 @@ export default function Register() {
 
   /** Back to the email step, discarding everything tied to the old address. */
   function changeEmail() {
-    // A code is bound to ONE address. Leaving the email editable while a code
-    // was outstanding meant a candidate could change it and then submit the old
-    // address's code against the new one -- a confusing rejection for something
-    // that looked like it should work. The field is disabled while a code is
-    // live, and this is the deliberate way back.
+    // A code is bound to ONE address.
     setCodeSent(false);
     setCode("");
     setCooldown(0);
@@ -309,9 +269,8 @@ export default function Register() {
           valid={touched.email && !errors.email && form.email.trim() !== ""}
           maxLength={150}
           // Locked while a code is outstanding: the code belongs to this
-          // address, and editing the field would leave the candidate submitting
-          // the old address's code against a new one. "Change email" below
-          // resets the whole verification state deliberately.
+          // address, and editing the field would leave the candidate
+          // submitting the old address's code against a new one.
           disabled={codeSent}
         />
         <TextField
@@ -336,11 +295,7 @@ export default function Register() {
           onBlur={handleBlur("password")}
           error={touched.password ? errors.password : undefined}
           showStrength
-          // The rules as the SERVER states them, fetched from
-          // /auth/password-policy. This used to be a hard-coded list promising
-          // uppercase, a number and a special character, while the backend
-          // enforced eight characters and nothing else -- so the form asked for
-          // one thing and accepted another.
+          // The rules as the SERVER states them, fetched from /auth/password-policy.
           hint={policy?.rules?.join(" · ")}
         />
         <PasswordField
@@ -409,12 +364,7 @@ export default function Register() {
               label="Verification code"
               icon="shield"
               value={code}
-              // Strip non-digits as they are typed and cap at the server's own
-              // length. The field previously accepted any characters and any
-              // length, so a pasted code with a stray space, or one digit too
-              // many, produced a Pydantic validation message rather than
-              // anything the candidate could act on. Slicing rather than
-              // rejecting also makes pasting the whole code work.
+              // Strip non-digits as they are typed and cap at the server's own length.
               onChange={(e) => {
                 setCode(e.target.value.replace(/\D/g, "").slice(0, codeShape.length));
                 if (errors.code) setErrors((prev) => ({ ...prev, code: undefined }));

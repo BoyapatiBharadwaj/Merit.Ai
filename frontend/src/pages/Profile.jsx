@@ -11,11 +11,9 @@ import { Api, ApiError } from "../lib/api.js";
 import { clearMustChangePassword, isLoggedIn, getRole } from "../lib/auth.js";
 
 export default function Profile() {
-  // See the identical comment in Exam.jsx: the guard used to run before any
-  // hooks below, but Api.get can clear the session on a 401 (api.js), which
-  // flips isLoggedIn() to false and would change the hook count on the next
-  // render -- a Rules-of-Hooks crash. Hooks now run unconditionally and the
-  // guard is evaluated once, right before the JSX return.
+  // See the identical comment in Exam.jsx: the guard used to run before any hooks below, but
+  // Api.get can clear the session on a 401 (api.js), which flips isLoggedIn() to false and
+  // would change the hook count on the next render -- a Rules-of-Hooks crash.
   const [me, setMe] = useState(null);
   const [loadError, setLoadError] = useState("");
 
@@ -29,10 +27,7 @@ export default function Profile() {
   }, []);
 
   useEffect(() => {
-    // Guards against the one edge case the hook-order fix above introduces:
-    // a logged-out user landing directly on this route would otherwise still
-    // fire this fetch (with no token) before the render-time redirect below
-    // sends them to /login.
+    // Guards against the one edge case the hook-order fix above introduces.
     if (isLoggedIn()) refresh();
   }, [refresh]);
 
@@ -42,19 +37,7 @@ export default function Profile() {
 
   if (!isLoggedIn()) return <RedirectToLogin />;
 
-  // Examiners and admins get this page too. Identity verification is
-  // student-only.
-  //
-  // Password management is now ADMIN-ONLY. Student and examiner credentials
-  // are both issued and rotated by an administrator, so neither role has
-  // anything to do in a "change password" section -- it is hidden here and
-  // also refused by the backend (users.change_my_password), since hiding a
-  // form does not stop a direct API call.
-  //
-  // Note this is not a lockout: both roles can still recover a forgotten
-  // password themselves via the emailed one-time code on /forgot-password,
-  // which proves control of the mailbox rather than knowledge of the old
-  // password. The card below points there.
+  // Examiners and admins get this page too. Identity verification is student-only.
   const isStudent = getRole() === "student";
   const isExaminer = getRole() === "examiner";
   const isAdmin = getRole() === "admin";
@@ -244,32 +227,9 @@ function VerificationPill({ faceDone, idDone }) {
 
 /**
  * The student's own verified face and ID card.
- *
- * People are entitled to see the biometric material held about them, and there
- * is a practical reason too: a candidate whose face match keeps failing at the
- * exam gate can look at what was actually registered and tell immediately
- * whether it is a bad capture. Before this, only staff could see it.
- *
- * Reuses PhotoBox from IdentityPhotoModal, so these load through the same
- * authenticated-blob path as the staff viewer -- the endpoints already allow
- * the student themselves (proctoring._can_view_student_identity), so no new
- * access is being granted here, only a place to look.
  */
 /**
  * See what biometric data is held, and delete it.
- *
- * Both endpoints have existed since biometric consent was added
- * (users.my_biometric_status / users.erase_my_biometrics) and nothing in the
- * app called either. A deletion right that a person can only exercise by
- * writing to an administrator is most of the way to not having one -- and the
- * privacy page already told candidates they could do this.
- *
- * The confirmation is deliberate friction, and deliberately not a typed
- * phrase: this is destructive but recoverable (register again), so a
- * second click is proportionate where retyping an email address would not be.
- * What the dialogue must do is state the consequence -- you will have to
- * register your face again before your next proctored exam -- because that is
- * the part someone deleting on exam morning would regret not knowing.
  */
 function BiometricData({ onErased }) {
   const [status, setStatus] = useState(null);
@@ -535,9 +495,8 @@ function ChangePasswordCard() {
       });
       setResult({ tone: "success", message: res.message || "Password updated." });
       setForm({ current: "", next: "", confirm: "" });
-      // The password is now one only they know, so the "an administrator set
-      // this" banner must stop. Cleared here rather than waiting for the next
-      // login, which could be days away.
+      // The password is now one only they know, so the
+      // "an administrator set this" banner must stop.
       clearMustChangePassword();
     } catch (err) {
       setResult({ tone: "error", message: err instanceof ApiError ? err.message : "Couldn't update your password." });
@@ -546,9 +505,7 @@ function ChangePasswordCard() {
     }
   }
 
-  // Collapsed by default. Changing a password is a rare, deliberate act; three
-  // always-open password inputs sitting under the ID-verification steps made
-  // the page look like it was demanding four things at once.
+  // Collapsed by default. Changing a password is a rare, deliberate act.
   const [open, setOpen] = useState(false);
 
   const mismatch = form.confirm.length > 0 && form.next !== form.confirm;

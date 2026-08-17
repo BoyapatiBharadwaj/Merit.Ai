@@ -6,20 +6,6 @@ import { sectionEyebrow } from "../lib/ui.js";
 
 /**
  * Terms of Service.
- *
- * This page exists because the registration form's consent checkbox said "I
- * agree to the Terms of Service and Privacy Policy" and linked to /privacy --
- * a page that opens by stating, correctly, that it is NOT a Terms of Service.
- * So the one document a candidate was asked to agree to did not exist, and the
- * link they were given said so.
- *
- * What follows is a plain-language statement of the terms this software
- * actually operates under, written from the code rather than from a template.
- * It is deliberately not dressed up as a finished legal contract, because it is
- * not one: an institution running real exams needs counsel to review both this
- * and the privacy notice before candidates' results and biometric data are at
- * stake. Saying that plainly is more useful than boilerplate that looks
- * authoritative and has never been read by a lawyer.
  */
 export const TERMS_VERSION = "2026-08-05";
 

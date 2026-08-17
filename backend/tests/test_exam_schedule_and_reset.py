@@ -26,9 +26,8 @@ def _publish(client, examiner_headers, exam_id):
     assert response.status_code == 200, response.text
 
 
-# ---------------------------------------------------------------------------
-# Validation
-# ---------------------------------------------------------------------------
+# --- - ---
+# Validation -------------------------------------------------------------------------
 
 def test_create_exam_rejects_a_start_time_in_the_past(client, seed_roles, admin_token):
     examiner_headers = auth_headers(_create_examiner_and_login(client, admin_token))
@@ -132,10 +131,7 @@ def test_published_and_started_exam_locks_the_start_time(client, seed_roles, adm
 
 
 def test_resending_the_same_start_time_is_not_treated_as_a_change(client, seed_roles, admin_token):
-    """The frontend always resends the full schedule (a "replace both
-    fields" form, not a partial patch) -- resubmitting the unchanged start
-    time on an already-started exam must succeed, only an actual change to
-    it should be rejected."""
+    """The frontend always resends the full schedule (a "replace both fields" form, not a partial patch)."""
     examiner_headers = auth_headers(_create_examiner_and_login(client, admin_token))
     exam_id = _make_draft_exam(client, examiner_headers)  # no start_time -> open now
     _publish(client, examiner_headers, exam_id)
@@ -150,9 +146,8 @@ def test_schedule_update_rejects_start_in_the_past_when_still_editable(client, s
     exam_id = _make_draft_exam(client, examiner_headers)
     past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
 
-    # Unlike ExamCreate, this check depends on DB state (whether the exam has
-    # already started), so it's enforced by the service layer (400), not the
-    # schema (422) -- see schemas.exam.ExamScheduleUpdate's docstring.
+    # Unlike ExamCreate, this check depends on DB state (whether the exam has already started),
+    # so it's enforced by the service layer (400), not the schema (422).
     response = client.patch(f"/api/v1/exams/{exam_id}/schedule", json={"start_time": past, "end_time": None}, headers=examiner_headers)
     assert response.status_code == 400
 
@@ -176,17 +171,11 @@ def test_other_examiner_cannot_edit_schedule(client, seed_roles, admin_token):
     assert response.status_code == 403
 
 
-# ---------------------------------------------------------------------------
-# Reset student exam
-# ---------------------------------------------------------------------------
+# --- - ---
+# Reset student exam -------------------------------------------------------------------------
 
 def test_examiner_can_reset_a_students_attempt(client, seed_roles, admin_token):
-    """Submits the attempt first (not just starts it) so the "before" state
-    is unambiguous: a *submitted* attempt cannot be resumed by calling start
-    again (see attempt_service.start_attempt's "already attempted" branch --
-    an IN_PROGRESS attempt would just be handed back unchanged, which
-    wouldn't prove a reset had any effect). After reset, that same call must
-    succeed and hand back a brand-new attempt."""
+    """Submits the attempt first (not just starts it) so the "before" state is unambiguous."""
     examiner_headers = auth_headers(_create_examiner_and_login(client, admin_token))
     exam_id = _make_draft_exam(client, examiner_headers)
     _publish(client, examiner_headers, exam_id)
@@ -459,10 +448,7 @@ def test_randomize_options_off_keeps_natural_order(client, seed_roles, admin_tok
 
 
 def test_examiners_own_view_of_options_is_never_shuffled(client, seed_roles, admin_token):
-    """The per-attempt shuffle is a candidate-facing display concern only --
-    the examiner's own exam-builder view (and the report it feeds) must
-    always show options in authored order, regardless of randomize_options,
-    since an examiner reviewing many students needs a consistent order."""
+    """The per-attempt shuffle is a candidate-facing display concern only."""
     examiner_headers = auth_headers(_create_examiner_and_login(client, admin_token))
     exam_id, natural_ids = _make_published_exam_with_many_options(client, examiner_headers, randomize_options=True)
     student_headers = auth_headers(_register_student_and_login(client))

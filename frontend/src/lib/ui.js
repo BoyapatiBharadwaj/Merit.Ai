@@ -1,14 +1,11 @@
 /**
- * Shared className recipes so every button/badge across the site (nav,
- * hero, cards, footer, final CTA) uses the exact same padding, radius, and
- * hover behavior. Centralizing this is what keeps a marketing page from
- * drifting into "every section looks like a different site" territory.
+ * Shared className recipes so every button/badge across the site (nav, hero, cards, footer,
+ * final CTA) uses the exact same padding, radius, and hover behavior.
  */
 
-// Every shared button/link recipe includes a visible focus-visible ring so
-// keyboard users get a clear, on-brand indicator (not just the browser
-// default outline, which the hover -translate-y transforms can throw off
-// visually) -- this fixes focus visibility for every call site at once.
+// Every shared button/link recipe includes a visible focus-visible ring so keyboard users get a
+// clear, on-brand indicator (not just the browser default outline, which the hover -translate-y
+// transforms can throw off visually).
 const focusRing = "outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-page";
 const focusRingOnDark = "outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-primary";
 
@@ -35,13 +32,7 @@ export const sectionEyebrow =
 /**
  * Shared plain-input/textarea/select recipes for the hand-rolled forms
  * outside FormField.jsx's TextField/PasswordField (the exam builder's
- * Create Exam / Add Question / Add Section / Bulk Import forms). Before
- * this, each form defined its own near-identical `inputCls`/`labelCls`
- * locally, which had quietly drifted into two different paddings for no
- * real reason. Two sizes are kept deliberately -- `fieldInput` for
- * top-level forms, `fieldInputCompact` for denser nested forms like
- * per-question fields inside a section -- but each size now has exactly
- * one definition.
+ * Create Exam / Add Question / Add Section / Bulk Import forms).
  */
 export const fieldInput =
   "w-full rounded-xl border border-border bg-input text-ink px-4 py-2.5 text-sm outline-none transition-colors " +

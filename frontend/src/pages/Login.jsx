@@ -15,17 +15,6 @@ export default function Login() {
 
   /**
    * Where to go after signing in.
-   *
-   * Every login landed on /dashboard, so a candidate who followed a link to
-   * their exam, was bounced to login, and signed in successfully ended up on a
-   * dashboard and had to find the exam again -- most likely with a clock
-   * running.
-   *
-   * Only an internal path is honoured. Taking a redirect target from anything
-   * the caller controls is how an open redirect works: a link to
-   * /login?next=https://evil.example would send someone straight there wearing
-   * the trust of your domain. Router state, and a leading-single-slash check,
-   * make that unreachable.
    */
   const intended = typeof location.state?.from === "string"
     && location.state.from.startsWith("/")
@@ -34,31 +23,15 @@ export default function Login() {
     : "/dashboard";
   const [form, setForm] = useState({ email: "", password: "" });
   const [errors, setErrors] = useState({});
-  // Only a field the person has actually left (or tried to submit through)
-  // shows its error -- validating reactively but gating display on `touched`
-  // avoids the common rough edge of an empty required field turning red
-  // before the person has even had a chance to type into it.
+  // Only a field the person has actually left (or tried to submit through) shows its error.
   const [touched, setTouched] = useState({});
   const [formError, setFormError] = useState("");
-  // Focus moves to the error when one appears. Without it a screen-reader user
-  // submits, hears nothing, and is left at the bottom of a form with no
-  // indication that anything happened -- the message was rendered above them
-  // with no announcement and no way to find it but to read the page again.
+  // Focus moves to the error when one appears. Without it a screen-reader user submits, hears
+  // nothing, and is left at the bottom of a form with no indication that anything happened.
   const errorRef = useRef(null);
   const [loading, setLoading] = useState(false);
-  // Defaults to OFF.
-  //
-  // It defaulted to true, with the reasoning that a person who never notices the
-  // checkbox keeps today's behaviour rather than being logged out sooner. That
-  // reasoning weighs the wrong risk for this product: most candidates sign in on
-  // a shared college or examination-lab machine, and the default decided that
-  // their token should persist there after they close the browser. The person
-  // who wants it persisted can say so; the person who does not know the checkbox
-  // exists should not be opted into leaving a session behind on a machine
-  // somebody else is about to use.
-  //
-  // A code comment elsewhere already said persistence should be opt-in. The
-  // checkbox simply did not match it.
+  // Defaults to OFF. It defaulted to true, with the reasoning that a person who never notices
+  // the checkbox keeps today's behaviour rather than being logged out sooner.
   const [remember, setRemember] = useState(false);
 
   if (isLoggedIn()) return <Navigate to={intended} replace />;
@@ -76,9 +49,8 @@ export default function Login() {
       const value = e.target.value;
       const nextForm = { ...form, [field]: value };
       setForm(nextForm);
-      // Once a field has been touched, clear/update its error live as the
-      // person types, instead of making them re-blur or re-submit to see
-      // that a fix landed.
+      // Once a field has been touched, clear/update its error live as the person types, instead
+      // of making them re-blur or re-submit to see that a fix landed.
       if (touched[field]) setErrors(computeErrors(nextForm));
     };
   }
@@ -92,12 +64,7 @@ export default function Login() {
 
   // Maps what the backend can actually distinguish today onto specific
   // copy, rather than inventing outcomes (an "account locked" state, a
-  // separate "examiner login") that don't exist server-side -- a message for
-  // a state the app can never actually reach would be its own kind of bug.
-  // Everything the backend *can* tell us apart (bad credentials vs. too many
-  // attempts) already arrives as ApiError.message and is shown as-is; this
-  // only overrides the one case ApiError's own wording is written for a
-  // developer reading a console, not a candidate about to sit an exam.
+  // separate "examiner login") that don't exist server-side.
   function describeError(err) {
     if (err instanceof ApiError) {
       if (err.status === 0) return "Network error — check your connection and try again.";
@@ -169,10 +136,9 @@ export default function Login() {
         <PasswordField
           id="password"
           label="Password"
-          // Shares the label's row instead of trailing the whole form, where
-          // it read as an afterthought rather than the second thing a person
-          // needs right when they're about to type a password they've
-          // forgotten.
+          // Shares the label's row instead of trailing the whole form, where it read as an
+          // afterthought rather than the second thing a person needs right when they're about
+          // to type a password they've forgotten.
           labelExtra={
             <Link to="/forgot-password" className="text-xs font-semibold text-primary hover:underline">
               Forgot password?

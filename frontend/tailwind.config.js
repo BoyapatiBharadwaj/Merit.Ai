@@ -4,13 +4,8 @@ export default {
   darkMode: ["selector", '[data-theme="dark"]'],
   theme: {
     extend: {
-      // Every colour goes through `rgb(var(--x) / <alpha-value>)` rather than
-      // a bare `var(--x)`. The <alpha-value> placeholder is what lets Tailwind
-      // generate opacity modifiers (bg-primary/10, border-danger/30, ...);
-      // with a bare var it cannot compute an alpha and silently emits no rule
-      // at all. See the token block at the top of index.css for the full
-      // story -- the vars are channel triplets ("37 99 235"), not hex, to
-      // make this work.
+      // Every colour goes through `rgb(var(--x) /
+      // <alpha-value>)` rather than a bare `var(--x)`.
       colors: {
         primary: {
           DEFAULT: "rgb(var(--primary) / <alpha-value>)",
@@ -29,9 +24,8 @@ export default {
         border: "rgb(var(--border) / <alpha-value>)",
         ink: "rgb(var(--text) / <alpha-value>)",
         muted: "rgb(var(--text-muted) / <alpha-value>)",
-        // Spotlight surface for the security section. Unlike the
-        // always-dark `inverse` token it replaces, this one inverts with the
-        // theme like every other surface.
+        // Spotlight surface for the security section. Unlike the always-dark `inverse` token it
+        // replaces, this one inverts with the theme like every other surface.
         accent: "rgb(var(--surface-accent) / <alpha-value>)",
       },
       borderRadius: { DEFAULT: "var(--radius)", card: "var(--radius)" },

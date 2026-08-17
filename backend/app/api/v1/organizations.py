@@ -1,10 +1,4 @@
-"""
-Organization roster and per-exam access endpoints.
-
-Every route here is scoped to the caller's own organization. An examiner never
-passes an organization id -- it is read from their own profile -- so there is
-no id for them to tamper with and no cross-tenant read to guard against.
-"""
+"""Organization roster and per-exam access endpoints."""
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -68,11 +62,7 @@ def enrol_students(payload: RosterEnrolRequest, db: Session = Depends(get_db),
 @router.delete("/me/roster/{member_id}", status_code=204)
 def remove_student(member_id: int, db: Session = Depends(get_db),
                    user: User = Depends(require_examiner)):
-    """Remove someone from the roster, revoking access to future exams.
-
-    Attempts and results they have already produced are deliberately kept --
-    removing a student from a cohort must not erase the assessment record.
-    """
+    """Remove someone from the roster, revoking access to future exams."""
     organization_id = _caller_organization_id(db, user)
     organization_service.remove_member(db, organization_id, member_id)
 
@@ -126,13 +116,7 @@ def get_exam_access(exam_id: int, db: Session = Depends(get_db),
 @router.post("/exams/{exam_id}/participants", response_model=ExamParticipantAddResult, status_code=201)
 def add_exam_participants(exam_id: int, payload: ExamParticipantAdd,
                           db: Session = Depends(get_db), user: User = Depends(require_examiner)):
-    """Add emails to this exam's allow-list.
-
-    Additive, and accepts addresses that have not registered yet -- they
-    become pending invites that resolve when the person signs up. The first
-    email added flips the exam from "open to the organization" to
-    "allow-list only".
-    """
+    """Add emails to this exam's allow-list."""
     exam = _owned_exam(db, user, exam_id)
     return organization_service.add_exam_participants(db, exam, payload.emails, user.id)
 

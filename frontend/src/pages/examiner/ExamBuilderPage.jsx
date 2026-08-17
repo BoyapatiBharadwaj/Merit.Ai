@@ -126,13 +126,8 @@ function ExamScheduleCard({ exam, onUpdated }) {
 
 /* ===================== Exam details editing (draft-only) ===================== */
 
-// Everything about an exam except its schedule (which has its own card
-// above, with its own post-publish rules) and its questions (their own
-// tab) -- title, description, candidate instructions, duration, passing
-// percentage, and the three randomize/proctoring toggles. Draft-only: once
-// published the backend freezes every one of these (see
-// exam_service.update_exam_details), so this renders a read-only summary
-// instead of a form for a published/closed exam.
+// Everything about an exam except its schedule (which has its own card above, with its own
+// post-publish rules) and its questions (their own tab).
 function ExamDetailsForm({ exam, onUpdated }) {
   const isDraft = exam.status === "draft";
 
@@ -191,9 +186,6 @@ function ExamDetailsForm({ exam, onUpdated }) {
         results_release_mode: form.resultsReleaseMode,
         duration_minutes: parseInt(form.duration, 10),
         // parseInt(..) || 40 turned a valid 0 into 40, because 0 is falsy.
-        // The server has always accepted a 0% pass mark; the form silently
-        // changed the examiner's answer on the way out, and nothing anywhere
-        // would ever have shown them it had.
         pass_percentage: Number.isFinite(parseInt(form.passPercentage, 10))
           ? parseInt(form.passPercentage, 10)
           : 40,
@@ -441,12 +433,7 @@ function ExamBuilderView({ examId, onBack }) {
   const [lifecycleBusy, setLifecycleBusy] = useState(false);
   const [confirmClose, setConfirmClose] = useState(null); // null | { message }
 
-  // The tab is a query parameter, not component state.
-  //
-  // As state it was lost on every refresh -- an examiner reviewing violations
-  // who reloaded landed back on Questions -- and it could not be linked to, so
-  // "look at the violations on exam 12" had to be explained in words rather
-  // than sent as a URL.
+  // The tab is a query parameter, not component state. As state it was lost on every refresh.
   const [searchParams, setSearchParams] = useSearchParams();
   const tab = searchParams.get("tab") || "questions";
   const setTab = (next) => setSearchParams({ tab: next }, { replace: true });
@@ -673,16 +660,6 @@ function ExamBuilderView({ examId, onBack }) {
 
 /**
  * Who can take this specific exam.
- *
- * Two modes, and the default matters: with nobody added the exam is open to
- * the whole organization, which is what most exams want. Adding even one
- * email flips it to an allow-list. Expressing that as "everyone unless you
- * add someone" rather than a separate toggle keeps the common case to zero
- * clicks and makes the restricted case impossible to enable by accident.
- *
- * Entry is by email, not by picking from registered students. An examiner
- * sets an exam up before the cohort has signed up, so a picker that could
- * only show existing accounts was useless for exactly the case it was for.
  */
 
 export { ExamScheduleCard, ExamDetailsForm, ExamBuilderView };

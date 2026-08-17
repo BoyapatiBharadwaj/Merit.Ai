@@ -1,6 +1,5 @@
-"""
-Authentication endpoints: student self-registration, admin-created examiner
-accounts, and login for all roles.
+"""Authentication endpoints: student self-registration,
+admin-created examiner accounts, and login for all roles.
 """
 from datetime import datetime, timezone
 
@@ -44,34 +43,14 @@ def _token_response(user: User) -> TokenResponse:
 
 @router.get("/password-policy", response_model=PasswordPolicyOut)
 def password_policy():
-    """What the server enforces, so the signup form can show exactly that.
-
-    The registration screen used to list an uppercase letter, a number and a
-    special character while the server checked only length -- instructions that
-    described a policy nothing implemented. Serving the rules removes the second
-    copy that had drifted.
-    """
+    """What the server enforces, so the signup form can show exactly that."""
     return PasswordPolicyOut(min_length=settings.PASSWORD_MIN_LENGTH, rules=passwords.describe())
 
 
 @router.post("/register/student", response_model=TokenResponse, status_code=201,
              dependencies=[Depends(rate_limit("register"))])
 def register_student(payload: RegisterStudentRequest, request: Request, db: Session = Depends(get_db)):
-    """Registration WITHOUT email verification.
-
-    Refused when REQUIRE_EMAIL_VERIFICATION is on, which is the default.
-
-    This endpoint and the verified one below were both public, which made the
-    whole OTP flow optional in practice: the frontend walked a candidate through
-    requesting and entering a code, and anyone who skipped the frontend could
-    POST here and get an account with no code at all. The verification was real
-    but nothing required it, so it protected only the people who were not trying
-    to avoid it.
-
-    Kept rather than deleted for deployments that genuinely cannot send mail --
-    an offline lab, an institution whose SMTP is not yet approved. Turning it
-    back on is one setting, and it is now a deliberate act with a name.
-    """
+    """Registration WITHOUT email verification."""
     if settings.REQUIRE_EMAIL_VERIFICATION:
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
@@ -91,15 +70,7 @@ def register_student(payload: RegisterStudentRequest, request: Request, db: Sess
 @router.post("/examiners", response_model=ExaminerProvisionedOut, status_code=201)
 def create_examiner(payload: CreateExaminerRequest, request: Request, background: BackgroundTasks,
                     db: Session = Depends(get_db), admin: User = Depends(require_admin)):
-    """Admin-only: create a new examiner account. Examiners never self-register.
-
-    Goes through the same examiner_provisioning_service as approving an access
-    request: the account is created with an unusable random password and the
-    examiner sets their own through a single-use activation email. This
-    endpoint no longer returns a usable session -- there is nothing to sign in
-    with until that email is acted on -- so the response reports what was
-    created rather than a token.
-    """
+    """Admin-only: create a new examiner account. Examiners never self-register."""
     user, activation_sent = examiner_provisioning_service.provision_examiner(
         db, admin_id=admin.id, first_name=payload.first_name, last_name=payload.last_name,
         email=payload.email, organization_name=payload.organization_name, background=background,
@@ -115,13 +86,8 @@ def create_examiner(payload: CreateExaminerRequest, request: Request, background
 @router.post("/examiners/{user_id}/resend-activation")
 def resend_examiner_activation(user_id: int, request: Request, background: BackgroundTasks,
                                db: Session = Depends(get_db), admin: User = Depends(require_admin)):
-    """Admin-only recovery path for an activation link that expired, or an
-    email that never arrived the first time.
-
-    Issues a fresh token (invalidating any previous outstanding one -- see
-    otp_service.issue_activation_token) and mails it again through the same
-    tracked-delivery path provisioning uses. Refuses for an already-activated
-    account, since a link would have nothing left to do.
+    """Admin-only recovery path for an activation link that
+    expired, or an email that never arrived the first time.
     """
     sent = examiner_provisioning_service.resend_activation(db, user_id, background=background)
     activity_service.record(db, activity_type=ActivityType.ACCOUNT_CREATED_BY_ADMIN, actor=admin,
@@ -133,18 +99,7 @@ _STAFF_ROLES = {"admin", "examiner"}
 
 
 def _notify_staff_login(background: BackgroundTasks, user: User, request: Request) -> None:
-    """Email a staff member that their account was just signed into.
-
-    Staff only, and that restriction is the design rather than a limitation. An
-    examiner or admin account can read candidate identity photographs, alter
-    results and export personal data, so an unexpected sign-in is worth an inbox
-    interruption. Sending the same for every candidate login would be one email
-    per student per exam, which is how a security notice turns into something
-    people filter into a folder they never open.
-
-    Queued on the background task runner and never awaited: a mail outage must
-    not stop anybody signing in. This is a notice, not a control.
-    """
+    """Email a staff member that their account was just signed into."""
     if not settings.NOTIFY_STAFF_ON_LOGIN:
         return
     if (user.role.name or "").lower() not in _STAFF_ROLES:
@@ -182,24 +137,12 @@ def login(payload: LoginRequest, request: Request, background: BackgroundTasks,
     return _token_response(user)
 
 
-# ------------------------------------------------------------------------------
-# One-time passcode flows
-#
-# All four endpoints are rate limited per IP on top of the per-address cooldown
-# inside otp_service: the cooldown stops one mailbox being flooded, the rate
-# limit stops one source cycling through many addresses. Neither substitutes
-# for the other.
-# ------------------------------------------------------------------------------
+# --- - ---
+# One-time passcode flows All four endpoints are rate limited per
+# IP on top of the per-address cooldown inside otp_service.
 
 def _require_email_capability() -> None:
-    """Refuse to run an email-gated flow on a deployment that cannot send email.
-
-    Without this the endpoints would happily return "check your inbox" on a
-    stack with EMAIL_ENABLED=false, and the user would wait forever for a
-    message that was never going to be sent. The existing ForgotPassword page
-    made exactly this point about not promising undeliverable email; a 503 that
-    names the missing configuration keeps that promise on the API side.
-    """
+    """Refuse to run an email-gated flow on a deployment that cannot send email."""
     if not email_service.is_enabled():
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -225,15 +168,7 @@ def request_signup_code(payload: OtpRequest, background: BackgroundTasks, db: Se
 @router.post("/register/student/verified", response_model=TokenResponse, status_code=201,
              dependencies=[Depends(rate_limit("register"))])
 def register_student_verified(payload: RegisterStudentWithOtpRequest, request: Request, db: Session = Depends(get_db)):
-    """Student self-registration with the emailed code checked first.
-
-    The code is consumed and the account created in ONE transaction. This
-    docstring used to claim a failed registration could not burn a valid code;
-    it was wrong. verify_code committed the consumption, registration ran
-    afterwards, and a duplicate email or student ID left the candidate with no
-    account and a code that could never be used again -- for a mistake they
-    could have corrected in seconds. Now either both happen or neither does.
-    """
+    """Student self-registration with the emailed code checked first."""
     _require_email_capability()
     try:
         otp_service.verify_code(db, email=payload.email, purpose=OtpPurpose.SIGNUP,
@@ -259,14 +194,7 @@ def register_student_verified(payload: RegisterStudentWithOtpRequest, request: R
 @router.post("/password-reset/check-account", response_model=AccountExistsOut,
              dependencies=[Depends(rate_limit("otp_request"))])
 def check_account_exists(payload: AccountExistsCheck, db: Session = Depends(get_db)):
-    """Does an active account exist for this address?
-
-    A deliberate, product-required exception to this file's usual
-    account-enumeration caution -- see AccountExistsOut's docstring for why.
-    Used by the forgot-password screen BEFORE it sends a reset code, so
-    someone with no account is told plainly ("Account not found, create one")
-    instead of being walked through a code that will never do anything.
-    """
+    """Does an active account exist for this address?"""
     from app.repositories import user_repository
 
     user = user_repository.get_user_by_email(db, payload.email.strip().lower())
@@ -276,12 +204,7 @@ def check_account_exists(payload: AccountExistsCheck, db: Session = Depends(get_
 @router.post("/password-reset/request", response_model=OtpRequestAccepted,
              dependencies=[Depends(rate_limit("otp_request"))])
 def request_password_reset(payload: OtpRequest, background: BackgroundTasks, db: Session = Depends(get_db)):
-    """Email a reset code.
-
-    Responds identically whether or not the address has an account -- see
-    otp_service.request_code. A code is genuinely issued either way, so even
-    the response timing does not distinguish the two cases.
-    """
+    """Email a reset code."""
     _require_email_capability()
     otp_service.request_code(db, email=payload.email, purpose=OtpPurpose.PASSWORD_RESET, background=background)
     return OtpRequestAccepted(
@@ -294,13 +217,7 @@ def request_password_reset(payload: OtpRequest, background: BackgroundTasks, db:
 
 @router.post("/password-reset/confirm", dependencies=[Depends(rate_limit("otp_verify"))])
 def confirm_password_reset(payload: PasswordResetConfirmRequest, request: Request, db: Session = Depends(get_db)):
-    """Verify the code and set the new password.
-
-    Reports success even when no account exists for the address, for the same
-    enumeration reason as the request step -- the code was still valid, so
-    saying "that worked" reveals nothing beyond what the caller already knew,
-    while "no such user" would confirm the address is unregistered.
-    """
+    """Verify the code and set the new password."""
     _require_email_capability()
     otp_service.verify_code(db, email=payload.email, purpose=OtpPurpose.PASSWORD_RESET, code=payload.code)
     auth_service.reset_password_by_email(db, payload.email, payload.new_password)
@@ -309,35 +226,19 @@ def confirm_password_reset(payload: PasswordResetConfirmRequest, request: Reques
     return {"reset": True, "message": "Your password has been updated. You can sign in with it now."}
 
 
-# ------------------------------------------------------------------------------
-# Activation
-#
-# An account somebody else created has no password its owner has ever chosen.
-# These two endpoints are how that changes hands. There is no third endpoint
-# that mails the password out, and that is the point: the older flow put a live
-# credential in an inbox, where it stayed in plain text long after the account
-# was in use, known to whoever created it, so nothing the account did could be
-# attributed to its owner alone.
-# ------------------------------------------------------------------------------
+# --- - ---
+# Activation An account somebody else created has no password its owner has ever chosen.
 
 @router.post("/activate/check", dependencies=[Depends(rate_limit("otp_verify"))])
 def check_activation(payload: ActivationCheck, db: Session = Depends(get_db)):
-    """Is this link still good? Does not consume it.
-
-    Asked before the password form is shown, so an expired link says so
-    immediately rather than after somebody has chosen a password, submitted it
-    and been refused. `consume=False` is what keeps this a look, not a spend.
-    """
+    """Is this link still good? Does not consume it."""
     try:
         otp_service.verify_code(
             db, email=payload.email, purpose=OtpPurpose.ACTIVATION,
             code=payload.token, consume=False,
         )
     except HTTPException:
-        # Deliberately 200 with valid=false rather than an error status. The
-        # screen needs to distinguish "dead link" from "the server is down",
-        # and an exception status makes those two indistinguishable to a
-        # fetch().catch().
+        # Deliberately 200 with valid=false rather than an error status.
         return {"valid": False}
     return {"valid": True}
 
@@ -345,12 +246,7 @@ def check_activation(payload: ActivationCheck, db: Session = Depends(get_db)):
 @router.post("/activate", response_model=TokenResponse,
              dependencies=[Depends(rate_limit("otp_verify"))])
 def activate(payload: ActivationRequest, request: Request, db: Session = Depends(get_db)):
-    """Set the first password on an account and sign in.
-
-    Signing in immediately, rather than bouncing to the login form, is not just
-    convenience: the person has proved control of the mailbox and just chosen
-    the password, so asking them to type it again establishes nothing.
-    """
+    """Set the first password on an account and sign in."""
     user = auth_service.activate_account(
         db, email=payload.email, token=payload.token, new_password=payload.password,
     )

@@ -40,21 +40,14 @@ def all_exams(db: Session = Depends(get_db), user: User = Depends(get_current_us
 
 @router.get("/available", response_model=list[dict])
 def available_exams(db: Session = Depends(get_db), user: User = Depends(require_student)):
-    """Every published exam this student's organization/allow-list grants
-    them, each annotated with their own attempt (if any) and a computed
-    `candidate_status` (upcoming/ongoing/completed/missed) -- see
-    exam_service.compute_candidate_status. Deliberately not time-windowed:
-    the real enforcement is in attempt_service.start_attempt, so this list is
-    free to also show exams that haven't opened yet (Upcoming) or have
-    already closed (Missed) instead of making them vanish.
+    """Every published exam this student's organization/allow-list grants them, each annotated
+    with their own attempt (if any) and a computed `candidate_status`
+    (upcoming/ongoing/completed/missed).
     """
     student = user_repository.get_student_by_user_id(db, user.id)
     exams = organization_service.list_accessible_published_exams(db, student)
-    # finalize_if_expired here (not just in the attempts endpoints) because
-    # this is now the only list the dashboard reads -- without this, an
-    # attempt whose deadline passed while the student was away would keep
-    # showing "Ongoing" with a stuck countdown until they happened to open
-    # the exam page again.
+    # finalize_if_expired here (not just in the attempts endpoints)
+    # because this is now the only list the dashboard reads.
     attempts_by_exam = {
         a.exam_id: attempt_service.finalize_if_expired(db, a)
         for a in attempt_repository.list_attempts_for_student(db, student.id)
@@ -110,10 +103,7 @@ def update_exam_schedule(exam_id: int, payload: ExamScheduleUpdate, db: Session 
 
 @router.delete("/{exam_id}", status_code=204)
 def delete_exam(exam_id: int, db: Session = Depends(get_db), user: User = Depends(require_examiner)):
-    """Owner + draft-only, same gate as every other edit action (see
-    exam_service._get_editable_exam) -- a published exam has (or may soon
-    have) real student attempts riding on it and is never deletable, only
-    closable."""
+    """Owner + draft-only, same gate as every other edit action (see exam_service._get_editable_exam)."""
     examiner = user_repository.get_examiner_by_user_id(db, user.id)
     exam_service.delete_exam(db, examiner.id, exam_id)
 
@@ -134,12 +124,7 @@ def update_section(section_id: int, payload: SectionUpdate, db: Session = Depend
 
 @router.delete("/sections/{section_id}", status_code=200)
 def delete_section(section_id: int, db: Session = Depends(get_db), user: User = Depends(require_examiner)):
-    """Delete a section and every question in it. Draft-only, owner-only.
-
-    Returns what was removed rather than a bare 204: the UI confirms the delete
-    by naming the section and the question count, and inventing that client-side
-    would mean trusting a stale local copy of the section.
-    """
+    """Delete a section and every question in it. Draft-only, owner-only."""
     examiner = user_repository.get_examiner_by_user_id(db, user.id)
     return exam_service.delete_section(db, examiner.id, section_id)
 
@@ -191,13 +176,11 @@ def publish_exam(exam_id: int, background: BackgroundTasks, db: Session = Depend
     examiner = user_repository.get_examiner_by_user_id(db, user.id)
     return exam_service.publish_exam(db, examiner.id, exam_id, background=background)
 
-# ------------------------------------------------------------------------------
-# Exam lifecycle
-#
-# ExamStatus.CLOSED existed in the database from the start with no endpoint and
-# no button, so a published exam stayed on every candidate's list forever and an
-# examiner who wanted one taken down had no way to do it.
-# ------------------------------------------------------------------------------
+# --- - ---
+# Exam lifecycle ExamStatus.CLOSED existed in the database from the start with no endpoint and
+# no button, so a published exam stayed on every candidate's list forever and an examiner who
+# wanted one taken down had no way to do it.
+# ----------------------------------------------------------------------------.
 
 @router.post("/{exam_id}/close", response_model=ExamOut)
 def close_exam(exam_id: int, force: bool = False, db: Session = Depends(get_db),
@@ -229,13 +212,7 @@ def reorder_sections(exam_id: int, payload: SectionReorderRequest, db: Session =
 @router.post("/sections/{section_id}/questions/bulk", status_code=201)
 def bulk_add_questions(section_id: int, payload: BulkQuestionImport, db: Session = Depends(get_db),
                        user: User = Depends(require_examiner)):
-    """Import a batch of questions in ONE transaction.
-
-    The importer used to send one request per question from the browser, so a
-    failure at question 40 of 60 left the exam holding the first 39 with no
-    record of where it stopped. Every row is validated before anything is
-    written, and every problem is reported at once rather than one per attempt.
-    """
+    """Import a batch of questions in ONE transaction."""
     examiner = user_repository.get_examiner_by_user_id(db, user.id)
     return exam_service.add_questions_bulk(
         db, examiner.id, section_id,

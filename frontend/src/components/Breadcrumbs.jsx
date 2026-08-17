@@ -2,16 +2,8 @@ import { Link } from "react-router-dom";
 import Icon from "./Icon.jsx";
 
 /**
- * Trail of `{ label, to? }` segments, e.g.
- *   [{ label: "Dashboard", to: "/dashboard" },
- *    { label: "Examiners", to: "/admin/examiners" },
- *    { label: "Dr. John Smith" }]
- *
- * The last segment (and any segment with no `to`) renders as plain text --
- * "you are here" -- everything before it is a link back up the tree. Used
- * across every admin drill-down page so the admin always has the
- * "Dashboard > Examiners > Dr. John Smith > Python Assessment > Jane Doe"
- * style trail the spec calls for.
+ * Trail of `{ label, to? }` segments, e.g. [{ label: "Dashboard", to: "/dashboard" }, { label:
+ * "Examiners", to: "/admin/examiners" }, { label: "Dr.
  */
 export default function Breadcrumbs({ trail }) {
   if (!trail || trail.length === 0) return null;

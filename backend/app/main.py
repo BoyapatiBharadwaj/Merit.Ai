@@ -38,23 +38,7 @@ if not settings.cors_origins:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Startup checks. This process no longer runs any periodic work.
-
-    The exam-reminder loop used to start here. It now lives in its own
-    single-replica service (app/scheduler/main.py), because a loop inside the
-    API is only correct while the API is one process -- run four uvicorn workers
-    and four copies of it wake up together, racing to send the same reminders.
-    Moving it out is what makes scaling this service safe.
-
-    Rate limiting, OTP state and distributed locks are all backed by Redis
-    (see app/core/rate_limit.py, app/services/otp_redis_store.py,
-    app/core/locks.py), which every worker and every replica shares --
-    counters, codes and locks are visible across all of them unconditionally,
-    with nothing extra to configure to get that. If Redis itself is
-    unreachable, those operations return a controlled 503 rather than
-    degrading to a per-process fallback (see
-    app/core/redis_client.RedisUnavailableError's handler below).
-    """
+    """Startup checks. This process no longer runs any periodic work."""
     workers = int(os.getenv("WEB_CONCURRENCY", "1") or 1)
     if workers > 1:
         logger.info("Running %s uvicorn workers; rate limits, OTP state and locks are shared "
@@ -64,17 +48,6 @@ async def lifespan(_app: FastAPI):
 
 
 # Interactive docs are development-only.
-#
-# FastAPI serves /docs, /redoc and /openapi.json unauthenticated by default, and
-# the OpenAPI schema is a complete map of all 90-odd endpoints: every path,
-# parameter, request shape and role requirement. That is a genuinely useful
-# artefact while building and a free reconnaissance document in production --
-# particularly next to an unauthenticated public form (access requests) and the
-# student self-registration endpoint.
-#
-# Serving None for all three is what actually removes the routes; setting only
-# docs_url would leave the schema itself readable at /openapi.json, which is the
-# part worth having anyway.
 _docs_urls = (
     {"docs_url": None, "redoc_url": None, "openapi_url": None}
     if settings.is_production
@@ -88,8 +61,6 @@ if settings.is_production:
     logger.info("Interactive API docs are disabled (ENVIRONMENT=production).")
 
 # Restricted to the explicit, trusted frontend origins configured via CORS_ORIGINS.
-# Wildcards are stripped out in Settings.cors_origins, so this can never silently
-# widen to "allow everything".
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -103,11 +74,6 @@ app.add_middleware(GZipMiddleware, minimum_size=500)
 
 
 # Header values are static, so build the dict once rather than per request.
-#
-# HSTS is deliberately omitted here and left to the TLS-terminating reverse
-# proxy: emitting it from the app would also emit it over plain HTTP in local
-# development, pinning developers' browsers to https://localhost for months
-# with no easy way to undo it.
 _SECURITY_HEADERS = {
     # Stops a browser from MIME-sniffing a stored upload (e.g. a violation
     # screenshot) into something executable.
@@ -128,15 +94,7 @@ _SECURITY_HEADERS = {
 
 @app.middleware("http")
 async def request_context_middleware(request: Request, call_next):
-    """Attach a request id, emit one structured access log line, and apply
-    security headers.
-
-    The request id is echoed back as X-Request-ID and included in the access
-    log, so a user-reported failure ("it said 500 at 14:32") can be tied to
-    the exact log line and stack trace without guessing from timestamps. An
-    inbound X-Request-ID is honoured so a reverse proxy's id wins and the two
-    logs correlate.
-    """
+    """Attach a request id, emit one structured access log line, and apply security headers."""
     request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:16]
     request.state.request_id = request_id
     started = time.perf_counter()
@@ -156,10 +114,7 @@ async def request_context_middleware(request: Request, call_next):
 
 
 app.include_router(api_router)
-# No public static mount for UPLOAD_DIR here on purpose: that used to serve
-# every student's face photo to anyone on the network with no authentication
-# (see app/api/v1/proctoring.py's get_face_photo for the replacement, gated
-# to the owning student, admins, and examiners).
+# No public static mount for UPLOAD_DIR here on purpose.
 
 
 def _request_id(request: Request) -> str:
@@ -170,16 +125,7 @@ def _request_id(request: Request) -> str:
 
 @app.exception_handler(RedisUnavailableError)
 async def redis_unavailable_handler(request: Request, exc: RedisUnavailableError):
-    """The one place "Redis is down" becomes an HTTP response, for every
-    operation that depends on it: rate limiting, OTP state, distributed locks,
-    and the background job/email queue (see app/core/redis_client.py).
-
-    A clean, logged 503 rather than a crash or a silent bypass -- the same
-    contract database_error_handler already gives Postgres outages, and the
-    controlled failure this rewrite's brief requires specifically for
-    Redis-backed operations (never a quiet "let the request through
-    unprotected" the way an earlier version of the rate limiter did).
-    """
+    """The one place "Redis is down" becomes an HTTP response, for every operation that depends on it."""
     request_id = _request_id(request)
     logger.warning("request_id=%s Redis unavailable handling %s %s: %s",
                    request_id, request.method, request.url.path, exc)
@@ -220,24 +166,13 @@ async def unhandled_error_handler(request: Request, exc: Exception):
 
 @app.get("/api/health", tags=["Health"])
 def health_check():
-    """Liveness: is the process up? Deliberately dependency-free.
-
-    An orchestrator restarts a container that fails its liveness probe, so
-    this must NOT check the database -- a brief DB blip would otherwise
-    trigger a restart storm across every replica at once, turning a
-    recoverable outage into an outage plus a thundering herd of cold starts.
-    """
+    """Liveness: is the process up? Deliberately dependency-free."""
     return {"status": "ok"}
 
 
 @app.get("/api/health/ready", tags=["Health"])
 def readiness_check():
-    """Readiness: can this instance actually serve traffic?
-
-    Checked by the load balancer, which pulls an unready instance out of
-    rotation without killing it. Every meaningful request touches the
-    database, so an instance that cannot reach it should not receive any.
-    """
+    """Readiness: can this instance actually serve traffic?"""
     try:
         db = SessionLocal()
         try:

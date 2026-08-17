@@ -1,25 +1,5 @@
 /**
  * The autosave queue, tested against the failures it was written to fix.
- *
- * These run on Node's built-in test runner (`node --test`) rather than Vitest,
- * deliberately: the module is framework-free by design, so it needs no DOM, no
- * transform and no dependency to test -- and a test that runs on a bare
- * checkout is one that actually gets run. Vitest is declared in package.json
- * for the component tests that will need a DOM; this file does not wait for it.
- *
- *   node --test src/lib/autosave.test.mjs
- *
- * Every case below corresponds to a real defect:
- *
- *   * `applied: false` was ignored, so an answer the server had refused was
- *     shown to the candidate as saved.
- *   * The version counter restarted at 1 after a reload while the server held
- *     5, so every subsequent save was correctly refused as stale.
- *   * A new idempotency key was minted per retry, so a retry of a request that
- *     had landed looked like a fresh write.
- *   * Only network errors were retried; a 429 or a 502 was dropped silently.
- *   * Nothing could be awaited, so submission raced the save it depended on --
- *     and a failed save had to still reach the server with the submission.
  */
 import assert from "node:assert/strict";
 import test from "node:test";

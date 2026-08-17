@@ -1,12 +1,4 @@
-"""
-Kill switches for the AI proctoring signals.
-
-The guarantee: switching a signal off degrades it to "not collected" and never
-fails, blocks or accuses a candidate. The exam matters more than any individual
-proctoring input -- and the failure this exists to make survivable has already
-happened once here (the classical anti-spoof heuristic accusing legitimate
-candidates every few seconds, which at the time needed a code change to stop).
-"""
+"""Kill switches for the AI proctoring signals."""
 import pytest
 
 from app.core.config import settings
@@ -28,10 +20,7 @@ def test_pose_detection_returns_unavailable_when_switched_off(monkeypatch):
 
 
 def test_face_matching_returns_unavailable_rather_than_a_verdict(db_session, monkeypatch):
-    """The important one. A disabled check must not report `match: False` --
-    that would accuse a candidate on the basis of a check nobody ran -- and must
-    not report `match: True` either, which would put a fabricated pass on a
-    proctoring report."""
+    """The important one. A disabled check must not report `match: False`."""
     monkeypatch.setattr(settings, "FACE_MATCHING_ENABLED", False)
     result = proctor_service.verify_live_face(db_session, student_id=1, base64_image="ignored")
 

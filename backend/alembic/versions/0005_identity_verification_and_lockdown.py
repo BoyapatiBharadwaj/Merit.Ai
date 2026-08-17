@@ -3,16 +3,6 @@
 Revision ID: 0005
 Revises: 0004
 Create Date: 2026-08-01
-
-Covers four related changes:
-  1. users.first_name / users.last_name, backfilled by splitting full_name.
-     full_name is kept as a denormalized cache (see app/models/user.py) because
-     the ID-card OCR matcher and the PDF certificates read it directly.
-  2. examiners.department renamed to examiners.organization_name.
-  3. students gains the ID-verification and identity-lock columns.
-  4. two new eventtype enum values for screenshot attempts and lockdown
-     terminations.
-
 """
 from alembic import op
 import sqlalchemy as sa
@@ -30,11 +20,8 @@ def upgrade() -> None:
     op.add_column("users", sa.Column("first_name", sa.String(75), nullable=False, server_default=""))
     op.add_column("users", sa.Column("last_name", sa.String(75), nullable=False, server_default=""))
 
-    # Backfill: everything before the first space is the first name, the
-    # remainder is the last name. Single-word names land entirely in
-    # first_name, which is the right call -- inventing a surname would be
-    # worse than leaving it blank, and the ID matcher compares against
-    # full_name anyway.
+    # Backfill: everything before the first space is
+    # the first name, the remainder is the last name.
     op.execute(
         """
         UPDATE users

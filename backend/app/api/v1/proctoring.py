@@ -90,16 +90,8 @@ def identity_status(db: Session = Depends(get_db), user: User = Depends(require_
 
 
 def _can_view_student_identity(db: Session, user: User, student_id: int) -> bool:
-    """Shared gate for every endpoint serving a student's identity material
-    (registered face photo, ID card photo) -- one authority so the two
-    checks can never drift apart, the same reasoning
-    organization_service.can_student_access_exam documents for exam access.
-
-    Three routes in: the student themselves, any admin, or an examiner
-    connected to this student via organization_service.examiner_can_view_student
-    (same organization, or a direct per-exam invite). Everyone else is
-    denied -- see get_face_photo's docstring for why this used to be public
-    to any authenticated request at all.
+    """Shared gate for every endpoint serving a student's
+    identity material (registered face photo, ID card photo).
     """
     if user.role.name == RoleName.ADMIN.value:
         return True
@@ -114,18 +106,7 @@ def _can_view_student_identity(db: Session, user: User, student_id: int) -> bool
 
 @router.get("/face/photo/{student_id}")
 def get_face_photo(student_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """Serve a student's registered face photo.
-
-    Replaces the old `app.mount("/uploads", StaticFiles(...))` in main.py,
-    which served every file under UPLOAD_DIR -- including every student's
-    face photo -- to anyone on the network with no authentication at all;
-    the filename's only "secret" was an 8-char random suffix. Nothing in the
-    frontend actually linked to that mount (confirmed by grep), so it was
-    pure exposed surface with no user relying on it being public. This
-    endpoint restores the one legitimate use (staff or the student
-    themselves viewing the photo on file) behind real auth and authorization
-    instead.
-    """
+    """Serve a student's registered face photo."""
     if not _can_view_student_identity(db, user, student_id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to this photo.")
 
@@ -141,11 +122,9 @@ def get_face_photo(student_id: int, db: Session = Depends(get_db), user: User = 
 
 @router.get("/id-card/photo/{student_id}")
 def get_id_card_photo(student_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """Serve the ID card photo captured during this student's identity
-    verification (saved to disk by proctor_service.verify_id_card since
-    migration 0014 added Student.id_card_image_path as somewhere to put it).
-    Same authorization gate as GET /face/photo/{id} -- this is the same
-    class of sensitive, identity-confirming material.
+    """Serve the ID card photo captured during this student's identity verification (saved to
+    disk by proctor_service.verify_id_card since migration 0014 added
+    Student.id_card_image_path as somewhere to put it).
     """
     if not _can_view_student_identity(db, user, student_id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to this photo.")
@@ -189,17 +168,8 @@ def log_event(payload: ProctorEventCreate, background_tasks: BackgroundTasks,
 def log_events_batch(payload: ProctorEventBatchCreate, background_tasks: BackgroundTasks,
                       db: Session = Depends(get_db), user: User = Depends(exam_student)):
     """Batched counterpart to POST /events -- see frontend/src/lib/eventLogger.js,
-    which queues violations from lockdown.js and proctoring.js and flushes
-    them together instead of one request per violation.
-
-    Ownership is re-checked per item, not once for the whole payload: unlike
-    the single-event endpoint (one attempt_id up front), a batch is client-
-    assembled, so a tampered or buggy client could otherwise smuggle events
-    for an attempt_id it doesn't own past a single up-front check. An
-    unowned/missing attempt_id is silently skipped rather than failing the
-    whole batch -- this is best-effort telemetry, not a transactional write,
-    and a mixed batch (some valid, one stale from a just-finished attempt)
-    should still land the valid events.
+    which queues violations from lockdown.js and proctoring.js and flushes them
+    together instead of one request per violation.
     """
     student = user_repository.get_student_by_user_id(db, user.id)
     created = 0
@@ -224,12 +194,7 @@ class LockdownStrikeRequest(BaseModel):
 @router.post("/lockdown/strike")
 def record_lockdown_strike(payload: LockdownStrikeRequest, db: Session = Depends(get_db),
                            user: User = Depends(exam_student)):
-    """Report a lockdown breach and get back the authoritative strike state.
-
-    Deliberately separate from /events: the response drives whether the exam
-    keeps running, so it must be a synchronous, server-computed decision rather
-    than something the client tallies for itself.
-    """
+    """Report a lockdown breach and get back the authoritative strike state."""
     student = user_repository.get_student_by_user_id(db, user.id)
     return lockdown_service.record_strike(db, student.id, payload.attempt_id, payload.event_type, payload.description)
 
@@ -256,15 +221,7 @@ def get_events_for_attempt(attempt_id: int, db: Session = Depends(get_db), user:
 @router.get("/events/exam/{exam_id}", response_model=Page[dict])
 def get_events_for_exam(exam_id: int, params: PageParams = Depends(), severity: str = "",
                         db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """One page of this exam's violations, with enough context to review them.
-
-    Two problems, both fixed here. It returned bare event rows -- an attempt id,
-    a type, a severity and a timestamp -- so reviewing "attempt 47 flagged for
-    multiple_faces" meant leaving the page to find out whose attempt 47 was, and
-    the description and screenshot the proctoring system had already captured
-    were never surfaced. And it returned ALL of them, which for a full hall is
-    thousands of rows sent to render twenty-five.
-    """
+    """One page of this exam's violations, with enough context to review them."""
     exam = exam_repository.get_exam(db, exam_id)
     if not exam or (user.role.name != "admin" and (not user.examiner_profile or user.examiner_profile.id != exam.examiner_id)):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Exam not found.")
@@ -290,13 +247,8 @@ def get_events_for_exam(exam_id: int, params: PageParams = Depends(), severity: 
 
 @router.get("/events/{event_id}/screenshot")
 def get_violation_screenshot(event_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """Serves one violation's captured screenshot -- the candidate exam
-    report's violation-timeline "Evidence" action. Staff-only (admin, or the
-    exam's owning examiner): this is the same class of sensitive webcam-
-    captured material as the identity photos, gated the same way rather than
-    reusing _can_view_attempt's broader (student-inclusive) access, since the
-    violation timeline itself is only ever shown to staff in the first place
-    (see attempt_service.build_staff_report / GET /attempts/{id}/staff-report).
+    """Serves one violation's captured screenshot -- the candidate exam report's
+    violation-timeline "Evidence" action.
     """
     event = proctor_repository.get_event(db, event_id)
     if not event:
@@ -320,17 +272,9 @@ def get_violation_screenshot(event_id: int, db: Session = Depends(get_db), user:
 @router.patch("/events/{event_id}/decision")
 def update_violation_decision(event_id: int, payload: ViolationDecisionUpdate,
                               db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """Sets a reviewer's verdict (pending / confirmed / misleading -- stored
-    as AdminDecision.DISMISSED) on one logged violation, in the candidate
-    exam report's violation timeline.
-
-    Opened up to the exam's own owning examiner, not just an admin: every
-    violation for their candidates now lives only inside that per-attempt
-    review (see GET /attempts/{id}/staff-report), and there is no separate
-    admin-only worklist for them to hand adjudication off to. Same ownership
-    check as every other staff-scoped endpoint here (get_events_for_exam,
-    get_violation_screenshot) -- an examiner may only decide on violations
-    from an exam they themselves own; an admin may decide on any.
+    """Sets a reviewer's verdict (pending / confirmed / misleading --
+    stored as AdminDecision.DISMISSED) on one logged violation, in
+    the candidate exam report's violation timeline.
     """
     event = proctor_repository.get_event(db, event_id)
     if not event:

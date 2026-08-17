@@ -1,12 +1,4 @@
-"""
-Authorization for GET /proctoring/face/photo/{student_id}.
-
-This endpoint replaced the old `app.mount("/uploads", StaticFiles(...))` in
-main.py, which served every file under UPLOAD_DIR -- including every
-student's face photo -- to anyone on the network with no authentication at
-all. These tests exist specifically to pin down who can and cannot fetch a
-given student's photo now that it requires auth.
-"""
+"""Authorization for GET /proctoring/face/photo/{student_id}."""
 import io
 
 from PIL import Image
@@ -72,11 +64,9 @@ def test_admin_can_view_any_students_photo(client, seed_roles, admin_token, db_s
 
 
 def test_examiner_can_view_a_photo_for_a_student_in_their_own_organization(client, seed_roles, admin_token, db_session, tmp_path):
-    """Note the enrolment step. This test used to create an examiner and a
-    completely unrelated student and assert 200 -- which passed only because
-    *every* examiner counted as "staff" for *every* student's biometrics.
-    That is now scoped to the examiner's own organization, so the student has
-    to actually be theirs."""
+    """Note the enrolment step. This test used to create an
+    examiner and a completely unrelated student and assert 200.
+    """
     examiner_token = _create_examiner_and_login(client, admin_token, email="examiner-photo@example.com")
     _register_student_and_login(client, email="owner5@example.com")
     owner_id = _student_id(db_session, "owner5@example.com")
@@ -101,12 +91,9 @@ def test_examiner_cannot_view_a_photo_for_a_student_outside_their_organization(c
 
 
 def test_examiner_can_view_a_photo_via_a_direct_exam_invite_outside_their_organization(client, seed_roles, admin_token, db_session, tmp_path):
-    """The whole point of a per-exam invite (organization_service.
-    can_student_access_exam) is that it grants access independently of
-    organization membership. Identity access has to follow the same rule --
-    an examiner proctoring an outside invitee's attempt must be able to
-    confirm who they are, same as for any other participant on that exam.
-    See organization_service.examiner_can_view_student."""
+    """The whole point of a per-exam invite (organization_service. can_student_access_exam) is
+    that it grants access independently of organization membership.
+    """
     examiner_token = _create_examiner_and_login(client, admin_token, email="examiner-invite@example.com")
     exam_id = _build_published_exam(client, auth_headers(examiner_token))
 

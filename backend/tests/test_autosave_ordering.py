@@ -1,16 +1,4 @@
-"""
-Autosave ordering and idempotency.
-
-The bug these cover: the answer path was unconditional last-write-wins, so a
-request stalled on a slow connection could land AFTER a newer one for the same
-question and silently revert an answer the candidate had already changed. The
-exam client autosaves on every change and retries with backoff, which makes that
-sequence routine on a bad connection rather than exotic.
-
-Every test here drives the real HTTP endpoints, because the ordering guarantee
-has to hold at the API boundary -- that is where the out-of-order requests
-actually arrive.
-"""
+"""Autosave ordering and idempotency."""
 import pytest
 
 from tests.conftest import auth_headers
@@ -96,13 +84,9 @@ def test_an_immediate_replay_is_recognised_as_a_duplicate(mcq_attempt):
 
 
 def test_an_old_replay_after_a_newer_write_is_still_refused(mcq_attempt):
-    """Only the most recent accepted key is stored, so a replay of an OLDER
-    request is no longer recognisable as a duplicate -- it is caught by the
-    version check instead and reported as stale.
-
-    Both guards refusing to apply it is the guarantee that matters; which of the
-    two catches it is an implementation detail. This test pins the guarantee and
-    deliberately does not pin the label.
+    """Only the most recent accepted key is stored, so a replay of an
+    OLDER request is no longer recognisable as a duplicate -- it is
+    caught by the version check instead and reported as stale.
     """
     ctx = mcq_attempt
     a, b, _ = ctx["options"]

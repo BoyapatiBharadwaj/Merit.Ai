@@ -1,51 +1,12 @@
 /**
  * The autosave queue for a live exam attempt.
- *
- * This replaces three near-identical copies of "PUT, retry on network error,
- * delete the pending entry" that lived inside Exam.jsx. Three copies is how the
- * bugs below came to be fixed in one of them and not the others; more
- * importantly, none of them could answer the only question that matters during
- * an exam -- "is this candidate's work actually on the server?" -- because none
- * of them kept a promise you could await, and all of them treated HTTP 200 as
- * success without reading what the response said.
- *
- * What it fixes, concretely:
- *
- *   1. `applied: false` was ignored. The backend already told the truth: a save
- *      refused as stale came back 200 with applied=false, and the client
- *      deleted its pending entry and moved on. The candidate was shown a saved
- *      answer the server had rejected. Now a refusal is reconciled -- adopt the
- *      server's version and re-send the value the candidate can actually see.
- *
- *   2. The version counter restarted at 1 after a page reload while the server
- *      still held 5, so EVERY save after a reload was refused as stale and
- *      silently discarded, by both halves working exactly as designed. `seed`
- *      takes the server's version from the question load and continues from it.
- *
- *   3. A fresh idempotency key was minted per retry, so a retry of a request
- *      that had actually landed looked like a brand new write instead of the
- *      duplicate it was. One key per user change, reused for every retry of
- *      that change.
- *
- *   4. Only network errors were retried. A 429 or a 502 -- exactly what a hall
- *      of candidates saving at once produces -- was dropped on the floor with
- *      no retry and no indication to the candidate.
- *
- *   5. Nothing could be awaited, so submission raced the save it depended on.
- *      `waitForIdle` and `snapshot` exist for that; see Exam.jsx's doSubmit.
- *
- * Deliberately framework-free: no React imports, so it can be tested directly.
  */
 
-// Backoff for retryable failures. Caps rather than grows unboundedly: a
-// candidate on a flaky connection needs the next attempt soon, and the queue
-// keeps retrying for as long as the exam lasts.
+// Backoff for retryable failures.
 const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000, 15000, 30000];
 
-// A stale response means our version is behind the server's. Re-sending at the
-// server's version + 1 fixes it in one round trip; needing several means
-// something else is writing this answer (a second tab), and looping forever
-// would turn that into a request storm.
+// A stale response means our version is behind the server's. Re-sending at the server's version
+// + 1 fixes it in one round trip.
 const MAX_RECONCILES = 3;
 
 export const SaveState = {
@@ -61,11 +22,6 @@ function newKey() {
 
 /**
  * True for failures where trying again can plausibly succeed.
- *
- * 429 and 5xx are in here on purpose: they are the transient, load-shaped
- * failures a whole exam hall submitting at once actually produces, and they
- * used to be treated as permanent. A 4xx that is not 408/429 is a rejection of
- * the request itself -- retrying it just fails again, so it surfaces instead.
  */
 function isRetryable(error) {
   const status = error?.status;
@@ -117,12 +73,6 @@ export function createAutosaveQueue({ transports, onChange, onExpired } = {}) {
 
   /**
    * Adopt the server's stored version for a question.
-   *
-   * Called when a question is loaded, including on the first load after a
-   * reload -- which is the case that was losing answers. Never lowers a version
-   * we have already used locally: a seed arriving after the candidate has
-   * started editing (a slow question load resolving late) must not rewind the
-   * counter and make their next save look stale.
    */
   function seed(kind, questionId, serverVersion) {
     const entry = entryFor(kind, questionId);
@@ -136,9 +86,7 @@ export function createAutosaveQueue({ transports, onChange, onExpired } = {}) {
     const entry = entryFor(kind, questionId);
     entry.value = value;
     entry.version += 1;
-    // One key per CHANGE. Every retry of this change reuses it, so a retry of a
-    // request that landed but whose response was lost is recognised server-side
-    // as a duplicate rather than applied a second time.
+    // One key per CHANGE.
     entry.idempotencyKey = newKey();
     entry.dirty = true;
     entry.attempt = 0;
@@ -157,10 +105,8 @@ export function createAutosaveQueue({ transports, onChange, onExpired } = {}) {
     if (stopped || entry.inFlight || !entry.dirty) return;
     entry.inFlight = true;
 
-    // Captured before the await: by the time the response arrives the candidate
-    // may have changed this answer again, and the entry will hold the newer
-    // value. Comparing against these tells us whether the response we got back
-    // still describes what is on screen.
+    // Captured before the await: by the time the response arrives the candidate may have
+    // changed this answer again, and the entry will hold the newer value.
     const sentVersion = entry.version;
     const sentKey = entry.idempotencyKey;
 
@@ -186,9 +132,8 @@ export function createAutosaveQueue({ transports, onChange, onExpired } = {}) {
           markSaved(entry);
           return;
         }
-        // Stale: the server holds a version we don't know about. Adopt it and
-        // re-send what the candidate can actually see, which is authoritative
-        // over whatever is stored.
+        // Stale: the server holds a version we don't know about. Adopt it and re-send what the
+        // candidate can actually see, which is authoritative over whatever is stored.
         const serverVersion = Number(response.answer_version) || 0;
         if (entry.reconciles >= MAX_RECONCILES) {
           fail(entry, new Error("Could not reconcile this answer with the server."));
@@ -243,9 +188,8 @@ export function createAutosaveQueue({ transports, onChange, onExpired } = {}) {
   }
 
   function fail(entry, error) {
-    // Stays `dirty` on purpose. A failed save is still an answer the candidate
-    // believes they gave, so it must remain in snapshot() and go out with the
-    // submission -- which is the last chance for it to be recorded.
+    // Stays `dirty` on purpose. A failed save is still an answer the candidate believes they
+    // gave, so it must remain in snapshot() and go out with the submission.
     entry.state = SaveState.FAILED;
     entry.error = error;
     notify();
@@ -272,13 +216,6 @@ export function createAutosaveQueue({ transports, onChange, onExpired } = {}) {
 
   /**
    * Resolves once nothing is in flight or waiting to retry.
-   *
-   * Submission awaits this. It resolves rather than rejects when saves are
-   * still failing after the timeout -- the submission must go ahead regardless,
-   * carrying snapshot() -- so the caller checks summary().failed to decide what
-   * to tell the candidate, and the answers travel with the submission either
-   * way. Blocking submission on a save that will never succeed would strand a
-   * candidate at the deadline with no way to hand in their paper.
    */
   function waitForIdle({ timeoutMs = 8000 } = {}) {
     const deadline = Date.now() + timeoutMs;

@@ -1,22 +1,4 @@
-"""
-The authentication defects, each pinned by the property it violated.
-
-Grouped by what an attacker or an unlucky candidate could do before:
-
-  * Create an account without ever proving they own the email address, because
-    both registration endpoints were public and only one checked a code.
-  * Keep using a stolen token after the owner reset the password -- the action
-    everyone is told to take when they suspect a compromise, which did nothing.
-  * Learn which email addresses have accounts by timing the login endpoint.
-  * Lock an entire exam hall out of logging in with ten wrong passwords, because
-    behind the proxy every candidate counted as one IP.
-  * Burn their own valid signup code on a typo in the student ID field.
-  * Register with a name of nothing but spaces, or a password of `aaaaaaaa`
-    while the screen promised uppercase, numbers and symbols were required.
-
-Several of these need settings that differ from the suite's defaults, so they
-set them explicitly rather than relying on the ambient configuration.
-"""
+"""The authentication defects, each pinned by the property it violated."""
 import time
 
 import pytest
@@ -147,21 +129,8 @@ def _issue_signup_code(client, db_session, monkeypatch, email):
 
 
 def test_a_failed_registration_now_does_burn_the_code(client, seed_roles, db_session, monkeypatch):
-    """Rewritten rather than deleted -- the behaviour this pins flipped on
-    purpose, and a silently-dropped test would leave nothing watching it.
-
-    Signup/password-reset OTP state moved to Redis (see
-    app/services/otp_redis_store.py), and that rewrite's brief is explicit:
-    OTP data is deleted immediately on a successful verification, with no
-    "hold the consumption open until an outer transaction commits" option --
-    Redis has no transaction to defer into the way the Postgres-backed
-    version (`verify_code(..., commit=False)`) did. The consequence is this
-    test's old name: a registration that verifies its code correctly but then
-    fails for an unrelated reason (a duplicate student ID) now DOES lose the
-    code, and the candidate must request a fresh one to retry. That is a
-    real, documented regression from the previous behaviour, accepted
-    because the new storage backend's one-time-use guarantee is stricter, not
-    because the trade-off is free.
+    """Rewritten rather than deleted -- the behaviour this pins flipped on purpose, and a
+    silently-dropped test would leave nothing watching it.
     """
     from app.services import email_service
     monkeypatch.setattr(email_service, "is_enabled", lambda: True)
@@ -236,9 +205,8 @@ def test_a_token_stops_working_after_a_self_service_change(client, seed_roles, a
     token = _create_examiner_and_login(client, admin_token)
     assert client.get("/api/v1/users/me", headers=auth_headers(token)).status_code == 200
 
-    # "Sup3rSecret!123" is the password _create_examiner_and_login sets while
-    # completing the account's activation link -- there is no admin-chosen
-    # password anymore to assert against (see examiner_provisioning_service).
+    # "Sup3rSecret!123" is the password _create_examiner_and_login
+    # sets while completing the account's activation link.
     changed = client.post("/api/v1/users/me/password", json={
         "current_password": "Sup3rSecret!123", "new_password": "An0therGoodOne!",
     }, headers=auth_headers(token))
@@ -305,14 +273,8 @@ def test_an_unrelated_users_token_is_unaffected(client, seed_roles, admin_token)
 # --- the login timing oracle --------------------------------------------------
 
 def test_an_unknown_address_still_pays_the_bcrypt_cost(client, seed_roles, monkeypatch):
-    """`if not user or not verify_password(...)` short-circuits, so an unknown
-    address answered in about a millisecond and a real one spent ~100ms hashing
-    first. That difference is remotely measurable and turns the login form into
-    a "does this person have an account here?" oracle -- which, on an exam
-    platform, leaks the roster.
-
-    Counting the calls rather than timing them: wall-clock assertions in CI are
-    flaky, and the property that matters is that the hash runs on both paths.
+    """`if not user or not verify_password(...)` short-circuits, so an unknown address answered
+    in about a millisecond and a real one spent ~100ms hashing first.
     """
     from app.services import auth_service
 
@@ -544,12 +506,8 @@ def test_a_password_merely_containing_a_common_word_is_fine(client, seed_roles, 
 
 
 def test_examiner_creation_no_longer_accepts_a_password_at_all(client, seed_roles, admin_token):
-    """POST /auth/examiners used to take an admin-chosen password, and the
-    password policy applied to it right there. That field is gone -- the
-    account is created with an unusable random secret and its owner chooses a
-    password later, through activation (see the next test) -- so an old
-    caller still sending one gets it silently ignored rather than rejected;
-    there is nothing left here for a password policy to apply to.
+    """POST /auth/examiners used to take an admin-chosen password,
+    and the password policy applied to it right there.
     """
     response = client.post("/api/v1/auth/examiners", json={
         "first_name": "New", "last_name": "Examiner", "email": "weak@example.com",

@@ -3,28 +3,6 @@
 Revision ID: 0008
 Revises: 0007
 Create Date: 2026-08-02
-
-Introduces the tenancy boundary for exams. Before this, every published exam
-was listed to every student, and `start_attempt` accepted any exam id from any
-student -- so exams were effectively global.
-
-The data backfill matters as much as the schema here. Existing installs have
-examiners, exams, students and in-progress attempts that must all keep working:
-
-  1. One organization per distinct existing `examiners.organization_name`,
-     matched case-insensitively so "Acme" and "acme " do not become two
-     tenants. Examiners with no name land in "Default Organization".
-  2. Every examiner is linked to their organization, and every exam inherits
-     its owning examiner's.
-  3. Every existing student is enrolled in the organization they have already
-     been sitting exams for (derived from their attempt history), and gets a
-     roster row so the membership is visible and editable afterwards. A
-     student with no attempts falls back to the single organization if there
-     is exactly one, and is left unassigned if the install is already
-     multi-tenant -- guessing would be worse than an admin assigning them.
-
-Point 3 is what stops this migration locking existing students out of exams
-they are part-way through.
 """
 import sqlalchemy as sa
 from alembic import op
@@ -130,11 +108,6 @@ def _backfill() -> None:
     names = list(canonical.values())
 
     # The default organization is created ONLY if something actually needs it.
-    # Creating it unconditionally made the single-tenant check further down
-    # ("is there exactly one organization?") permanently false -- a normal
-    # install with one examiner org would have two rows, so every student with
-    # no attempt history was left unassigned and silently locked out of every
-    # exam. Creating it lazily keeps that check meaningful.
     needs_default = connection.execute(sa.text(
         "SELECT COUNT(*) FROM examiners "
         "WHERE organization_name IS NULL OR TRIM(organization_name) = ''"
@@ -168,10 +141,8 @@ def _backfill() -> None:
         ")"
     ))
 
-    # --- 3. place existing students -----------------------------------------
+    # --- 3. place existing students ---
     # Whichever organization a student has actually been sitting exams for.
-    # Picking the most recent attempt keeps someone who moved institutions
-    # with their current one.
     connection.execute(sa.text(
         "UPDATE students SET organization_id = ("
         "  SELECT e.organization_id"
@@ -182,11 +153,8 @@ def _backfill() -> None:
         ") WHERE organization_id IS NULL"
     ))
 
-    # Students with no attempt history: safe to place only when the install is
-    # single-tenant, i.e. there is exactly one organization and therefore no
-    # ambiguity about where they belong. On a multi-tenant install, guessing
-    # could hand someone another institution's exams, so they are left
-    # unassigned for an examiner to enrol.
+    # Students with no attempt history: safe to place only when the install is single-tenant,
+    # i.e. there is exactly one organization and therefore no ambiguity about where they belong.
     only_org = connection.execute(sa.text(
         "SELECT id FROM organizations LIMIT 2"
     )).fetchall()

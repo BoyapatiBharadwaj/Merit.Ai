@@ -18,15 +18,9 @@ def _post(path: str, payload: dict) -> dict | None:
         with request.urlopen(req, timeout=settings.AI_SERVICE_TIMEOUT_SECONDS) as response:
             return json.loads(response.read().decode("utf-8"))
     except error.HTTPError as err:
-        # The worker IS reachable here -- it responded, just with an error
-        # status (most commonly its ArcFace/YOLO model failing to load, e.g.
-        # a blocked model-weight download on first use). Previously this was
-        # caught by the same branch as "worker unreachable" below, so a
-        # genuine worker-side failure silently fell back to the local model
-        # path and surfaced as "no AI worker configured" -- actively
-        # misleading when the worker is in fact configured and running.
-        # Logging the worker's own error body here is the fast way to tell
-        # the two failure modes apart.
+        # The worker IS reachable here -- it responded, just with an
+        # error status (most commonly its ArcFace/YOLO model failing to
+        # load, e.g. a blocked model-weight download on first use).
         try:
             detail = err.read().decode("utf-8")
         except Exception:

@@ -3,18 +3,6 @@
 Revision ID: 0015
 Revises: 0014
 Create Date: 2026-08-03
-
-Backs the admin drill-down dashboard's candidate exam report:
-
-  * proctor_events.admin_decision -- an admin's review verdict
-    (pending/confirmed/dismissed) on one logged violation, defaulting to
-    "pending" so every already-logged violation starts out needing a look
-    rather than silently reading as handled.
-  * student_exam_attempts.examiner_comment / admin_comment -- free-text notes
-    on one candidate's attempt, one column per role so neither can silently
-    overwrite the other's note.
-
-All three are purely additive and never touch scoring or attempt status.
 """
 import sqlalchemy as sa
 from alembic import op

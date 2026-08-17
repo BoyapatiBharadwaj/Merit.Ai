@@ -1,9 +1,5 @@
-"""
-PDF generation for exam result reports, using reportlab (pure Python, no
-compiled toolchain needed unlike the face/OCR deps).
-
-Returns raw PDF bytes so the caller can stream them straight back in an HTTP
-response without touching the filesystem.
+"""PDF generation for exam result reports, using reportlab (pure Python, no compiled toolchain
+needed unlike the face/OCR deps).
 """
 from datetime import datetime
 from io import BytesIO

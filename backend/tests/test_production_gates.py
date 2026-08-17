@@ -1,10 +1,4 @@
-"""
-Regression cover for the four pre-production hardening fixes.
-
-Each of these guards something that was previously wrong in a way no existing
-test noticed, so the tests are written against the property that matters rather
-than the implementation that currently provides it.
-"""
+"""Regression cover for the four pre-production hardening fixes."""
 import importlib
 import re
 from pathlib import Path
@@ -22,14 +16,7 @@ VERSIONS_DIR = Path(__file__).resolve().parent.parent / "alembic" / "versions"
 # --- 1. every Python enum member has a PostgreSQL migration -------------------
 
 def _migrated_enum_values() -> dict[str, set[str]]:
-    """Replay every migration's DDL to find which enum values Postgres knows.
-
-    Parses the migration source rather than importing it: the modules call
-    `op.*` at import time only inside functions, and reading the text is both
-    simpler and closer to what actually runs. Two shapes are recognised -- a
-    literal `ADD VALUE 'x'` and the f-string-in-a-loop form used by 0003/0005/
-    0007 -- plus `sa.Enum(...)` type creation.
-    """
+    """Replay every migration's DDL to find which enum values Postgres knows."""
     found: dict[str, set[str]] = {}
 
     def add(type_name: str, *values: str) -> None:
@@ -75,14 +62,7 @@ def _migrated_enum_values() -> dict[str, set[str]]:
     (EventType, "eventtype"),
 ])
 def test_every_enum_member_exists_in_the_migration_history(enum_class, type_name):
-    """The bug this suite could never see before.
-
-    conftest builds the schema with create_all() against SQLite, which reflects
-    the current Python enums and ignores migrations entirely -- so a member with
-    no ALTER TYPE passes every test and fails on the first INSERT against a
-    migrated Postgres database. `multi_select` and `screen_share_stopped` were
-    both in exactly that state until migration 0017.
-    """
+    """The bug this suite could never see before."""
     migrated = _migrated_enum_values().get(type_name, set())
     declared = {member.value for member in enum_class}
     missing = declared - migrated
@@ -135,13 +115,7 @@ def test_production_without_a_configured_password_seeds_no_admin(monkeypatch):
 
 
 def test_the_publicly_known_password_is_allowed_but_warned_about(monkeypatch, caplog):
-    """Explicitly configuring it is honoured; accidentally inheriting it is not.
-
-    This previously asserted a hard refusal. Refusing an instruction the operator
-    typed on purpose is paternalistic -- the accident case (password unset in
-    production) is still covered by the test above, which is the one that
-    actually protects a deployment from shipping with a known credential.
-    """
+    """Explicitly configuring it is honoured; accidentally inheriting it is not."""
     from app.utils import seed
 
     monkeypatch.setenv("SEED_ADMIN_PASSWORD", seed.PUBLICLY_KNOWN_PASSWORD)

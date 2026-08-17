@@ -3,11 +3,6 @@
 Revision ID: 0011
 Revises: 0010
 Create Date: 2026-08-03
-
-Adds student_answers.selected_option_ids_json (a JSON list of option ids)
-for the new "multi_select" question type -- select_option_id stays
-single-valued and untouched for MCQ; this is purely additive and nullable,
-so every existing row and existing question is unaffected.
 """
 import sqlalchemy as sa
 from alembic import op

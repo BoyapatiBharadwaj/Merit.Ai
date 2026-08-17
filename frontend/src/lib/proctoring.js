@@ -1,46 +1,22 @@
 /**
- * Client-side AI proctoring controller — a React-friendly port of the
- * legacy frontend/js/proctoring.js. Exported as a factory (createProctoring())
- * rather than a singleton module, so each mounted Exam page gets its own
- * instance instead of sharing global mutable state across mounts (relevant
- * under React StrictMode's double-invoke-in-dev behavior).
- *
- * Handles: webcam capture + periodic face verification, object/pose/gaze
- * checks, external-monitor detection, fullscreen exit detection, tab-switch
- * detection, copy/paste & right-click blocking, and microphone noise
- * detection (Web Audio API). Violations are logged to the backend and
- * surfaced as short-lived toasts.
+ * Client-side AI proctoring controller — a React-friendly
+ * port of the legacy frontend/js/proctoring.js.
  */
 import { Api, ApiError } from "./api.js";
 import { createFaceTracker } from "./faceMesh.js";
 
-// Presence, face count, head pose and gaze are now tracked locally at ~12fps
-// by lib/faceMesh.js instead of being polled off the server -- see that
-// file's header for why. What remains on the server is identity matching
-// ("is this the enrolled student"), which needs the enrolled embedding and
-// is the one signal where a slow cadence is genuinely fine.
-//
-// 3000 -> 12000ms. This is not a downgrade: presence used to be answered by
-// this same poll and is now continuous, so the only thing this interval
-// governs is how often we re-confirm identity. Twelve seconds of a
-// substituted student is caught by the same check that three seconds was,
-// and the request costs ~4x less server time per attempt.
+// Presence, face count, head pose and gaze are now tracked locally at ~12fps by lib/faceMesh.js
+// instead of being polled off the server.
 const FACE_IDENTITY_INTERVAL_MS = 12000;
 
-// 10s -> 5s. A phone held up for eight seconds could previously fall entirely
-// between two polls and never be seen at all -- the detector was accurate, it
-// just was not looking often enough. Halving the interval is affordable now
-// only because captureFrame() downscales: the per-poll payload dropped roughly
-// 4x, so twice as many polls still move far less data than before.
+// 10s -> 5s. A phone held up for eight seconds could previously
+// fall entirely between two polls and never be seen at all.
 const OBJECT_CHECK_INTERVAL_MS = 5000;
 
 // Longest edge, in pixels, of every frame uploaded for server-side inference.
-// 640 is exactly what both models resize to internally, so this is the largest
-// size that carries any information at all -- see captureFrame().
 const CAPTURE_MAX_EDGE = 640;
-// 0.72 rather than 0.7: at 640px the file is small enough that the extra few
-// KB is free, and JPEG artefacts hurt a face-embedding model more than they
-// hurt a human viewer.
+// 0.72 rather than 0.7: at 640px the file is small enough that the extra few KB is free, and
+// JPEG artefacts hurt a face-embedding model more than they hurt a human viewer.
 const CAPTURE_QUALITY = 0.72;
 const MONITOR_CHECK_INTERVAL_MS = 30000;
 const NOISE_CHECK_INTERVAL_MS = 1000;
@@ -50,72 +26,35 @@ const SPEECH_RATIO_THRESHOLD = 0.45;
 // chatter" (still worth a warning, but common enough to happen innocently)
 // and a higher bar for "sustained loud talking," which is logged as its own,
 // more severe event (see EventType.NOISE_DETECTED_LOUD on the backend).
-//
-// Margins and streaks both raised substantially (14/26 over 2/3 frames ->
-// 24/38 over 6/5). The old values warned after ~2 seconds of anything in the
-// speech band at a level a fan, a keyboard, or a person clearing their throat
-// clears easily, so the mic warning fired more or less continuously in a
-// normal room -- which is the same failure mode as the anti-spoofing false
-// positives: an alarm that is always on carries no information. At a 1s poll
-// this now needs ~6 seconds of sustained voice-band audio for a moderate
-// flag, which is a conversation rather than a cough.
 const NOISE_FLOOR_MARGIN_MODERATE = 24;
 const NOISE_FLOOR_MARGIN_LOUD = 38;
 const REQUIRED_CONSECUTIVE_FRAMES_MODERATE = 6;
 const REQUIRED_CONSECUTIVE_FRAMES_LOUD = 5;
-// Once a tier has fired, stay quiet for this many checks before it can fire
-// again. Without it, a genuinely noisy room re-triggers the moment the streak
-// counter rolls past the threshold again -- roughly every 6 seconds, forever.
+// Once a tier has fired, stay quiet for this many checks before it can fire again.
 const NOISE_COOLDOWN_FRAMES = 30;
-// Streaks are counted in *detector frames*, and the local tracker runs at
-// ~12fps rather than the old one-poll-every-5-seconds, so these had to be
-// rescaled or a 4-frame streak would mean a third of a second. Expressed as
-// durations: looking away and gaze both need ~2s sustained, which is a
-// deliberate look rather than a glance, and matches what the old 4-poll
-// streak was reaching for (20s was far too slow to be useful).
+// Streaks are counted in *detector frames*, and the local tracker runs
+// at ~12fps rather than the old one-poll-every-5-seconds, so these had
+// to be rescaled or a 4-frame streak would mean a third of a second.
 const LOCAL_FPS = 12;
 const REQUIRED_STREAK = {
   lookingAway: 2 * LOCAL_FPS,
   gazeDeviation: 2 * LOCAL_FPS,
-  // Object-detector person count, still polled from the server every 10s
-  // (YOLO is too heavy to run client-side alongside the landmarker). One
-  // detection is enough: a second person in frame is serious, and the
-  // landmarker's own multipleFaces check corroborates it within a second.
+  // Object-detector person count, still polled from the server every 10s (YOLO is too heavy to
+  // run client-side alongside the landmarker).
   multiplePersons: 1,
-  // ~2.5s of continuous absence. A blink, a head-scratch, or a single
-  // dropped frame must not read as "the student left" -- at 12fps a
-  // 2-frame streak (the old value, tuned for a 3s poll) would be a sixth of
-  // a second and would fire constantly.
+  // ~2.5s of continuous absence. A blink, a head-scratch, or a
+  // single dropped frame must not read as "the student left".
   noFace: 30,
-  // Two faces for ~1s. The local tracker sees every frame now, so a single
-  // frame of a misdetected background face -- a poster, a photo on a shelf,
-  // a reflection -- would otherwise log a violation instantly. One second
-  // of a genuinely present second person is still near-immediate.
+  // Two faces for ~1s. The local tracker sees every frame
+  // now, so a single frame of a misdetected background face.
   multipleFaces: 12,
-  // How many consecutive "detector unavailable" replies before object
-  // monitoring gives up for the rest of the exam. A genuinely missing model
-  // reports unavailable every single time, so 3 costs ~15 seconds of pointless
-  // polling in that case -- cheap insurance against a transient failure
-  // silently disabling phone/book detection for the whole attempt.
+  // How many consecutive "detector unavailable" replies before
+  // object monitoring gives up for the rest of the exam.
   objectsUnavailable: 3,
 };
 
 /**
  * A repeating async check that never overlaps itself.
- *
- * `setInterval` with an async callback fires on the wall clock regardless of
- * whether the previous run has finished. Each of these checks uploads a JPEG
- * and waits for a model, so on a slow connection -- or when the server is busy,
- * which is exactly when a hall is mid-exam -- the next tick started before the
- * last had returned. The effects compounded: overlapping uploads competing for
- * the same connection, CPU spent capturing frames nobody was waiting for, the
- * same momentary condition reported twice as two violations, and memory growing
- * with every in-flight request.
- *
- * Self-scheduling fixes it by construction: the next run is booked only once
- * the previous one has finished, so the interval becomes a minimum gap rather
- * than a fixed cadence. Returns a canceller with the same shape the callers
- * already expected from clearInterval.
  */
 function repeatWithoutOverlap(fn, intervalMs) {
   let timer = null;
@@ -162,13 +101,10 @@ export function createProctoring() {
   let stopped = false;
   let alertAudioCtx = null;
   let faceTracker = null;
-  // True once the local landmarker has delivered a frame. Governs which of
-  // the two writers owns the "face" status signal, so local presence and the
-  // slower server identity check don't overwrite each other.
+  // True once the local landmarker has delivered a frame.
   let localTrackingActive = false;
-  // Latched by the server identity check so local tracking doesn't reset a
-  // real mismatch back to "verified" 12 times a second while the wrong
-  // person is still sitting in frame.
+  // Latched by the server identity check so local tracking doesn't reset a real mismatch back
+  // to "verified" 12 times a second while the wrong person is still sitting in frame.
   let identityMismatch = false;
 
   const streaks = { lookingAway: 0, gazeDeviation: 0, multiplePersons: 0, noFace: 0, multipleFaces: 0 };
@@ -195,21 +131,6 @@ export function createProctoring() {
 
   /**
    * A JPEG of the current video frame, downscaled to CAPTURE_MAX_EDGE.
-   *
-   * This used to send the webcam's native resolution. On a 1080p camera that is
-   * a ~250KB base64 payload uploaded every few seconds, per candidate -- and it
-   * bought nothing, because every model on the other end immediately scales the
-   * image down anyway: YOLO letterboxes to 640 (object_service.INPUT_SIZE) and
-   * InsightFace prepares at det_size 640x640. Every pixel above 640 was encoded,
-   * base64'd, uploaded, decoded and then thrown away.
-   *
-   * Capping the long edge at 640 therefore costs no accuracy at all and cuts the
-   * payload roughly 4x on a 720p camera and 9x on 1080p. That is the single
-   * biggest win available on this path: the bottleneck was never inference, it
-   * was moving the frame.
-   *
-   * The canvas is created once and reused. A fresh one per capture allocated a
-   * multi-megabyte backing buffer every few seconds for the whole exam.
    */
   function captureFrame(maxEdge = CAPTURE_MAX_EDGE) {
     const sourceW = videoEl.videoWidth || 320;
@@ -236,13 +157,7 @@ export function createProctoring() {
   }
 
   /**
-   * Presence, face count, head pose and gaze -- all local, ~12fps, no
-   * network. See lib/faceMesh.js for the calibration design.
-   *
-   * Falls back to the previous server-polled pose endpoint if the landmarker
-   * can't load at all (CDN blocked, no WebGL, unsupported browser), so an
-   * unusual environment degrades to the old behaviour rather than losing
-   * these signals outright.
+   * Presence, face count, head pose and gaze -- all local, ~12fps, no network.
    */
   function startLocalTracking() {
     if (stopped) return;
@@ -283,9 +198,8 @@ export function createProctoring() {
         } else {
           streaks.noFace = 0;
           streaks.multipleFaces = 0;
-          // Presence is confirmed locally; whether it's the *right* person is
-          // the server identity check's job, and it owns the "face" signal
-          // once it has an answer. Don't overwrite a mismatch warning here.
+          // Presence is confirmed locally; whether it's the *right* person is the server
+          // identity check's job, and it owns the "face" signal once it has an answer.
           if (!identityMismatch) {
             setStatus("Face verified", "ok");
             reportSignal("face", "ok");
@@ -330,9 +244,8 @@ export function createProctoring() {
   }
 
   /**
-   * Identity only: "is the face in frame the enrolled student". Presence and
-   * face count are handled locally now, so this ignores those fields and
-   * reacts solely to `match`.
+   * Identity only: "is the face in frame the enrolled student". Presence and face count are
+   * handled locally now, so this ignores those fields and reacts solely to `match`.
    */
   function startIdentityMonitoring() {
     if (stopped) return;
@@ -342,12 +255,8 @@ export function createProctoring() {
         const frame = captureFrame();
         const result = await Api.exam.post("/proctoring/face/verify", { image_base64: frame });
 
-        // available=false means the signal was not collected -- the operator
-        // switched face matching off (FACE_MATCHING_ENABLED), or no model could
-        // load. That is NOT a failed check, and must never flag the candidate:
-        // treating "we didn't look" as "we looked and it was wrong" is how a
-        // proctoring platform manufactures false accusations. Stop polling and
-        // leave the signal neutral.
+        // available=false means the signal was not collected -- the operator switched face
+        // matching off (FACE_MATCHING_ENABLED), or no model could load.
         if (result.available === false) {
           setStatus("Face matching unavailable", "idle");
           reportSignal("face", "idle");
@@ -356,10 +265,9 @@ export function createProctoring() {
           return;
         }
 
-        // spoof_suspected is only ever set by a *trained* anti-spoofing
-        // model now; the classical heuristic no longer accuses on its own
-        // (see backend/app/ai/face_service.py). So this branch means a real
-        // model made a real call, and is worth surfacing.
+        // spoof_suspected is only ever set by a *trained* anti-spoofing model now; the
+        // classical heuristic no longer accuses on its own (see
+        // backend/app/ai/face_service.py).
         if (result.spoof_suspected) {
           setStatus("Possible spoof detected", "warn");
           reportSignal("face", "warn");
@@ -383,10 +291,8 @@ export function createProctoring() {
             reportSignal("face", "ok");
           }
         }
-        // result.match == null -> inconclusive (no usable stored profile, or
-        // no encoding for this frame). Deliberately no state change: `null`
-        // is not a match and not a mismatch, and asserting either would be
-        // claiming evidence we don't have.
+        // result.match == null -> inconclusive (no usable
+        // stored profile, or no encoding for this frame).
       } catch {
         // Fail quietly (profile not registered yet, transient network hiccup).
       }
@@ -402,15 +308,7 @@ export function createProctoring() {
         const frame = captureFrame();
         const result = await Api.exam.post("/proctoring/objects/detect", { image_base64: frame });
         if (!result.available) {
-          // Two very different things arrive as available=false: "no detector
-          // is installed" (permanent -- stop polling, which is the point of
-          // the flag) and "that one inference failed" (transient). This used
-          // to give up permanently on the first of either, which was harmless
-          // while object detection only ever ran in the optional worker and
-          // was usually off anyway. Now that it runs in-process and is on by
-          // default, one blip would silently disable phone/book detection for
-          // the rest of the exam, so give it a few tries before concluding
-          // the detector genuinely is not there.
+          // Two very different things arrive as available=false.
           unavailableStreak += 1;
           if (unavailableStreak >= REQUIRED_STREAK.objectsUnavailable) {
             objectCheckInterval.cancel();
@@ -450,14 +348,7 @@ export function createProctoring() {
   }
 
   /**
-   * FALLBACK ONLY. The server-polled pose/gaze path, kept for environments
-   * where the local landmarker can't run (CDN blocked by a school firewall,
-   * no WebGL, an old browser). startLocalTracking() calls this from its
-   * onUnavailable handler; nothing else should.
-   *
-   * Note the streak constants are shared with the local path but were
-   * rescaled for 12fps, so on this 5s-poll path they'd mean 2 minutes. The
-   * local-vs-poll divisor below converts them back to poll counts.
+   * FALLBACK ONLY.
    */
   const POSE_CHECK_INTERVAL_MS = 5000;
   const FALLBACK_STREAK_DIVISOR = LOCAL_FPS * (POSE_CHECK_INTERVAL_MS / 1000);
@@ -562,21 +453,16 @@ export function createProctoring() {
       const speechStartBin = Math.max(1, Math.floor(SPEECH_BAND_HZ[0] / binHz));
       const speechEndBin = Math.min(data.length - 1, Math.ceil(SPEECH_BAND_HZ[1] / binHz));
 
-      // Two independent streaks, not one: crossing the loud bar always also
-      // crosses the moderate bar (it's a strictly higher margin over the same
-      // noise floor), so each frame counts toward at most one of the two --
-      // see the isLoud/isModerate branching below -- rather than both tiers
-      // firing off the same instant of noise.
+      // Two independent streaks, not one: crossing the loud bar always also crosses the
+      // moderate bar (it's a strictly higher margin over the same noise floor), so each frame
+      // counts toward at most one of the two -- see the isLoud/isModerate branching below --
+      // rather than both tiers firing off the same instant of noise.
       let consecutiveModerateFrames = 0;
       let consecutiveLoudFrames = 0;
       let noiseFloor = 10;
       let cooldown = 0;
-      // Calibrate against the room's real baseline for the first few seconds
-      // before any violation can fire. Starting the floor at a hardcoded 10
-      // and immediately arming meant a room whose idle level is above 10 (an
-      // air conditioner, a desk fan, a laptop under load) began the exam
-      // already over the moderate margin and flagged the student for the
-      // room's own noise floor before they had said anything.
+      // Calibrate against the room's real baseline for the
+      // first few seconds before any violation can fire.
       let calibrationFramesLeft = 5;
       reportSignal("audio", "ok");
 
@@ -612,12 +498,7 @@ export function createProctoring() {
           noiseFloor = noiseFloor * 0.9 + speechAvg * 0.1;
         }
 
-        // Drift the floor upward during *sustained* noise too, not only while
-        // quiet. The old code only ever adapted on quiet frames, so a room
-        // with steady background sound never recalibrated: every check stayed
-        // over the margin and the warning repeated for the whole exam. A much
-        // slower coefficient than the quiet path (0.02 vs 0.1) so a real
-        // conversation still crosses the bar well before the floor catches up.
+        // Drift the floor upward during *sustained* noise too, not only while quiet.
         if (isLoud || isModerate) {
           noiseFloor = noiseFloor * 0.98 + speechAvg * 0.02;
         }
@@ -643,24 +524,11 @@ export function createProctoring() {
     }
   }
 
-  // Fullscreen enforcement, tab-switch detection, and input blocking all
-  // moved to lib/lockdown.js. They used to live here, but they are a
-  // different concern with different failure semantics: proctoring degrades
-  // gracefully when the AI worker is unreachable, whereas lockdown must never
-  // degrade. Keeping two sets of listeners on the same DOM events also meant
-  // a single Alt-Tab got logged twice. lockdown.js is now the sole owner.
+  // Fullscreen enforcement, tab-switch detection, and
+  // input blocking all moved to lib/lockdown.js.
 
-  // Two distinct tones so a violation is noticeable (and distinguishable by
-  // severity) even if the student isn't looking at the screen -- Web Audio
-  // API only, no audio asset to ship. The AudioContext is created lazily on
-  // first use (creating one before any user gesture can throw/stay suspended
-  // in some browsers) and reused across calls rather than rebuilt every time.
-  //
-  // "default": the original short two-tone down-glide, for ordinary warnings.
-  // "severe": three sharper alternating pulses, reserved for violations
-  // serious enough to be logged at high severity (currently just sustained
-  // loud/voice audio) -- meant to read as more urgent without needing a
-  // shipped audio asset.
+  // Two distinct tones so a violation is noticeable (and distinguishable by severity) even if
+  // the student isn't looking at the screen.
   function playAlertTone(severity = "default") {
     try {
       if (!alertAudioCtx) alertAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -709,13 +577,7 @@ export function createProctoring() {
 
   function logViolation(eventType, description) {
     if (!attemptId) return;
-    // Attach the current webcam frame when one is available -- every
-    // violation type raised in this file (face, spoof, multi-person, phone/
-    // book, pose/gaze, external monitor) is something the camera just
-    // observed, so the frame is the actual evidence an examiner needs to
-    // review the flag, not just its text description. Best-effort: a capture
-    // failure (e.g. the stream just dropped) must never block logging the
-    // violation itself.
+    // Attach the current webcam frame when one is available.
     let screenshot = null;
     if (videoEl && videoEl.videoWidth) {
       try {
@@ -724,14 +586,8 @@ export function createProctoring() {
         screenshot = null;
       }
     }
-    // Routed through the shared batching logger (lib/eventLogger.js) so a
-    // burst of checks flagging in the same few seconds -- a spoof result
-    // plus a phone detection plus loud audio, say -- becomes one request
-    // instead of three. Falls back to a direct, best-effort POST if no
-    // logger was wired up (see Exam.jsx's logEventCallback). The violation
-    // counter increments on enqueue rather than on confirmed delivery -- it
-    // is a live UI counter, not an audit record, so "flagged" is the right
-    // moment to bump it rather than "the batch flush later succeeded."
+    // Routed through the shared batching logger (lib/eventLogger.js) so a burst of checks
+    // flagging in the same few seconds.
     if (logEvent) {
       logEvent(eventType, description, screenshot);
     } else {
@@ -767,20 +623,12 @@ export function createProctoring() {
     reportSignal("audio", "pending");
     reportSignal("monitor", "pending");
 
-    // The `stopped` guards after each await are load-bearing. init() is async
-    // and stop() is synchronous, so a stop() landing during either await --
-    // React 18 StrictMode's double-mount, the effect re-running on an
-    // attemptId change, or a submit within the first second -- found every
-    // interval handle still null, cleared nothing, and then init() resumed
-    // and installed four intervals with no owner. Those kept polling
-    // /proctoring/face/verify every 3s and logging violations against a
-    // finished attempt for the life of the page.
+    // The `stopped` guards after each await are load-bearing. init() is async and stop() is
+    // synchronous, so a stop() landing during either await.
     await startCamera();
     if (stopped) return;
-    // Local landmarker first (presence/count/pose/gaze at ~12fps), then the
-    // slower server identity poll. startServerPoseMonitoring is NOT called
-    // here -- it is the landmarker's fallback and starts itself only if the
-    // landmarker fails to load.
+    // Local landmarker first (presence/count/pose/gaze at ~12fps), then the slower server
+    // identity poll. startServerPoseMonitoring is NOT called here.
     startLocalTracking();
     startIdentityMonitoring();
     startObjectMonitoring();
@@ -801,19 +649,17 @@ export function createProctoring() {
     if (micStream) micStream.getTracks().forEach((t) => t.stop());
     if (audioContext) audioContext.close().catch(() => {});
     if (alertAudioCtx) alertAudioCtx.close().catch(() => {});
-    // Fullscreen/tab/input listeners belong to lockdown.js now, including
-    // exiting fullscreen on teardown -- doing it here too would race with
-    // lockdown's own cleanup and could fire a spurious breach.
+    // Fullscreen/tab/input listeners belong to lockdown.js
+    // now, including exiting fullscreen on teardown.
   }
 
   return {
     init,
     stop,
     getViolationCount: () => violationCount,
-    // Exposed so the exam page can re-establish the neutral pose baseline
-    // after a legitimate reposition (returning from a fullscreen prompt, a
-    // permission dialog) instead of measuring the student forever against a
-    // posture they've since left. See faceMesh.js's recalibrate().
+    // Exposed so the exam page can re-establish the neutral pose baseline after a legitimate
+    // reposition (returning from a fullscreen prompt, a permission dialog) instead of measuring
+    // the student forever against a posture they've since left.
     recalibratePose: () => faceTracker && faceTracker.recalibrate(),
   };
 }

@@ -1,39 +1,15 @@
 # syntax=docker/dockerfile:1
-# ==============================================================================
-# Merit.Ai Frontend -- React/Vite SPA, built once and served as static files.
-#
-# There is no server-side rendering and no runtime Node process in the final
-# image: `npm run build` produces a static dist/ that any web server can
-# serve, so the runtime stage is plain nginx, not node. API calls the app
-# makes at runtime go to whatever origin it's loaded from (see
-# frontend/src/lib/api.js's relative BASE_URL) -- the reverse-proxy container
-# in front of this one is what makes `/api/*` reach the Core API (see
-# deploy/nginx/nginx.conf), so nothing here needs to know the Core API's
-# address at build time.
-# ==============================================================================
+# Merit.Ai frontend -- multi-stage: Vite build, then static assets on unprivileged nginx.
 
 FROM node:20-alpine AS build
 WORKDIR /build
 
-# Separate the dependency install from the source copy so `docker build`
-# only re-runs the install when package*.json actually change, not on every
-# source edit.
-#
-# `npm ci` (strict, lockfile-only) is what this used to run, but
-# package-lock.json had drifted out of sync with package.json -- the ESLint
-# tooling (eslint, @eslint/js, eslint-plugin-react, eslint-plugin-react-hooks,
-# globals) was added to package.json without ever being installed locally to
-# update the lock, so it was simply absent from package-lock.json. `npm ci`
-# refuses to reconcile that gap itself, and once it tried to resolve those
-# packages fresh it also hit a real peer-dependency conflict (eslint-plugin-
-# react-hooks@4.x only supports ESLint up to v8; this project is on ESLint 9)
-# -- since fixed by bumping it to ^5.0.0. `npm install --legacy-peer-deps`
-# repairs a lockfile like this instead of just refusing to build from it.
+# Separate the dependency install from the source copy so `docker build` only re-runs the
+# install when package*.json actually change, not on every source edit.
 COPY package.json package-lock.json ./
-# Cache mount: npm's download cache persists across builds on this Docker
-# host (keyed by the mount target, never part of the committed layer), so
-# re-running this after a package.json edit only fetches what actually
-# changed instead of the whole tree again.
+# Cache mount: npm's download cache persists across builds on this Docker host (keyed by the
+# mount target, never part of the committed layer), so re-running this after a package.json edit
+# only fetches what actually changed instead of the whole tree again.
 RUN --mount=type=cache,target=/root/.npm \
     npm install --legacy-peer-deps
 
@@ -41,7 +17,7 @@ COPY . .
 RUN npm run build
 
 # ------------------------------------------------------------------------------
-# Runtime -- unprivileged nginx serving the built dist/ with a SPA fallback.
+# --- Runtime: unprivileged nginx serving the built dist/ with a SPA fallback ---
 # ------------------------------------------------------------------------------
 FROM nginx:1.27-alpine AS runtime
 

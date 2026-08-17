@@ -1,14 +1,5 @@
 /**
  * ESLint, added because its absence had already cost something concrete.
- *
- * Splitting the 2,080-line ExaminerDashboard into modules left four identifiers
- * used but never imported -- `EmptyState` in two files, `useCallback` and two
- * style constants in a third. `vite build` reported success every time, because
- * a bundler resolves module imports and does not care about undefined
- * identifiers inside JSX. They would have been runtime crashes: a blank exam
- * builder the moment a section list was empty.
- *
- * `no-undef` catches exactly that class of mistake in the time it takes to run.
  */
 import js from "@eslint/js";
 import globals from "globals";

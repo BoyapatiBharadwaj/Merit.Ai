@@ -1,7 +1,4 @@
-﻿"""
-Tracks a student's attempt at an exam, their per-question answers,
-and the final computed result.
-"""
+"""Tracks a student's attempt at an exam, their per-question answers, and the final computed result."""
 from sqlalchemy import (
     Column, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text,
 )
@@ -13,18 +10,8 @@ from app.models.enums import AttemptStatus, db_enum
 
 class StudentExamAttempt(Base):
     __tablename__ = "student_exam_attempts"
-    # Partial unique index, not a plain UniqueConstraint.
-    #
-    # The rule is "one LIVE attempt per student per exam", not "one attempt
-    # ever". A plain constraint forced reset_student_attempt to DELETE the old
-    # attempt to make room for the retake -- taking its answers, result,
-    # examiner comments, violations and every proctoring event with it by
-    # cascade, and leaving a reason string as the only record that a candidate
-    # had once sat this exam. That is precisely the evidence a disputed exam
-    # needs, destroyed by the action most likely to precede a dispute.
-    #
-    # Scoping uniqueness to archived_at IS NULL lets the old attempt stay in
-    # place, intact and readable, while the retake takes its place.
+    # Partial unique index, not a plain UniqueConstraint. The rule is "one LIVE attempt per
+    # student per exam", not "one attempt ever".
     __table_args__ = (
         Index("uq_active_student_exam", "student_id", "exam_id", unique=True,
               postgresql_where=text("archived_at IS NULL"),
@@ -38,27 +25,16 @@ class StudentExamAttempt(Base):
     started_at = Column(DateTime(timezone=True), server_default=func.now())
     submitted_at = Column(DateTime(timezone=True), nullable=True)
     question_order = Column(String, nullable=True)  # comma-separated shuffled question IDs for this attempt
-    # JSON {question_id: [option_id, ...]} -- each MCQ/multi_select
-    # question's own option display order for this attempt, fixed once at
-    # start_attempt (see attempt_service._build_option_order) when the exam
-    # has randomize_options enabled. Null questions/exams fall back to the
-    # options' natural (authored) order. Display-only: grading always keys
-    # on option id, never position, so this has no effect on scoring.
+    # JSON {question_id: [option_id, ...]} -- each MCQ/multi_select question's own option
+    # display order for this attempt, fixed once at start_attempt (see
+    # attempt_service._build_option_order) when the exam has randomize_options enabled.
     option_order_json = Column(Text, nullable=True)
     # Free-text notes for the admin drill-down's candidate exam report.
-    # Deliberately two separate columns rather than one shared thread: each
-    # role annotates independently (the examiner explaining what they saw
-    # while proctoring live, the admin recording a review decision), and
-    # neither should silently overwrite the other's note. See
-    # attempt_service.set_attempt_comment for who may write which one.
     examiner_comment = Column(Text, nullable=True)
     admin_comment = Column(Text, nullable=True)
 
-    # Set when an examiner grants a retake. The attempt stops counting as this
-    # student's attempt at this exam -- it disappears from their results, from
-    # the examiner's attempt list, and from analytics -- but the row and
-    # everything hanging off it survive, so a dispute months later can still be
-    # answered. NULL for every ordinary attempt.
+    # Set when an examiner grants a retake. The attempt
+    # stops counting as this student's attempt at this exam.
     archived_at = Column(DateTime(timezone=True), nullable=True, index=True)
     # Which reset archived it, so the audit trail and the evidence point at each
     # other rather than the trail merely mentioning an id that no longer exists.
@@ -80,42 +56,19 @@ class StudentAnswer(Base):
     attempt_id = Column(Integer, ForeignKey("student_exam_attempts.id", ondelete="CASCADE"), nullable=False, index=True)
     question_id = Column(Integer, ForeignKey("questions.id", ondelete="CASCADE"), nullable=False, index=True)
     selected_option_id = Column(Integer, ForeignKey("options.id", ondelete="SET NULL"), nullable=True)
-    # JSON list of option ids, for MULTI_SELECT questions only -- a single FK
-    # column can't represent "zero or more" options, and this app's existing
-    # convention for that shape is a JSON-in-Text column (see
-    # Question.test_cases_json) rather than a join table. selected_option_id
-    # above stays single-valued and is simply unused for this question type.
+    # JSON list of option ids, for MULTI_SELECT questions only.
     selected_option_ids_json = Column(Text, nullable=True)
     code_submission = Column(Text, nullable=True)  # student's source code, for coding questions
     code_test_results_json = Column(Text, nullable=True)  # JSON list of per-test-case results, computed at submit time
     answered_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-    # --- concurrency control for autosave ------------------------------------
-    #
-    # The answer path used to be unconditional last-write-wins: whichever
-    # request reached the database last won, regardless of which represented the
-    # candidate's newer intent. That is not a theoretical race. The client
-    # autosaves on every change and retries with backoff, so a request stalled
-    # on a slow connection can land AFTER a newer one for the same question --
-    # silently reverting an answer the candidate had already changed, with no
-    # error shown to them and nothing in the logs to distinguish it from them
-    # simply picking that option.
-    #
-    # `answer_version` is a per-(attempt, question) counter owned by the CLIENT,
-    # incremented on every local change. The server refuses any write whose
-    # version is older than what it already holds. Client-owned rather than
-    # server-issued because the ordering that matters is the order the candidate
-    # made the changes in, which only the client observes -- a server-issued
-    # version would just re-derive arrival order, which is the thing that is
-    # already wrong.
+    # --- concurrency control for autosave ---
+    # The answer path used to be unconditional last-write-wins.
     answer_version = Column(Integer, default=0, nullable=False)
-    # Last accepted request's unique id. Makes a retry of a request that DID
-    # land (but whose response was lost) a no-op rather than a second write --
-    # the exact case the client's network-error backoff produces.
+    # Last accepted request's unique id. Makes a retry of a request that DID land (but whose
+    # response was lost) a no-op rather than a second write.
     idempotency_key = Column(String(64), nullable=True)
-    # Server receipt time, distinct from answered_at's onupdate: this is only
-    # touched when a write is actually APPLIED, so a stale or duplicate request
-    # leaves it alone and it stays a true record of when the answer last changed.
+    # Server receipt time, distinct from answered_at's onupdate.
     saved_at = Column(DateTime(timezone=True), nullable=True)
 
     attempt = relationship("StudentExamAttempt", back_populates="answers")
@@ -140,17 +93,7 @@ class ExamResult(Base):
 
 
 class AttemptReset(Base):
-    """Audit trail for attempt_service.reset_student_attempt.
-
-    Resetting an attempt (e.g. after a browser crash or a proctoring
-    interruption) deletes the StudentExamAttempt row outright -- the
-    (student_id, exam_id) unique constraint on that table means a fresh
-    retake can only exist once the old row is gone, not alongside it -- so
-    the details worth keeping (who reset it, when, why, and what the attempt
-    looked like beforehand) are snapshotted here first as plain historical
-    columns rather than live foreign keys into a row that is about to stop
-    existing.
-    """
+    """Audit trail for attempt_service.reset_student_attempt."""
     __tablename__ = "attempt_resets"
 
     id = Column(Integer, primary_key=True, index=True)

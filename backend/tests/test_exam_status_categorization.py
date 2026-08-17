@@ -1,10 +1,5 @@
-"""Automatic exam status categorization (Upcoming / Ongoing / Completed /
-Missed) on GET /exams/available -- see exam_service.compute_candidate_status.
-
-These deliberately manipulate started_at/submitted_at directly in the
-database for the "attempt already expired" cases: simulating an actual wait
-would make the suite slow, and the point under test is what the *read path*
-does with a stale row, not the passage of real time.
+"""Automatic exam status categorization (Upcoming / Ongoing / Completed / Missed) on GET
+/exams/available -- see exam_service.compute_candidate_status.
 """
 from datetime import datetime, timedelta, timezone
 
@@ -101,10 +96,9 @@ def test_exam_whose_window_closed_with_no_attempt_is_missed(client, seed_roles, 
 
 
 def test_in_progress_attempt_is_ongoing_even_past_the_exam_window(client, seed_roles, admin_token):
-    """A student who starts near the end of an open window and is still
-    working when it closes should see "Ongoing", not "Missed" -- their own
-    attempt deadline (started_at + duration), not the exam's publish window,
-    governs submission. See compute_candidate_status's ordering."""
+    """A student who starts near the end of an open window and is still working when it closes
+    should see "Ongoing", not "Missed".
+    """
     examiner_headers = auth_headers(_create_examiner_and_login(client, admin_token))
     exam_id = _build_exam(client, examiner_headers, duration_minutes=60)
     student_headers = auth_headers(_register_student_and_login(client))
@@ -156,10 +150,8 @@ def test_expired_in_progress_attempt_is_auto_finalized_on_read(client, seed_role
     finally:
         session.close()
 
-    # Resuming it (before anything else has touched it) is what actually
-    # discovers the expiry and finalizes it -- this is the "student closes
-    # the laptop and comes back later" path, and it must redirect to the
-    # report instead of dead-ending on a generic error.
+    # Resuming it (before anything else has touched it) is
+    # what actually discovers the expiry and finalizes it.
     resume = client.post(f"/api/v1/attempts/start/{exam_id}", headers=student_headers)
     assert resume.status_code == 400
     detail = resume.json()["detail"]

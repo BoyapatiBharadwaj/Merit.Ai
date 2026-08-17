@@ -1,14 +1,4 @@
-"""
-Organization scoping of exams -- the tenancy boundary.
-
-The bug: every published exam was listed to every student, and `start_attempt`
-checked only status and timing, so any student could sit any exam in the system
-by naming its id. Filtering the list alone would have been cosmetic.
-
-These tests are therefore written in pairs wherever it matters: one asserting
-the exam is hidden from the list, and one asserting it *also* cannot be started
-by id. The second of each pair is the one that would have caught the real bug.
-"""
+"""Organization scoping of exams -- the tenancy boundary."""
 from tests.conftest import auth_headers
 from tests.test_exam_workflow import (
     _build_published_exam, _create_examiner_and_login, _register_student_and_login, enrol_email,
@@ -59,9 +49,8 @@ def _two_organizations(client, admin_token):
     }
 
 
-# ---------------------------------------------------------------------------
-# The core boundary
-# ---------------------------------------------------------------------------
+# --- - ---
+# The core boundary -------------------------------------------------------------------------
 
 def test_organizations_are_actually_distinct(client, seed_roles, admin_token):
     """Guards the premise of every other test here."""
@@ -111,9 +100,8 @@ def test_a_missing_exam_and_a_forbidden_one_are_indistinguishable(client, seed_r
     assert forbidden.json()["detail"] == missing.json()["detail"]
 
 
-# ---------------------------------------------------------------------------
-# Unenrolled students
-# ---------------------------------------------------------------------------
+# --- - ---
+# Unenrolled students -------------------------------------------------------------------------
 
 def test_a_student_nobody_enrolled_sees_and_can_start_nothing(client, seed_roles, admin_token):
     """A self-registered stranger. Fail-closed: no organization means access
@@ -184,12 +172,7 @@ def test_removing_a_student_keeps_the_exam_they_already_sat(client, seed_roles, 
 # ---------------------------------------------------------------------------
 
 def test_revoked_access_stops_an_already_started_attempt(client, seed_roles, admin_token):
-    """Gating only start_attempt left ~12 endpoints open.
-
-    A student removed mid-exam could no longer start anything, but the attempt
-    they already held kept serving question text and accepting answers and
-    submissions. Owning an attempt is not the same as being entitled to it.
-    """
+    """Gating only start_attempt left ~12 endpoints open."""
     world = _two_organizations(client, admin_token)
     student = auth_headers(_register_student_and_login(
         client, email="midexam@example.com", organization_id=world["acme_org"]))
@@ -219,18 +202,7 @@ def test_revoked_access_stops_an_already_started_attempt(client, seed_roles, adm
 
 
 def test_a_live_attempt_survives_the_exam_becoming_restricted(client, seed_roles, admin_token):
-    """This test previously asserted the opposite, and the opposite was a bug.
-
-    An exam with no participant rows is open to the whole organization; the
-    FIRST row flips it into allow-list mode. So adding one person to a live exam
-    did not merely add them -- it excluded everyone else, instantly. A candidate
-    already writing lost questions, autosave and submission mid-sitting, with no
-    warning and nothing to tell them what had happened.
-
-    The examiner's action is "also let Priya sit this". Its effect must not be
-    "end everyone else's exam". Anyone already writing is now carried across
-    when the list is first populated.
-    """
+    """This test previously asserted the opposite, and the opposite was a bug."""
     world = _two_organizations(client, admin_token)
     writing = auth_headers(_register_student_and_login(
         client, email="writing@example.com", organization_id=world["acme_org"]))
@@ -347,15 +319,13 @@ def test_an_examiner_cannot_fetch_another_organizations_face_photo(client, seed_
     assert owner.status_code == 404
 
 
-# ---------------------------------------------------------------------------
-# Roster mechanics
-# ---------------------------------------------------------------------------
+# --- - ---
+# Roster mechanics -------------------------------------------------------------------------
 
 def test_organization_names_are_matched_literally_not_as_wildcards(client, seed_roles, admin_token):
-    """get_or_create used ilike(), so % and _ in the caller's string were
-    wildcards -- and the string arrives from the *unauthenticated* access
-    request form. Submitting "%" matched the first existing organization and
-    bonded the new examiner into someone else's tenant."""
+    """get_or_create used ilike(), so % and _ in the caller's string were wildcards -- and the
+    string arrives from the *unauthenticated* access request form.
+    """
     _create_examiner_and_login(client, admin_token, email="acme@example.com")
 
     for probe in ("%", "Acme_Institute", "Acme%"):
@@ -404,11 +374,7 @@ def test_roster_enrolment_is_idempotent_and_case_insensitive(client, seed_roles,
 
 
 def test_malformed_roster_entries_are_reported_not_silently_dropped(client, seed_roles, admin_token):
-    """A pasted spreadsheet column often carries a header row or a stray name.
-
-    Skipping those quietly is how a typo'd address becomes a student who never
-    gets access and an examiner with no idea why -- discovered on exam day.
-    """
+    """A pasted spreadsheet column often carries a header row or a stray name."""
     world = _two_organizations(client, admin_token)
 
     result = client.post("/api/v1/organizations/me/roster",
@@ -509,12 +475,7 @@ def test_an_excluded_student_cannot_start_a_restricted_exam_by_id(client, seed_r
 
 
 def test_an_exam_can_be_restricted_to_someone_who_has_not_registered_yet(client, seed_roles, admin_token):
-    """The whole point of keying the allow-list on email.
-
-    An examiner sets an exam up before the cohort signs up. With the old
-    student_id-keyed list this was impossible -- you had to enrol everyone
-    org-wide, wait for them all to register, and only then restrict.
-    """
+    """The whole point of keying the allow-list on email."""
     world = _two_organizations(client, admin_token)
 
     added = client.post(f"/api/v1/organizations/exams/{world['acme_exam']}/participants",
@@ -599,12 +560,9 @@ def test_clearing_the_participant_list_reopens_the_exam(client, seed_roles, admi
 
 
 def test_adding_someone_outside_the_organization_is_flagged_but_still_grants_this_exam(client, seed_roles, admin_token):
-    """A per-exam invite is deliberately NOT scoped to the invitee's own
-    organization -- see can_student_access_exam's docstring. The address is
-    accepted and reported back as `not_in_organization` (shown in the UI as a
-    "Not enrolled" badge) purely as information for the examiner, not as a
-    rejection: being on the list is enough to get into THIS exam. What it does
-    not do is enrol them generally -- they gain nothing else."""
+    """A per-exam invite is deliberately NOT scoped to the invitee's own organization -- see
+    can_student_access_exam's docstring.
+    """
     world = _two_organizations(client, admin_token)
     outsider = auth_headers(_register_student_and_login(
         client, email="globex-student@example.com", organization_id=world["globex_org"]))
@@ -658,9 +616,8 @@ def test_an_examiner_cannot_change_another_examiners_exam_access(client, seed_ro
     assert blocked.status_code == 404
 
 
-# ---------------------------------------------------------------------------
-# Exam creation
-# ---------------------------------------------------------------------------
+# --- - ---
+# Exam creation -------------------------------------------------------------------------
 
 def test_exams_inherit_their_examiners_organization(client, seed_roles, admin_token):
     world = _two_organizations(client, admin_token)
@@ -702,12 +659,8 @@ def test_the_api_will_not_create_an_examiner_without_an_organization(client, see
 
 
 def test_an_examiner_without_an_organization_cannot_create_an_invisible_exam(client, seed_roles, admin_token):
-    """Second line of defence, for data the API cannot produce but a database
-    can still hold -- a row predating migration 0008, or one an admin edited.
-
-    A NULL organization_id makes an exam inaccessible to every student, and
-    the examiner would get no hint as to why. Failing loudly at creation is
-    the only outcome that is debuggable.
+    """Second line of defence, for data the API cannot produce but a database can still hold --
+    a row predating migration 0008, or one an admin edited.
     """
     headers = auth_headers(_create_examiner_and_login(
         client, admin_token, email="orphan@example.com"))

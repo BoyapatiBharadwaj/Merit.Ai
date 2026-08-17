@@ -1,23 +1,5 @@
-"""
-Merit.Ai Worker -- an RQ Worker consuming the emails/reports/default queues
-over Redis (see app/core/queues.py).
-
-Run as `python -m app.worker.main`. Shares the core-api image because the jobs
-it runs (app/worker/jobs.py) import the same services, models and settings a
-separate image would otherwise need a second copy of.
-
-This process needs Redis to do anything at all -- unlike the rest of the
-application, which treats Redis as an optional-at-the-margin dependency for
-rate limiting, OTP state and locks (each failing its own request with a
-controlled 503 when Redis is down, see app/core/redis_client.py), a queue
-worker with no queue to read from has nothing to do. It exits with a clear
-error rather than idling silently if it cannot reach Redis at startup, so a
-misconfigured REDIS_URL shows up as a failed container instead of a queue that
-quietly never drains.
-
-Scale this freely: RQ workers claim jobs from Redis atomically, so more
-replicas simply means more throughput, the same property the Postgres-outbox
-poller this replaces had over its own table.
+"""Merit.Ai Worker -- an RQ Worker consuming the
+emails/reports/default queues over Redis (see app/core/queues.py).
 """
 import logging
 import sys
@@ -46,10 +28,9 @@ def main() -> int:
     logger.info("Listening on queues: %s", ", ".join(ALL_QUEUES))
 
     worker = Worker(queue_objs, connection=connection)
-    # with_scheduler=True: RQ's built-in scheduler thread, which is what
-    # actually re-enqueues a job after a Retry's backoff interval elapses --
-    # without it, a failed job's `retry` would be recorded but nothing would
-    # ever wake it back up.
+    # with_scheduler=True: RQ's built-in scheduler thread, which is what actually re-enqueues a
+    # job after a Retry's backoff interval elapses -- without it, a failed job's `retry` would
+    # be recorded but nothing would ever wake it back up.
     worker.work(with_scheduler=True)
     return 0
 

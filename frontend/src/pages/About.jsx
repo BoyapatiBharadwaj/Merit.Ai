@@ -6,13 +6,6 @@ import { btnPrimary, btnGhost, sectionEyebrow } from "../lib/ui.js";
 
 /**
  * "Who We Are" — company/mission page.
- *
- * Kept to claims that are true of the product regardless of who's reading
- * this: what we believe assessment integrity requires, and how that shows
- * up in the platform (server-side enforcement, honest security copy, no
- * biometric data reused for anything but verification). No invented
- * founding story, headcount, or funding details — none of that exists to
- * describe truthfully, so it isn't manufactured for flavor.
  */
 
 const VALUES = [

@@ -1,20 +1,4 @@
-"""
-Recording and reading the per-account activity trail.
-
-Every caller goes through `record()`. Two properties it guarantees, because
-callers are spread across auth, users, proctoring and admin code and cannot each
-be relied on to remember:
-
-**It never raises.** An audit write failing must not fail the action it was
-describing. A student who logged in successfully has logged in, whether or not
-the row recording it landed -- turning that into a 500 would mean the logging
-system could take down the thing it exists to observe. Failures are logged and
-swallowed, the same graceful-degradation contract email_service.send follows.
-
-**It never records a secret.** Passwords, OTP codes, tokens and embeddings are
-not accepted by any helper here, and `context` is documented as safe-to-display.
-An audit log is read by more people than the data it describes.
-"""
+"""Recording and reading the per-account activity trail."""
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -27,9 +11,7 @@ from app.models.user import User
 
 logger = logging.getLogger("app")
 
-# Shown in the admin timeline. Written as complete sentences about the SUBJECT,
-# so a row reads correctly whether the actor was the person themselves or an
-# administrator acting on them.
+# Shown in the admin timeline.
 ACTIVITY_LABELS: dict[str, str] = {
     ActivityType.SIGNED_UP.value: "Created their account",
     ActivityType.LOGGED_IN.value: "Signed in",
@@ -62,15 +44,7 @@ NOTABLE_ACTIVITY = {
 
 
 def client_ip(request: Request | None) -> str | None:
-    """Source address of the request, if there is one.
-
-    `request.client.host` is the TCP peer, not an X-Forwarded-For header, for
-    the same reason rate_limit uses it: a header is trivially forged, and an
-    audit trail recording an attacker's chosen value is worse than one recording
-    nothing. Behind the bundled proxy this is the proxy's address; a deployment
-    that needs the true client here should configure uvicorn's --proxy-headers
-    with an explicit trusted-hosts list rather than trusting the header blindly.
-    """
+    """Source address of the request, if there is one."""
     if request is None or request.client is None:
         return None
     return request.client.host
@@ -80,15 +54,7 @@ def record(db: Session, *, activity_type: ActivityType, subject: User | None = N
            actor: User | None = None, description: str | None = None,
            request: Request | None = None, context: dict | None = None,
            subject_email: str | None = None, commit: bool = True) -> ActivityLog | None:
-    """Append one entry. Returns the row, or None if it could not be written.
-
-    `subject_email` exists for events where there is no User to point at -- a
-    failed login against an address that does not exist, most importantly. Those
-    are exactly the entries worth keeping, so the trail must not depend on the
-    account being real.
-
-    `context` must contain nothing secret; it is rendered to the admin as-is.
-    """
+    """Append one entry. Returns the row, or None if it could not be written."""
     try:
         entry = ActivityLog(
             subject_user_id=subject.id if subject else None,
@@ -121,13 +87,7 @@ def record(db: Session, *, activity_type: ActivityType, subject: User | None = N
 
 
 def list_for_user(db: Session, user_id: int, *, limit: int = 100) -> list[dict]:
-    """One account's timeline, newest first, shaped for the admin UI.
-
-    Serialised here rather than through a Pydantic response model because the
-    label and notable flag are presentation concerns derived from the type --
-    computing them in the frontend would mean duplicating ACTIVITY_LABELS in
-    JavaScript and letting the two drift.
-    """
+    """One account's timeline, newest first, shaped for the admin UI."""
     rows = (
         db.query(ActivityLog)
         .filter(ActivityLog.subject_user_id == user_id)
@@ -180,13 +140,7 @@ def _serialize(row: ActivityLog) -> dict:
 
 
 def purge_older_than(db: Session, *, days: int) -> int:
-    """Housekeeping for a table that only grows.
-
-    Not called from the request path and not scheduled by default: how long an
-    institution must keep an audit trail is a compliance question with a
-    different answer per deployment, and a library-chosen default that quietly
-    destroyed evidence would be the wrong kind of helpful.
-    """
+    """Housekeeping for a table that only grows."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     deleted = db.query(ActivityLog).filter(ActivityLog.created_at < cutoff).delete(synchronize_session=False)
     db.commit()

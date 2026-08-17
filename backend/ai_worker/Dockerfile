@@ -1,46 +1,28 @@
 # syntax=docker/dockerfile:1
-# ==============================================================================
-# Merit.Ai AI Worker -- face/object inference microservice
-#
-# Build context is `backend/` (see root docker-compose.yml:
-#   build: { context: ./backend, dockerfile: ai_worker/Dockerfile }
-# ), NOT this ai_worker/ directory, so the COPY steps below can pull the exact
-# same app/ai/*.py the Core API uses -- one source of truth for the ArcFace/
-# YOLO/anti-spoof logic, never a hand-copied fork of it living in two places
-# that can silently drift apart.
-# ==============================================================================
+# Merit.Ai AI worker -- stateless face/object inference service. No database, no secrets.
 
 FROM python:3.11-slim AS base
 
-# libgl1 / libglib2.0-0: mediapipe's native graph and onnxruntime's image
-# pre/post-processing pull in a handful of shared libraries a "slim" Debian
-# base doesn't ship. Without these, `import mediapipe` fails at container
-# start with an opaque "libGL.so.1: cannot open shared object file" that gives
-# no hint it's a missing system package rather than a broken Python install.
+# libgl1 / libglib2.0-0: mediapipe's native graph and onnxruntime's image pre/post-processing
+# pull in a handful of shared libraries a "slim" Debian base doesn't ship.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libgl1 \
         libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # ------------------------------------------------------------------------------
-# Builder -- resolve and install Python dependencies into an isolated prefix,
-# kept out of the final image except for the installed packages themselves.
+# --- Builder: install Python dependencies into an isolated prefix ---
 # ------------------------------------------------------------------------------
 FROM base AS builder
 WORKDIR /build
 COPY ai_worker/requirements.txt .
-# See backend/Dockerfile for why the timeout/retry values are raised: the same
-# large wheels, the same failure mode on a slow link. Same reasoning for the
-# cache mount in place of `--no-cache-dir` too: it makes every build after the
-# first reuse whatever wheels haven't changed instead of re-downloading the
-# ~1-2GB ML stack (torch-cpu, onnxruntime, mediapipe, ultralytics) from
-# scratch every time, at zero cost to the final image size.
+# See backend/Dockerfile for why the timeout/retry values are raised: the same large wheels, the
+# same failure mode on a slow link.
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --user --timeout 120 --retries 10 -r requirements.txt
 
-# ------------------------------------------------------------------------------
-# Runtime
-# ------------------------------------------------------------------------------
+# --- - ---
+# --- Runtime ---
 FROM base AS runtime
 
 # Non-root: this process only ever handles images handed to it by the Core
@@ -54,28 +36,18 @@ ENV PATH=/home/aiworker/.local/bin:$PATH \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-# Only the source this service actually imports: app/ai (the shared
-# ArcFace/YOLO/anti-spoof logic), app/core (Settings), and app/__init__.py.
-# Deliberately NOT app/api, app/models, app/schemas, app/repositories,
-# app/services, app/database, or alembic/ -- none of which this process
-# touches, and all of which would otherwise pull sqlalchemy/psycopg2 into an
-# image that never opens a database connection.
+# Only the source this service actually imports: app/ai (the shared ArcFace/YOLO/anti-spoof
+# logic), app/core (Settings), and app/__init__.py.
 COPY app/__init__.py ./app/__init__.py
 COPY app/core ./app/core
 COPY app/ai ./app/ai
-# fetch_models.py is what the entrypoint below runs to pre-warm the face/yolo
-# weights on boot -- it only imports app.core.config plus lazily-imported AI
-# libraries already in this image, never app.database or app.models.
+# fetch_models.py is what the entrypoint below runs to pre-warm the face/yolo weights on boot.
 COPY app/utils/__init__.py ./app/utils/__init__.py
 COPY app/utils/fetch_models.py ./app/utils/fetch_models.py
 COPY ai_worker/__init__.py ./ai_worker/__init__.py
 COPY ai_worker/main.py ./ai_worker/main.py
 
-# Model weight cache. Mounted as a named volume in docker-compose.yml so a
-# container restart or redeploy doesn't re-pay the ~280MB ArcFace / ~19MB
-# YOLO download (see app/utils/fetch_models.py, run once at first boot by
-# the entrypoint below). Also covers models/antispoof and models/yolo, both
-# of which live under this same root.
+# Model weight cache.
 RUN mkdir -p /app/models && chown -R aiworker:aiworker /app
 
 COPY ai_worker/entrypoint.sh /entrypoint.sh
@@ -85,10 +57,7 @@ USER aiworker
 EXPOSE 8010
 VOLUME ["/app/models"]
 
-# Dependency-free, like the Core API's /api/health -- a slow first-boot model
-# download must not read to Docker as a crashed container and trigger a
-# restart loop mid-download (start-period gives it real room before the
-# first check counts against retries).
+# Dependency-free, like the Core API's /api/health.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
     CMD python -c "import urllib.request as r; r.urlopen('http://127.0.0.1:8010/health', timeout=3)" || exit 1
 

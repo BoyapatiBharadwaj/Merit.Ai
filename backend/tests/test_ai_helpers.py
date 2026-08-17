@@ -1,11 +1,5 @@
-"""
-Unit tests for the AI/OCR helper modules: shared image validation, the
-liveness/anti-spoof heuristic, severity mapping, and the worker-vs-in-process
-model selection in face_service.
-
-Both face paths run ArcFace, so these also assert the property that makes that
-worth doing: an embedding produced by one path verifies against the other.
-Everything is mocked, so no GPU, no network, and no model download is needed.
+"""Unit tests for the AI/OCR helper modules: shared image validation, the liveness/anti-spoof
+heuristic, severity mapping, and the worker-vs-in-process model selection in face_service.
 """
 import base64
 import io
@@ -111,28 +105,15 @@ def _stub_single_face_identity(monkeypatch):
 
 
 def test_an_advisory_classical_liveness_failure_never_accuses_the_student(monkeypatch):
-    """The classical heuristic reports; it does not accuse.
-
-    Regression test for a real false-positive complaint: verify_live_face
-    used to copy an advisory (non-blocking) liveness failure straight into
-    spoof_suspected, which the frontend turns into a spoof_detected violation
-    plus a toast. Face verification polls throughout the exam, and no trained
-    model ships by default, so a heuristic that the anti_spoof module's own
-    docstring admits false-positived on the first real face it ever saw got
-    to accuse a legitimate student every few seconds, all exam long.
-
-    Only a *blocking* result (a trained model) may set spoof_suspected.
-    """
+    """The classical heuristic reports; it does not accuse."""
     monkeypatch.setattr(face_service, "assess_liveness", lambda _image: {
         "live": False, "score": 0.31, "reason": "low texture detail",
         "source": "classical", "blocking": False,
     })
     _stub_single_face_identity(monkeypatch)
 
-    # Must run all the way to the *final* return, past the identity match --
-    # that is the line that used to copy the advisory verdict into
-    # spoof_suspected. The early-exit paths already reported False, so a test
-    # that stops short of here would pass with or without the fix.
+    # Must run all the way to the *final* return, past the identity match -- that is the line
+    # that used to copy the advisory verdict into spoof_suspected.
     result = face_service.verify_live_frame(_b64_png(), json.dumps([0.1] * face_service.ARCFACE_DIM))
     assert result["match"] is True, "test should reach the identity-match path"
     assert result["spoof_suspected"] is False
@@ -269,11 +250,7 @@ def _embedding_at_distance(base: np.ndarray, target_distance: float) -> np.ndarr
 
 
 def test_a_similar_but_different_face_is_rejected_at_the_configured_tolerance(monkeypatch):
-    """Pins down the actual number, not just "very different faces fail".
-    FACE_MATCH_TOLERANCE was loosened to 0.5 at one point and shown to
-    false-accept real, different people in practice -- this fails loudly if
-    it (or the comparison direction) ever regresses back to something that
-    permissive."""
+    """Pins down the actual number, not just "very different faces fail"."""
     monkeypatch.setattr(face_service.ai_worker_client, "verify_face", lambda *a, **k: None)
     monkeypatch.setattr(face_service, "assess_liveness", lambda image: {"live": True, "score": 1.0, "reason": "ok"})
     base = _unit_embedding(42)
@@ -287,9 +264,8 @@ def test_a_similar_but_different_face_is_rejected_at_the_configured_tolerance(mo
     assert result["match"] is True
     assert result["distance"] == pytest.approx(0.20, abs=1e-3)
 
-    # Just outside the tolerance -- a genuinely different (if similar-looking)
-    # face -- must NOT match. This is exactly the false-accept the tolerance
-    # was tightened to close.
+    # Just outside the tolerance -- a genuinely different
+    # (if similar-looking) face -- must NOT match.
     far = _embedding_at_distance(base, target_distance=0.45)
     _stub_local_model(monkeypatch, far)
     result = face_service.verify_live_frame(_b64_png(), stored_json)
@@ -341,18 +317,8 @@ def test_register_face_rejects_suspected_spoof_before_running_face_model(monkeyp
     assert "liveness" in message.lower()
 
 
-# --- registration in a room with other people in it -------------------------
-#
-# Regression cover for the bug that made registration impossible in a computer
-# lab: MediaPipe (which gates on face count) and InsightFace's own RetinaFace
-# (inside `_arcface_app().get()`) disagree about small background faces, and
-# `_local_face_encoding` used to refuse to produce an embedding for any count
-# other than exactly one. The student got "Could not compute a face profile.
-# Try better lighting..." for a photo with nothing wrong with it, forever.
-#
-# These stub the two detectors at the seam rather than mocking
-# `_local_face_encoding` wholesale (which is what let the bug through: every
-# existing registration test replaced the very function that was broken).
+# --- registration in a room with other people in it ---
+# Regression cover for the bug that made registration impossible in a computer lab.
 
 
 class _FakeMediaPipeDetection:
@@ -460,14 +426,7 @@ def test_local_face_encoding_reports_nothing_when_there_is_no_face(monkeypatch):
 
 
 def test_detect_objects_falls_back_to_the_local_model_without_the_ai_worker(monkeypatch):
-    """No worker no longer means no detection.
-
-    This used to assert available=False, which was correct when object
-    detection existed *only* in the ai_worker container -- but it also meant
-    the test passed for the wrong reason (it was asserting a missing feature)
-    and would have started failing the moment anyone installed the weights.
-    The contract now is: fall through to the in-process detector.
-    """
+    """No worker no longer means no detection."""
     monkeypatch.setattr(proctor_service.ai_worker_client, "detect_objects", lambda image: None)
     monkeypatch.setattr(proctor_service.object_service, "detect", lambda image: {
         "available": True, "detections": [{"label": "book", "confidence": 0.8}],
@@ -518,8 +477,6 @@ def test_detect_objects_passes_through_worker_result(monkeypatch):
 
 def test_analyze_pose_reports_no_face_without_crashing():
     # No AI worker or heavy model needed -- pose/gaze analysis is fully local.
-    # With no face in frame it should report a clean "not available" signal,
-    # not raise, matching the same degrade-gracefully contract as face_service.
     result = proctor_service.analyze_pose(_b64_png())
     assert result["available"] is True
     assert result["face_count"] == 0

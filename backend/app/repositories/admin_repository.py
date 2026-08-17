@@ -1,11 +1,5 @@
-"""
-Data access for the admin dashboard's cross-organization drill-down views
-(examiners, candidates, exams, live sessions, violations).
-
-Every query here is admin-scoped by the caller (api/v1/admin.py gates the
-whole router on require_admin) -- nothing in this module applies its own
-tenancy filtering, unlike organization_service, because an admin is the one
-role meant to see across every organization at once.
+"""Data access for the admin dashboard's cross-organization drill-down views (examiners,
+candidates, exams, live sessions, violations).
 """
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
@@ -21,13 +15,7 @@ from app.models.user import User
 
 
 def escape_like(value: str) -> str:
-    """Neutralise LIKE wildcards in an admin search box.
-
-    `%` and `_` are wildcards, so unescaped input becomes a pattern: searching
-    for "100%" matched every row, and "%_%_%_%" is a cheap way to make the
-    database scan hard. The backslash is escaped first, or escaping the other
-    two would corrupt it.
-    """
+    """Neutralise LIKE wildcards in an admin search box."""
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
@@ -40,12 +28,7 @@ def _name_or_email_filter(query, search: str):
 def list_examiners(db: Session, search: str | None = None, organization_id: int | None = None,
                     active: bool | None = None, offset: int | None = None,
                     limit: int | None = None) -> tuple[list[Examiner], int]:
-    """One page of examiners, plus the total.
-
-    Returned the whole table before, with the browser slicing it for display --
-    so an institution with a thousand staff transferred a thousand rows to show
-    ten, on every filter change.
-    """
+    """One page of examiners, plus the total."""
     query = (db.query(Examiner)
              .join(User, Examiner.user_id == User.id)
              .options(joinedload(Examiner.user)))
@@ -85,17 +68,7 @@ def list_candidates(db: Session, search: str | None = None, organization_id: int
 
 
 def candidate_counts_for_examiners(db: Session, examiners: list) -> dict[int, int]:
-    """Candidate counts for MANY examiners, in two queries.
-
-    examiners_overview called candidate_ids_for_examiner inside its loop, which
-    issued two queries per examiner -- a page of a hundred staff meant two
-    hundred round trips to render one table, degrading linearly with exactly the
-    thing an admin dashboard exists to show more of.
-
-    Counts are computed from the same two sources as the per-examiner version:
-    students enrolled in the examiner's organization, plus students invited
-    directly to one of their exams.
-    """
+    """Candidate counts for MANY examiners, in two queries."""
     if not examiners:
         return {}
 
@@ -118,11 +91,8 @@ def candidate_counts_for_examiners(db: Session, examiners: list) -> dict[int, in
                    .group_by(Exam.examiner_id).all())
     per_examiner_invites = {examiner_id: count for examiner_id, count in invite_rows}
 
-    # Sum rather than union: a student both enrolled AND separately invited
-    # would be counted twice here, where the per-examiner set version counted
-    # them once. Slight overcount in an uncommon case, in exchange for two
-    # queries instead of two hundred -- and the exact figure is available on the
-    # examiner's own detail page, which loads one examiner.
+    # Sum rather than union: a student both enrolled AND separately invited would be counted
+    # twice here, where the per-examiner set version counted them once.
     return {e.id: per_org.get(e.organization_id, 0) + per_examiner_invites.get(e.id, 0)
             for e in examiners}
 
@@ -134,14 +104,7 @@ def list_exams_for_examiners(db: Session, examiner_ids: list[int]) -> list[Exam]
 
 
 def candidate_ids_for_examiner(db: Session, examiner: Examiner) -> set[int]:
-    """Distinct real student accounts connected to this examiner: enrolled in
-    their organization, or added as a participant on one of their exams --
-    the latter covers a per-exam invite from outside the organization (see
-    organization_service.can_student_access_exam), which is a real
-    "candidate" of this examiner's even though the roster never enrolled
-    them. A pending invite with no account yet has no student row and is
-    not counted -- this is a count of actual candidate accounts.
-    """
+    """Distinct real student accounts connected to this examiner."""
     ids: set[int] = set()
     if examiner.organization_id:
         ids.update(sid for (sid,) in db.query(Student.id)
@@ -153,10 +116,9 @@ def candidate_ids_for_examiner(db: Session, examiner: Examiner) -> set[int]:
 
 
 def exam_type_label(exam: Exam) -> str:
-    """"Coding" if any question in the exam is a coding question (the more
-    demanding kind), else "MCQ" if it has any questions at all, else "-" for
-    an exam still empty of content -- an exam can mix section types, so this
-    reports its most notable kind rather than every combination present."""
+    """"Coding" if any question in the exam is a coding question (the more demanding kind), else
+    "MCQ" if it has any questions at all, else "-" for an exam still empty of content.
+    """
     has_any = False
     for section in exam.sections:
         for question in section.questions:
@@ -167,17 +129,13 @@ def exam_type_label(exam: Exam) -> str:
 
 
 def expected_students_for_exam(db: Session, exam: Exam) -> list[Student]:
-    """Every student who could take this exam -- the exam-level analogue of
-    organization_service.can_student_access_exam, returning the whole
-    eligible set instead of checking one person. A restricted exam
-    (participant rows present) uses exactly that allow-list, resolved to
-    real accounts only; an unrestricted exam uses the organization roster.
+    """Every student who could take this exam -- the exam-level
+    analogue of organization_service.can_student_access_exam,
+    returning the whole eligible set instead of checking one person.
     """
-    # joinedload(user): every caller reads student.user.full_name / .email while
-    # building a row, and `user` is a lazy relationship -- so without this the
-    # loop emits one extra SELECT per candidate purely to fetch a name. Eager-
-    # loading it here fixes that for all callers at once rather than leaving
-    # each list endpoint to remember.
+    # joinedload(user): every caller reads student.user.full_name / .email while building a row,
+    # and `user` is a lazy relationship -- so without this the loop emits one extra SELECT per
+    # candidate purely to fetch a name.
     base = db.query(Student).options(joinedload(Student.user))
 
     restricted = db.query(ExamParticipant.id).filter(ExamParticipant.exam_id == exam.id).first() is not None
@@ -208,12 +166,7 @@ def list_all_violations(db: Session, severity: str | None = None, decision: str 
                          exam_id: int | None = None, examiner_id: int | None = None,
                          search: str | None = None,
                          offset: int | None = None, limit: int | None = None) -> tuple[list[ProctorEvent], int]:
-    """One page of violations across the platform, plus the total.
-
-    The unbounded version of this is the worst of the admin lists: violations
-    accumulate per candidate per exam forever, so it grows without limit and was
-    returned in full to render fifteen rows.
-    """
+    """One page of violations across the platform, plus the total."""
     query = (
         db.query(ProctorEvent)
         .join(StudentExamAttempt, ProctorEvent.attempt_id == StudentExamAttempt.id)
@@ -257,18 +210,7 @@ def list_live_attempts(db: Session) -> list[StudentExamAttempt]:
 
 
 def review_queue(db: Session, *, offset: int, limit: int) -> tuple[list[ProctorEvent], int]:
-    """Violations waiting on a human, worst and oldest first.
-
-    The general violations table shows everything in reverse chronological
-    order, which is the wrong order for a reviewer: the newest event is rarely
-    the most important, and an unreviewed high-severity flag from last week
-    sinks below a week of routine tab switches. Nothing surfaced what still
-    needed a decision, so in practice nothing got decided -- and an
-    undecided flag counts against the candidate (see adjudicated_risk).
-
-    Ordered by severity, then age: the oldest untouched high-severity event is
-    the one a candidate has been waiting on longest.
-    """
+    """Violations waiting on a human, worst and oldest first."""
     from sqlalchemy import case
 
     severity_rank = case(
@@ -292,13 +234,7 @@ def review_queue(db: Session, *, offset: int, limit: int) -> tuple[list[ProctorE
 
 
 def organizations_overview(db: Session) -> list[dict]:
-    """Every organization with the counts an administrator needs to act on.
-
-    Organizations are the tenancy boundary -- they decide which candidates an
-    examiner sees and which exams a student can sit -- and there was no page
-    showing which existed or what was in them. Aggregated in four grouped
-    queries rather than a loop per organization.
-    """
+    """Every organization with the counts an administrator needs to act on."""
     from app.models.organization import Organization, OrganizationMember
 
     orgs = db.query(Organization).order_by(Organization.name).all()
@@ -314,9 +250,7 @@ def organizations_overview(db: Session) -> list[dict]:
                        .group_by(Student.organization_id))
     exams = _counts(db.query(Exam.organization_id, func.count(Exam.id))
                     .group_by(Exam.organization_id))
-    # Roster entries with no student account yet: people invited but not
-    # registered. Counted separately because "50 on the roster, 12 registered"
-    # is the number an administrator chasing enrolment actually wants.
+    # Roster entries with no student account yet: people invited but not registered.
     pending = _counts(db.query(OrganizationMember.organization_id, func.count(OrganizationMember.id))
                       .filter(OrganizationMember.student_id.is_(None))
                       .group_by(OrganizationMember.organization_id))

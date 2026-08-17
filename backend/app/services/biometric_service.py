@@ -1,34 +1,4 @@
-"""
-Lifecycle for biometric data: consent, erasure, and retention.
-
-This platform stores four kinds of biometric or biometric-adjacent artefact:
-
-    face_profiles.encoding        512-d ArcFace embedding
-    face_profiles.image_path      the registration photo on disk
-    students.id_card_image_path   the uploaded ID card
-    proctor_events.screenshot     violation screenshots (image of the candidate)
-
-Until this module existed none of it had a lifecycle at all -- no recorded
-consent, no expiry, and no deletion path short of hand-written SQL. For a
-product processing identifiable candidates' faces that is the finding most
-likely to become a legal problem rather than a technical one.
-
-Two design decisions worth being explicit about:
-
-**Erasure blanks the payload; it does not delete the row.** A face_profiles row
-is referenced by a student's attempt history, and `ON DELETE CASCADE` from
-students would take assessment records with it. So `erase_student_biometrics`
-clears the embedding, unlinks the files from disk, and stamps `deleted_at` --
-leaving a durable, auditable record that the erasure happened and when, which is
-itself usually a compliance requirement. Scores, attempts and violation
-timelines are untouched.
-
-**Automatic retention is opt-in and defaults to off.** BIOMETRIC_RETENTION_DAYS
-is 0 out of the box, meaning nothing is ever purged automatically. The right
-period is an institutional and legal decision, and a default that quietly
-destroyed evidence during an open appeal would be a worse failure than one that
-keeps too much. Manual deletion works regardless of the setting.
-"""
+"""Lifecycle for biometric data: consent, erasure, and retention."""
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -58,12 +28,7 @@ def current_consent_version() -> str:
 
 
 def record_face_consent(profile: FaceProfile) -> None:
-    """Stamp the consent that was in force when this capture happened.
-
-    Called by the registration path rather than being inferred later, because
-    "which wording did this person actually agree to" is only knowable at the
-    moment of capture.
-    """
+    """Stamp the consent that was in force when this capture happened."""
     profile.consent_version = settings.BIOMETRIC_CONSENT_VERSION
     profile.consented_at = _now()
 
@@ -74,12 +39,7 @@ def record_id_consent(student: Student) -> None:
 
 
 def consent_status(db: Session, student: Student) -> dict:
-    """What this student has consented to, and whether it is still current.
-
-    `stale` matters: bumping BIOMETRIC_CONSENT_VERSION is how an institution
-    marks previously-collected consent as no longer covering the current terms,
-    and this is what surfaces that to the UI so re-consent can be requested.
-    """
+    """What this student has consented to, and whether it is still current."""
     profile = db.query(FaceProfile).filter(FaceProfile.student_id == student.id).first()
     current = settings.BIOMETRIC_CONSENT_VERSION
     face_version = profile.consent_version if profile else None
@@ -102,14 +62,7 @@ def consent_status(db: Session, student: Student) -> dict:
 
 
 def _unlink(path: str | None) -> bool:
-    """Remove a file, tolerating one that is already gone.
-
-    Best-effort by design: a missing or unremovable file must not abort an
-    erasure request half-way, leaving the embedding in the database because a
-    stale path could not be unlinked. The database side is what actually
-    matters for re-identification; a stranded JPEG is a smaller problem than a
-    deletion that reports failure and leaves everything in place.
-    """
+    """Remove a file, tolerating one that is already gone."""
     if not path:
         return False
     try:
@@ -123,21 +76,16 @@ def _unlink(path: str | None) -> bool:
 
 
 def erase_student_biometrics(db: Session, student: Student, *, reason: str) -> dict:
-    """Erase this student's biometric payload. Idempotent.
-
-    Returns a summary of what was actually removed, so an admin acting on a
-    deletion request has something concrete to record rather than a bare 204.
-    """
+    """Erase this student's biometric payload. Idempotent."""
     removed = {"embedding": False, "face_image": False, "id_card_image": False}
 
     profile = db.query(FaceProfile).filter(FaceProfile.student_id == student.id).first()
     if profile and not profile.deleted_at:
         removed["face_image"] = _unlink(profile.image_path)
         # An empty JSON array rather than NULL: the column is NOT NULL, and
-        # face_service._parse_stored_encoding already treats anything that is
-        # not a 512-length vector as unusable, so an erased profile fails
-        # verification the same way a legacy one does -- with the message that
-        # tells the student to register again.
+        # face_service._parse_stored_encoding already treats anything that is not a 512-length
+        # vector as unusable, so an erased profile fails verification the same way a legacy one
+        # does -- with the message that tells the student to register again.
         profile.encoding = "[]"
         profile.image_path = ""
         profile.deleted_at = _now()
@@ -148,11 +96,7 @@ def erase_student_biometrics(db: Session, student: Student, *, reason: str) -> d
         removed["id_card_image"] = _unlink(student.id_card_image_path)
         student.id_card_image_path = None
 
-    # Identity verification is unwound too. Leaving `identity_locked` set after
-    # erasing the very data it was derived from would lock the student out of
-    # their own name and email edits forever, with nothing on file to justify
-    # it -- and would let them start a proctored exam that can no longer
-    # actually verify them.
+    # Identity verification is unwound too.
     student.identity_locked = False
     student.identity_locked_at = None
 
@@ -167,17 +111,7 @@ def erase_student_biometrics(db: Session, student: Student, *, reason: str) -> d
 
 
 def students_past_retention(db: Session, *, now: datetime | None = None) -> list[Student]:
-    """Students whose biometric data is eligible for automatic deletion.
-
-    Eligibility is measured from the student's LAST ATTEMPT, not from when the
-    data was captured. Retention exists to cover the window in which a result
-    might be disputed, and that window opens when they last sat an exam -- a
-    candidate who registered two years ago and sat a paper last week must not
-    have their identity evidence purged mid-appeal.
-
-    Students who have never attempted anything fall back to their registration
-    date, so an abandoned signup does not keep a face embedding forever.
-    """
+    """Students whose biometric data is eligible for automatic deletion."""
     if settings.BIOMETRIC_RETENTION_DAYS <= 0:
         return []
 
@@ -206,11 +140,7 @@ def students_past_retention(db: Session, *, now: datetime | None = None) -> list
 
 
 def purge_expired(db: Session, *, now: datetime | None = None) -> int:
-    """One retention sweep. Returns how many students were erased.
-
-    A no-op returning 0 when BIOMETRIC_RETENTION_DAYS is 0, which is the
-    default -- see the module docstring on why automatic deletion is opt-in.
-    """
+    """One retention sweep. Returns how many students were erased."""
     if settings.BIOMETRIC_RETENTION_DAYS <= 0:
         return 0
 

@@ -1,13 +1,4 @@
-"""
-Two policy changes, both enforced server-side rather than by hiding UI:
-
-  * Examiners can delete a section (and everything in it) while the exam is a
-    draft.
-  * STUDENT passwords are administrator-managed -- a candidate account is an
-    institutional identity issued for a sitting. Examiners and admins manage
-    their own. A forgotten student password is still self-recoverable by
-    emailed code, so this is central administration, not a lockout.
-"""
+"""Two policy changes, both enforced server-side rather than by hiding UI:"""
 import pytest
 
 from tests.conftest import auth_headers

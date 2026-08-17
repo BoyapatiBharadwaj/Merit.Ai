@@ -1,9 +1,6 @@
 /**
- * Shared status-badge styling + date/number formatting for the admin
- * drill-down pages (Examiners, Candidates, Exams, Live Sessions, Violations,
- * Candidate Exam Report). Centralized for the same reason lib/ui.js
- * centralizes button classes: "Active" or "High" risk should render in the
- * same color everywhere it appears, not a slightly different shade per page.
+ * Shared status-badge styling + date/number formatting for the admin drill-down pages
+ * (Examiners, Candidates, Exams, Live Sessions, Violations, Candidate Exam Report).
  */
 
 const TONE_CLASSES = {

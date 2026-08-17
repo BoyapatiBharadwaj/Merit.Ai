@@ -1,14 +1,4 @@
-"""
-Authorization for GET /proctoring/id-card/photo/{student_id}.
-
-Mirrors test_face_photo_access.py exactly -- this endpoint shares the same
-_can_view_student_identity gate in app/api/v1/proctoring.py (self, admin, or
-an examiner connected via organization_service.examiner_can_view_student),
-so it needs the same coverage. The image itself is written directly onto
-Student.id_card_image_path rather than going through the real OCR pipeline
-(POST /proctoring/id-card/verify) -- these tests are about the HTTP-layer
-authorization check, not ID-card OCR.
-"""
+"""Authorization for GET /proctoring/id-card/photo/{student_id}."""
 import base64
 import io
 
@@ -128,14 +118,9 @@ def test_examiner_can_view_an_id_card_via_a_direct_exam_invite_outside_their_org
 
 def test_verifying_an_id_card_saves_a_retrievable_photo_even_on_a_name_mismatch(client, seed_roles, monkeypatch, db_session):
     """End-to-end wiring check: POST /id-card/verify -> proctor_service.
-    verify_id_card -> identity_service.record_id_verification should leave a
-    real file behind that GET /id-card/photo/{id} can then serve -- not just
-    the authorization gate the tests above cover.
-
-    Mismatch is the deliberate case here, not a match: the photo is kept
-    regardless of whether OCR matched (see record_id_verification), because a
-    student who keeps failing verification is exactly who staff need to see
-    the actual submitted photo for, not just a "name didn't match" message.
+    verify_id_card -> identity_service.record_id_verification should
+    leave a real file behind that GET /id-card/photo/{id} can then
+    serve -- not just the authorization gate the tests above cover.
     """
     monkeypatch.setattr(ocr_service, "extract_text", lambda image: "COMPLETELY UNRELATED TEXT")
     token = _register_student_and_login(client, email="mismatched-id@example.com")

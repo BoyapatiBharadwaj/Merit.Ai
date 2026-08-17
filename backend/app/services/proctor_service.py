@@ -1,6 +1,5 @@
-"""
-Business logic for AI proctoring: face registration/matching, ID OCR,
-and violation event logging + severity escalation.
+"""Business logic for AI proctoring: face registration/matching,
+ID OCR, and violation event logging + severity escalation.
 """
 import base64
 import binascii
@@ -53,9 +52,8 @@ def register_face(db: Session, student_id: int, base64_image: str):
     if not success:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, message)
     profile = proctor_repository.save_face_profile(db, student_id, filename, encoding_json)
-    # Stamp the consent wording in force at capture time. Done here rather than
-    # in the repository because it is a policy fact about this capture, not a
-    # storage detail -- see biometric_service for why it is per-profile.
+    # Stamp the consent wording in force at capture time. Done here rather than in the
+    # repository because it is a policy fact about this capture, not a storage detail.
     biometric_service.record_face_consent(profile)
     db.commit()
     db.refresh(profile)
@@ -64,10 +62,7 @@ def register_face(db: Session, student_id: int, base64_image: str):
 
 def verify_live_face(db: Session, student_id: int, base64_image: str) -> dict:
     if not settings.FACE_MATCHING_ENABLED:
-        # Switched off operationally. Reported as "not collected" rather than as
-        # a pass or a failure: claiming a match we never computed would be a lie
-        # on a proctoring report, and claiming a mismatch would accuse an
-        # innocent candidate. The exam client skips the check on available=False.
+        # Switched off operationally.
         return {
             "available": False, "face_count": 0, "match": None, "distance": None,
             "spoof_suspected": False, "liveness_score": None,
@@ -80,10 +75,8 @@ def verify_live_face(db: Session, student_id: int, base64_image: str) -> dict:
 
 
 def verify_id_card(db: Session, student_id: int, student_full_name: str, base64_image: str) -> tuple[dict, str | None]:
-    """Runs the OCR name-match and separately persists the submitted photo to
-    disk, mirroring register_face's own image save. Returns the OCR result
-    dict alongside the saved image path (None if saving failed), for the
-    caller to hand to identity_service.record_id_verification.
+    """Runs the OCR name-match and separately persists the submitted photo to disk, mirroring
+    register_face's own image save.
     """
     result = ocr_service.verify_id_card(base64_image, student_full_name)
     image_path = _save_id_card_image(student_id, base64_image)
@@ -106,21 +99,7 @@ def _save_id_card_image(student_id: int, base64_image: str) -> str | None:
 
 
 def detect_objects(base64_image: str) -> dict:
-    """Phone/book/multi-person detection.
-
-    Prefers the ai_worker when AI_SERVICE_URL is configured, and otherwise runs
-    YOLO11s in-process (app/ai/object_service.py). That local path is new: with
-    the worker deferred this endpoint used to return "unavailable" every time,
-    which meant phone/book/second-person detection was not degraded but simply
-    off. Face matching already had an in-process fallback for the same reason.
-
-    Still never raises -- an unavailable detector returns the same shape with
-    available=False, so the frontend stops polling quietly instead of erroring.
-    That existing contract is exactly what OBJECT_DETECTION_ENABLED reuses: an
-    operationally disabled detector is indistinguishable, to the client, from
-    one that could not load -- and should be, because the correct client
-    behaviour is identical.
-    """
+    """Phone/book/multi-person detection."""
     if not settings.OBJECT_DETECTION_ENABLED:
         return {"available": False, "detections": [], "person_count": 0,
                 "message": "Object detection is currently disabled by the administrator."}
@@ -166,12 +145,7 @@ MAX_SCREENSHOT_BYTES = 5 * 1024 * 1024
 
 
 def _save_violation_screenshot(event_id: int, attempt_id: int, screenshot_base64: str) -> None:
-    """Decode and persist a violation screenshot, then attach its path to the event.
-
-    Runs as a FastAPI background task (or synchronously as a fallback), so it opens
-    its own DB session rather than relying on the request-scoped one, which may
-    already be closed by the time this executes.
-    """
+    """Decode and persist a violation screenshot, then attach its path to the event."""
     try:
         img_data = screenshot_base64.split(",", 1)[1] if "," in screenshot_base64 else screenshot_base64
         raw = base64.b64decode(img_data, validate=True)

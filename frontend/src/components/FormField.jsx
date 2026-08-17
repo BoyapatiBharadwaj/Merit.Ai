@@ -1,22 +1,11 @@
 import { useState } from "react";
 import Icon from "./Icon.jsx";
 
-// text-base (16px), not text-sm (14px): iOS Safari zooms the whole page in
-// on focus for any input under 16px, which on a form with several fields in
-// a row turns "tap the next field" into "tap, wait for the zoom, pinch back
-// out, then tap again." py-3.5 brings real rendered height to ~52-54px, the
-// same target used for buttons so a field and the button below it read as
-// one consistent control size, not two different systems.
-//
-// Six states live here, not five: default (border-border), hover
-// (border-primary/40 -- a preview, not a commitment), focus (solid
-// border-primary + a soft 3px halo rather than the previous thick 4px ring,
-// tuned to sit closer to a native browser focus ring than a UI-kit glow),
-// error (border-danger, its own ring tint, and never JUST a color change --
-// see the icon + text that always accompany it below), and disabled
-// (dimmed, no pointer, border flattened) -- autofill is handled separately
-// in index.css since neither Tailwind nor inline styles can override a
-// browser's own autofill paint.
+// text-base (16px), not text-sm (14px): iOS Safari zooms the whole page in on focus for any
+// input under 16px, which on a form with several fields in a row turns "tap the next field"
+// into "tap, wait for the zoom, pinch back out, then tap again." py-3.5 brings real rendered
+// height to ~52-54px, the same target used for buttons so a field and the button below it read
+// as one consistent control size, not two different systems.
 const baseInput =
   "w-full rounded-xl border bg-input text-ink placeholder:text-muted/60 py-3.5 text-base outline-none " +
   "transition-colors disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-page disabled:border-border";
@@ -27,19 +16,15 @@ function stateClasses(error) {
     : "border-border hover:border-primary/40 focus:border-primary focus:ring-[3px] focus:ring-primary/[0.12]";
 }
 
-// Shared by every label below: the field's own icon/label pick up the brand
-// color the instant a person focuses the input, via CSS :focus-within on the
-// wrapping `group` rather than tracked focus state -- one less thing that
-// can drift out of sync with the input's real focus.
+// Shared by every label below: the field's own icon/label pick up the brand color the instant a
+// person focuses the input, via CSS :focus-within on the wrapping `group` rather than tracked
+// focus state -- one less thing that can drift out of sync with the input's real focus.
 const labelCls = "block text-sm font-semibold text-ink mb-2 transition-colors duration-150 group-focus-within:text-primary";
 
 export function TextField({ id, label, icon, error, valid, className = "", ...props }) {
-  // `valid` is opt-in (callers pass it once a field has real validation),
-  // so a plain required-but-unvalidated field never shows a false-positive
-  // checkmark just because it happens to be non-empty. It only ever appears
-  // once the field is both touched AND correct -- never mid-typing -- so the
-  // green tick reads as "this is done" rather than flickering on every
-  // keystroke that happens to pass validation for a moment.
+  // `valid` is opt-in (callers pass it once a field has real
+  // validation), so a plain required-but-unvalidated field never shows a
+  // false-positive checkmark just because it happens to be non-empty.
   const showValid = valid && !error;
   return (
     <div className={`mb-5 group ${className}`}>
@@ -71,10 +56,7 @@ export function TextField({ id, label, icon, error, valid, className = "", ...pr
         )}
       </div>
       {error && (
-        // The icon is what keeps this from being a color-only error signal --
-        // a red border alone is invisible to color-blind users and to anyone
-        // on a washed-out screen; the icon and the text both say "error"
-        // independent of the red.
+        // The icon is what keeps this from being a color-only error signal.
         <p id={`${id}-error`} className="mt-1.5 flex items-start gap-1.5 text-xs text-danger animate-fade-in">
           <Icon name="alert" width={13} height={13} className="mt-0.5 shrink-0" />
           <span>{error}</span>
@@ -116,10 +98,7 @@ export function TextAreaField({ id, label, error, hint, rows = 4, className = ""
   );
 }
 
-// Length + character-class variety, scored 0-4. Simple and fully transparent
-// on purpose -- this is feedback to nudge a stronger password while typing,
-// not a security gate (the real rule, 8+ characters, is still enforced by
-// Register.jsx's own validation regardless of what this reports).
+// Length + character-class variety, scored 0-4. Simple and fully transparent on purpose.
 const STRENGTH_LEVELS = [
   { label: "Very weak", barClass: "bg-danger", textClass: "text-danger" },
   { label: "Weak", barClass: "bg-danger", textClass: "text-danger" },
@@ -130,10 +109,7 @@ const STRENGTH_LEVELS = [
 
 function passwordStrengthScore(password) {
   if (!password) return 0;
-  // Length dominates real-world strength far more than character variety --
-  // a short password is never allowed to score above "Weak" just because it
-  // happens to mix a digit and a symbol in; four random characters are
-  // brute-forceable no matter what those characters are.
+  // Length dominates real-world strength far more than character variety.
   if (password.length < 8) return password.length >= 4 ? 1 : 0;
   let score = 1;
   if (password.length >= 12) score++;
@@ -143,11 +119,8 @@ function passwordStrengthScore(password) {
   return Math.min(score, 4);
 }
 
-// Shown as a checklist *before* the field ever turns red, on the theory that
-// "here's what you need" is more useful up front than "you got it wrong"
-// after the fact. Purely advisory except the first rule -- see the note on
-// passwordStrengthScore above, the same 8-character floor is what
-// Register.jsx actually enforces.
+// Shown as a checklist *before* the field ever turns red, on the theory that "here's what you
+// need" is more useful up front than "you got it wrong" after the fact.
 const REQUIREMENTS = [
   { test: (p) => p.length >= 8, label: "At least 8 characters" },
   { test: (p) => /[A-Z]/.test(p), label: "One uppercase letter" },
@@ -194,12 +167,8 @@ function PasswordStrengthMeter({ password }) {
 
 export function PasswordField({ id, label, labelExtra, error, hint, showStrength, className = "", ...props }) {
   const [show, setShow] = useState(false);
-  // The requirements/strength block only appears once the person has
-  // actually focused this field, not the instant the page loads -- a wall of
-  // rules above an empty, untouched input reads as a form scolding you
-  // before you've done anything. Once shown it stays shown (even after
-  // blurring with content still in the field) so it doesn't flicker in and
-  // out as focus moves to the next field.
+  // The requirements/strength block only appears once the person has actually focused this
+  // field, not the instant the page loads.
   const [everFocused, setEverFocused] = useState(false);
   return (
     <div className={`mb-5 group ${className}`}>
@@ -235,10 +204,6 @@ export function PasswordField({ id, label, labelExtra, error, hint, showStrength
         />
         <button
           type="button"
-          // Was tabIndex={-1}, which removed this from the tab order entirely -- so a
-        // keyboard-only user could not reveal what they had typed, on a field where
-        // that is the single most useful affordance. aria-pressed reports the state,
-        // which an icon alone does not.
         aria-pressed={show}
           onClick={() => setShow((s) => !s)}
           aria-label={show ? "Hide password" : "Show password"}

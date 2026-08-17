@@ -1,23 +1,4 @@
-"""
-The examiner module's own defects, each pinned by what it cost.
-
-The four that could destroy or corrupt real work:
-
-  * A reset DELETED the candidate's previous attempt -- answers, result,
-    comments, every proctoring event and violation screenshot -- leaving a
-    reason string as the only record. Resets are granted after something went
-    wrong, which is exactly when that evidence is wanted.
-  * Adding one participant to a live exam flipped it into allow-list mode and
-    cut off everyone already writing. Covered in test_exam_access_control.py.
-  * Every section and question was created with order_index 0, so the display
-    order of an exam was whatever the database happened to return.
-  * A question was committed, then its options one at a time, so a failure
-    part-way left an MCQ whose correct answer might not exist.
-
-Plus the lifecycle gap: ExamStatus.CLOSED existed in the schema from the start
-with no endpoint and no button, so a published exam stayed on every candidate's
-list forever.
-"""
+"""The examiner module's own defects, each pinned by what it cost."""
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -225,18 +206,7 @@ def test_reordering_must_name_every_section(client, examiner, seed_roles):
 
 def test_a_question_and_its_options_are_written_together(client, examiner, seed_roles,
                                                         db_session, monkeypatch):
-    """A failure part-way through adding options must leave NO question.
-
-    The question was committed first and each option committed separately after
-    it, so a failure between them left a committed MCQ holding some of its
-    options -- possibly none of them correct. A candidate would simply find a
-    question they could not answer correctly, and nothing in the builder would
-    show it as broken.
-
-    Driven through the repository rather than HTTP: the failure being simulated
-    is a database one, and TestClient re-raises server exceptions rather than
-    letting the response be inspected.
-    """
+    """A failure part-way through adding options must leave NO question."""
     from app.models.question import Question
     from app.repositories import exam_repository
 
@@ -388,10 +358,9 @@ def test_a_zero_percent_pass_mark_is_kept(client, examiner, seed_roles):
 
 @pytest.mark.parametrize("percentage", [0, 20.5, 40.5, 60.5, 80.5, 99.99, 100])
 def test_every_percentage_lands_in_exactly_one_band(percentage):
-    """The bands were (0,20), (21,40), (41,60), (61,80), (81,100) matched with
-    `lo <= pct <= hi`, so every value in the gaps matched nothing and vanished
-    from the chart. 20.5 is 41 of 200 marks -- not exotic, and the columns
-    simply would not add up to the number of candidates."""
+    """The bands were (0,20), (21,40), (41,60), (61,80), (81,100) matched with `lo <= pct <=
+    hi`, so every value in the gaps matched nothing and vanished from the chart.
+    """
     from app.services.analytics_service import _bucket_scores
 
     buckets = _bucket_scores([percentage])
@@ -504,10 +473,7 @@ class _FakeViolation:
 
 
 def test_a_dismissed_violation_stops_counting_toward_risk():
-    """Dismissing changed admin_decision and nothing else: the score, the tier
-    and the proctoring summary all kept counting it, so a candidate whose flags
-    a reviewer had explicitly cleared stayed labelled high risk -- and the label,
-    not the decisions, is what the next reader sees."""
+    """Dismissing changed admin_decision and nothing else."""
     from app.models.enums import Severity
     from app.services.admin_service import adjudicated_risk
 
@@ -557,10 +523,9 @@ def test_a_terminated_attempt_stays_high_however_the_flags_were_judged():
 
 
 def test_moving_an_examiner_moves_their_tenancy(client, seed_roles, admin_token, db_session):
-    """update_examiner wrote organization_name -- a display string -- while
-    organization_id decides which students they see and which roster they draw
-    from. An administrator could type a new organization, watch it save, and
-    have moved nobody."""
+    """update_examiner wrote organization_name -- a display string -- while organization_id
+    decides which students they see and which roster they draw from.
+    """
     from app.models.examiner import Examiner
 
     examiner_token = _create_examiner_and_login(client, admin_token)

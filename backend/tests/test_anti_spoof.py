@@ -1,14 +1,4 @@
-"""Liveness / anti-spoofing detector.
-
-Two things need proving here, and they are different in kind:
-
-1. That the cues *discriminate* -- a synthetic screen-replay pattern must
-   score materially lower than natural, broadband texture. Asserting a
-   direction and a gap is meaningful; asserting exact magnitudes on synthetic
-   images would just be pinning down arbitrary numbers.
-2. That the *contract* holds -- fail-open on error, model preferred over
-   classical, weird model output degrades rather than throwing.
-"""
+"""Liveness / anti-spoofing detector."""
 import numpy as np
 import pytest
 from PIL import Image, ImageFilter
@@ -26,17 +16,7 @@ def _clear_model_cache():
 
 
 def _pink_noise(size, seed, exponent=1.2):
-    """Noise with a 1/f^exponent spectrum -- the statistical signature of a
-    natural photograph.
-
-    This matters more than it looks. The earlier fixtures used near-white
-    noise, whose spectrum is flat, and the detector was calibrated against
-    them. Real images fall off steeply with frequency, and the original moire
-    metric turned out to be measuring that falloff rather than periodicity --
-    so it passed every synthetic test and then rejected the first real face it
-    saw. Testing against a spectrally realistic image is what makes these
-    tests mean anything.
-    """
+    """Noise with a 1/f^exponent spectrum -- the statistical signature of a natural photograph."""
     rng = np.random.default_rng(seed)
     white = rng.normal(0, 1, (size, size))
     freqs_y = np.fft.fftfreq(size)[:, None]
@@ -60,12 +40,8 @@ def _natural_texture(size=480, seed=0, blur=0.6, noise=11.0) -> np.ndarray:
 
 
 def _screen_replay(size=480, seed=0, period=3, amplitude=14.0) -> np.ndarray:
-    """Natural texture with a regular pixel grid over it -- the moire
-    signature a camera picks up when pointed at an LCD/OLED panel.
-
-    `period` is in pixels and must not be exactly 2: sin(2*pi*x/2) sampled at
-    integer x is identically zero, so a "period 2" grid adds literally nothing
-    to the image and tests built on it silently assert nothing at all.
+    """Natural texture with a regular pixel grid over it -- the moire signature a camera picks
+    up when pointed at an LCD/OLED panel.
     """
     assert period != 2, "a period-2 grid vanishes under integer sampling"
     base = _natural_texture(size, seed).astype(np.float64)
@@ -83,9 +59,7 @@ def _printed_photo(size=480, seed=0) -> np.ndarray:
     return np.clip(mean + (soft - mean) * 0.25, 0, 255).astype(np.uint8)
 
 
-# Conditions a real webcam actually produces. Blur is capped at 1.0 -- the
-# earlier 2.2 was far blurrier than any working camera and made "soft focus"
-# a test of the degenerate-frame clamp rather than of ordinary conditions.
+# Conditions a real webcam actually produces.
 _REAL_FRAMES = {
     "ordinary": _natural_texture(),
     "grainy webcam": _natural_texture(seed=10, blur=0.2, noise=20.0),
@@ -95,9 +69,8 @@ _REAL_FRAMES = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Cue discrimination
-# ---------------------------------------------------------------------------
+# --- - ---
+# Cue discrimination -------------------------------------------------------------------------
 
 def _moire(image: np.ndarray) -> float:
     patch = anti_spoof._centre_face_patch(image)
@@ -115,19 +88,10 @@ def test_moire_score_is_higher_for_a_screen_than_for_natural_texture():
 
 
 def test_moire_score_measures_periodicity_not_spectral_slope():
-    """The bug that rejected a real student.
-
-    The old metric compared each frequency bin against the global median of a
-    wide band. Natural images have a steep 1/f falloff, so that ratio tracked
-    spectral *slope*: a real photograph scored 46 while flat synthetic noise
-    scored 4.7, and every real face was reported as a display replay. After
-    whitening against the per-radius envelope, a smooth gradient (steep
-    falloff, zero periodicity) must score no worse than flat noise.
-    """
+    """The bug that rejected a real student."""
     size = 256
-    # Broadband but very steeply decaying -- a smooth, natural-looking image
-    # with no periodic component. NOT a single sinusoid: that is by definition
-    # maximally periodic and would (correctly) score enormously high.
+    # Broadband but very steeply decaying -- a smooth,
+    # natural-looking image with no periodic component.
     steep = np.clip(128 + _pink_noise(size, 3, exponent=2.2) * 40, 0, 255).astype(np.float32)
     flat = np.random.default_rng(0).integers(0, 255, (size, size)).astype(np.float32)
 
@@ -140,12 +104,7 @@ def test_moire_score_measures_periodicity_not_spectral_slope():
 
 
 def test_no_realistic_live_frame_trips_the_moire_threshold():
-    """The direction that actually matters.
-
-    False positives here cost a real student their exam; false negatives cost
-    one weak signal out of several. So this asserts the safe direction hard,
-    and the detection direction only for an unambiguous grid (below).
-    """
+    """The direction that actually matters."""
     for name, frame in _REAL_FRAMES.items():
         assert _moire(frame) < anti_spoof.MOIRE_CLEAN, (
             f"{name} scored {_moire(frame):.2f}, at or above the 'nothing periodic' "
@@ -153,14 +112,7 @@ def test_no_realistic_live_frame_trips_the_moire_threshold():
 
 
 def test_only_a_strong_grid_registers_as_periodic():
-    """The honest limit of this cue.
-
-    Measured against spectrally realistic frames, a *faint* display grid is
-    not separable from ordinary content -- earlier numbers suggesting
-    otherwise came from white-noise fixtures whose flat spectra flattered the
-    metric. A strong, clearly visible grid does register. That gap is exactly
-    why the classical tier is advisory and a trained model is recommended.
-    """
+    """The honest limit of this cue."""
     strong = _moire(_screen_replay(period=3, amplitude=14.0))
     ordinary = _moire(_natural_texture())
 
@@ -229,9 +181,8 @@ def test_laplacian_border_artefact_does_not_inflate_sharpness():
     assert cropped.var() == pytest.approx(0.0)
 
 
-# ---------------------------------------------------------------------------
-# The face-crop fix
-# ---------------------------------------------------------------------------
+# --- - ---
+# The face-crop fix -------------------------------------------------------------------------
 
 def test_liveness_measures_the_centre_not_the_background():
     """The bug this replaced: statistics were computed over the whole frame, so
@@ -252,22 +203,13 @@ def test_centre_patch_is_square_and_within_bounds_for_any_input_size():
 
 
 def test_the_analysis_window_covers_the_face_not_a_sliver_of_cheek():
-    """The false positive that rejected a real student.
-
-    A fixed 128px crop from the centre of a 574x430 webcam frame landed on
-    smooth cheek and chin -- almost no texture -- and was reported as "low
-    texture detail (possible printed photo)". The window has to scale with the
-    frame so it reaches eyes, brows and hairline, where a face has detail.
-    """
+    """The false positive that rejected a real student."""
     patch = anti_spoof._centre_face_patch(np.zeros((430, 574, 3), dtype=np.uint8))
     assert patch.shape[0] >= 250, f"window {patch.shape[0]}px is too small to cover a face"
 
 
 def test_centre_patch_does_not_resample_a_large_frame():  # noqa: D401
-    """Resizing destroys the very signal the moire cue reads: downscaling a
-    360px crop to 128px aliases a display's pixel grid away completely, which
-    measured against real data collapsed the natural-vs-screen gap to nothing.
-    A big frame must be cropped at native resolution, not resized."""
+    """Resizing destroys the very signal the moire cue reads."""
     frame = _screen_replay(600)
     patch = anti_spoof._centre_face_patch(frame)
     side = patch.shape[0]
@@ -277,9 +219,8 @@ def test_centre_patch_does_not_resample_a_large_frame():  # noqa: D401
     assert np.array_equal(patch, frame[top:top + side, left:left + side])
 
 
-# ---------------------------------------------------------------------------
-# Contract
-# ---------------------------------------------------------------------------
+# --- - ---
+# Contract -------------------------------------------------------------------------
 
 def test_result_always_carries_the_documented_keys():
     result = anti_spoof.assess_liveness(_natural_texture())
@@ -287,11 +228,7 @@ def test_result_always_carries_the_documented_keys():
 
 
 def test_the_classical_tier_never_blocks_on_its_own():
-    """The policy that stopped a real student being locked out at registration.
-
-    A hand-written heuristic that has already false-positived on a genuine
-    face should log and warn, not refuse. Only a trained model gets to refuse.
-    """
+    """The policy that stopped a real student being locked out at registration."""
     for image in (_screen_replay(), _printed_photo(),
                   np.full((400, 400, 3), 150, dtype=np.uint8)):
         result = anti_spoof.assess_liveness(image)
@@ -322,9 +259,8 @@ def test_liveness_fails_open_when_the_detector_itself_errors(monkeypatch):
     assert result["source"] == "unavailable"
 
 
-# ---------------------------------------------------------------------------
-# Trained-model path
-# ---------------------------------------------------------------------------
+# --- - ---
+# Trained-model path -------------------------------------------------------------------------
 
 class _FakeInput:
     def __init__(self, shape, name="input"):

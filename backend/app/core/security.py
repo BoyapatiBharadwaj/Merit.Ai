@@ -31,20 +31,7 @@ PASSWORD_EPOCH_CLAIM = "pwd"
 
 
 def password_epoch(user) -> int:
-    """The account's password epoch, in whole microseconds.
-
-    Microseconds, not seconds. Second granularity looks tidier and is wrong: a
-    token issued in the SAME second as the password change compares equal, `<`
-    is false, and it survives -- which is precisely the scenario the check
-    exists for, an attacker holding a live token while the owner resets.
-
-    Both sides are computed from the same stored value by this same function, so
-    a token minted after the change is exactly equal (accepted) and one minted
-    before is strictly smaller (rejected). A database that truncated the column
-    would make the stored value smaller than the token's, which fails open
-    rather than signing out a legitimate user -- the right direction for a
-    rounding error to go.
-    """
+    """The account's password epoch, in whole microseconds."""
     changed_at = getattr(user, "password_changed_at", None)
     if changed_at is None:
         return 0
@@ -66,25 +53,7 @@ def create_access_token(subject: str, role: str, extra_claims: dict | None = Non
 
 def create_attempt_token(subject: str, role: str, attempt_id: int, expires_at: datetime,
                          user=None) -> str:
-    """A token that lives as long as one exam attempt, and is useless elsewhere.
-
-    ACCESS_TOKEN_EXPIRE_MINUTES is 120 and an exam may run to 480, so a normal
-    session token can expire while a candidate is still writing. The first 401
-    then cleared their session and dropped them at the login page mid-exam --
-    the failure mode is the whole attempt, not an inconvenience.
-
-    Raising every login token to eight hours would have fixed that by making
-    every stolen token last eight hours, including an administrator's on a
-    shared examination-hall machine. This token is the opposite trade: long
-    lived but narrow. `scope` and `attempt_id` are what make it narrow --
-    deps.get_current_user refuses any token carrying this scope, so it opens
-    nothing outside the attempt endpoints, and those check the attempt id in the
-    path against the one in the token. Presenting it for somebody else's attempt
-    fails exactly like presenting no token at all.
-
-    Deliberately NOT a refresh token: nothing renews it. Its life is bounded by
-    a deadline the server already knows and the candidate cannot move.
-    """
+    """A token that lives as long as one exam attempt, and is useless elsewhere."""
     to_encode: dict[str, Any] = {
         "sub": subject, "role": role, "scope": ATTEMPT_SCOPE,
         "attempt_id": attempt_id, "exp": expires_at,
@@ -95,14 +64,7 @@ def create_attempt_token(subject: str, role: str, attempt_id: int, expires_at: d
 
 
 def decode_access_token(token: str) -> dict | None:
-    """Verify and decode, or None.
-
-    PyJWT, not python-jose. The pinned python-jose 3.3.0 carries CVE-2024-33664
-    -- a JWE decompression bomb reachable from exactly this call on an
-    attacker-supplied bearer token -- and the project is barely maintained. The
-    algorithm allow-list is what closes the other classic hole: without
-    `algorithms=[...]` a token claiming `alg: none` would be accepted as valid.
-    """
+    """Verify and decode, or None."""
     try:
         return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
     except PyJWTError:

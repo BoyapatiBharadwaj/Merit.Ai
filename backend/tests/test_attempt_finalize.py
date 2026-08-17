@@ -1,25 +1,4 @@
-"""
-Submission, and the ways it used to lose a candidate's last answer.
-
-Four separate defects converged on the same outcome -- the exam page reported a
-successful submission while the server graded something else:
-
-  * Submit was fired without awaiting the autosave it depended on, so on any
-    connection where submit won the race the previous answer was graded and the
-    save carrying the real one was rejected for arriving after the attempt
-    closed.
-  * The client's version counter restarted at 1 after a page reload while the
-    server still held 5, so every save after a reload was correctly refused as
-    stale -- and reported to the candidate as saved.
-  * `auto` was a query parameter, so the audit field recording whether a
-    submission was deliberate or a timeout was set by the person being audited.
-  * Grading ran after the attempt was already committed as submitted, so a
-    failure in between left an attempt that no read path would ever revisit.
-
-These drive the real HTTP endpoints throughout. Every one of these bugs lived at
-the boundary between two components that were each individually correct, which
-is exactly the seam a unit test does not cover.
-"""
+"""Submission, and the ways it used to lose a candidate's last answer."""
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -81,12 +60,7 @@ def _wrong(question):
 # --- the answer-loss bug ------------------------------------------------------
 
 def test_the_answer_sent_with_the_submission_is_the_one_graded(exam_ctx):
-    """The exact failure, end to end.
-
-    The candidate's last change never reached the autosave endpoint -- that
-    request is the one that used to lose the race -- and arrives only in the
-    finalize payload. It must be what gets marked.
-    """
+    """The exact failure, end to end."""
     ctx = exam_ctx
     # An earlier, wrong answer IS saved normally.
     ctx["client"].put(f"/api/v1/attempts/{ctx['attempt_id']}/answer", json={
@@ -251,12 +225,7 @@ def test_the_question_endpoint_reports_the_stored_answer_version(exam_ctx):
 
 
 def test_a_reloaded_page_that_seeds_its_version_can_still_save(exam_ctx):
-    """The reload bug, reproduced as the client experiences it.
-
-    Before: the fresh page restarted at version 1, the server held 3, and the
-    save was refused as stale while the page showed it as saved. Seeding from
-    the question response makes the next change version 4, and it lands.
-    """
+    """The reload bug, reproduced as the client experiences it."""
     ctx = exam_ctx
     for version in (1, 2, 3):
         ctx["client"].put(f"/api/v1/attempts/{ctx['attempt_id']}/answer", json={
@@ -302,10 +271,9 @@ def test_a_client_that_restarts_at_one_is_still_refused(exam_ctx):
 # --- grading that failed the first time ---------------------------------------
 
 def test_a_submitted_but_ungraded_attempt_is_repaired_on_read(exam_ctx, db_session):
-    """Grading runs outside the finalize transaction, so a sandbox timeout or a
-    restart can leave an attempt submitted with no result. That used to be
-    permanent: nothing revisited a finished attempt, so the candidate's result
-    endpoint returned 404 forever."""
+    """Grading runs outside the finalize transaction, so a sandbox timeout or a restart can
+    leave an attempt submitted with no result.
+    """
     ctx = exam_ctx
     _finalize(ctx, [{"question_id": ctx["mcq"]["id"],
                      "selected_option_id": _correct(ctx["mcq"]), "answer_version": 1}])
@@ -402,14 +370,7 @@ def test_the_status_endpoint_reports_an_attempt_the_server_finalized(exam_ctx, d
 
 
 def test_proctoring_keeps_working_on_the_attempt_token(exam_ctx):
-    """The gap that would otherwise have swallowed the whole fix.
-
-    Face verification, object detection and the event logger poll continuously
-    for the length of the exam. If those alone still required the 120-minute
-    session token, a three-hour exam would lose its proctoring at the two-hour
-    mark -- and, worse, the client's 401 handler would clear the session while
-    the candidate was still writing.
-    """
+    """The gap that would otherwise have swallowed the whole fix."""
     ctx = exam_ctx
     headers = {"Authorization": f"Bearer {ctx['attempt_token']}"}
 

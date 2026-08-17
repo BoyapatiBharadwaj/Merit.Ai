@@ -1,19 +1,6 @@
 /**
- * Downloads the MediaPipe face-landmarker weights so they can be served from
- * this origin instead of Google's.
- *
- * Why this is a script and not an npm dependency: Google publishes the .task
- * weights (~3.7MB) only as a hosted asset, not on any package registry, so
- * there is nothing for `npm install` to fetch. Until this runs, faceMesh.js
- * falls back to loading them from storage.googleapis.com -- which works, but
- * leaves one third-party request on the exam page's proctoring path and forces
- * the CSP to keep a `connect-src` entry open for that origin.
- *
- * Run once before a production deployment:  npm run fetch:model
- *
- * The file is gitignored (it is a large, reproducible binary), so this is part
- * of deploy setup rather than something a clone gets for free -- the same
- * reasoning as backend/app/utils/fetch_face_model.py for the ArcFace weights.
+ * Downloads the MediaPipe face-landmarker weights so they
+ * can be served from this origin instead of Google's.
  */
 import { mkdir, writeFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";

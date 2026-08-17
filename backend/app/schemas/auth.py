@@ -6,10 +6,8 @@ from app.schemas.common import (
 
 
 class LoginRequest(BaseModel):
-    # Login deliberately does NOT use PasswordField: the policy applies to
-    # passwords being SET, not to one being checked. Running the new-password
-    # rules here would lock out every account created before the policy changed,
-    # and would leak the policy to anyone probing the login endpoint.
+    # Login deliberately does NOT use PasswordField: the policy
+    # applies to passwords being SET, not to one being checked.
     email: EmailField
     password: str = Field(min_length=1, max_length=128)
 
@@ -22,10 +20,8 @@ class TokenResponse(BaseModel):
     first_name: str = ""
     last_name: str = ""
     user_id: int
-    # True when the password on this account was set by somebody else (an
-    # approval, an admin reset). The app routes such a session straight to a
-    # password change: until it happens, two people hold the credential and
-    # nothing the account does is attributable to its owner alone.
+    # True when the password on this account was set by
+    # somebody else (an approval, an admin reset).
     must_change_password: bool = False
 
 
@@ -38,25 +34,15 @@ class RegisterStudentRequest(BaseModel):
     password: PasswordField
     roll_number: str | None = Field(default=None, max_length=50)
 
-    # Consent, sent and stored rather than checked only in the browser. The two
-    # checkboxes were never in the payload, so any direct API caller registered
-    # without agreeing -- and nothing recorded the agreement of those who did.
+    # Consent, sent and stored rather than checked only in the browser.
     accepted_terms: bool = False
     accepted_proctoring: bool = False
     terms_version: str | None = Field(default=None, max_length=20)
 
 
 class CreateExaminerRequest(BaseModel):
-    """Admin-only. Examiners never self-register, so the admin supplies the
-    account's identity -- but never its password.
-
-    There used to be a `password` field here, chosen by the admin and mailed
-    (or shown) back in plain text. That meant the admin knew the password, so
-    "only this examiner could have done that" was never true of anything the
-    account did, and the credential sat around indefinitely in an inbox or a
-    browser tab. The account is now created with an unusable random secret and
-    the examiner sets their own password through a single-use activation
-    email -- see app/services/examiner_provisioning_service.py.
+    """Admin-only. Examiners never self-register, so the admin
+    supplies the account's identity -- but never its password.
     """
     first_name: NameField
     last_name: NameField
@@ -92,13 +78,7 @@ class AdminResetPasswordRequest(BaseModel):
 
 
 class PasswordPolicyOut(BaseModel):
-    """The rules the server actually enforces, for the UI to render.
-
-    Served rather than duplicated in the frontend: the registration screen used
-    to list uppercase/number/special from memory while the server checked only
-    length, so the instructions and the enforcement disagreed. Two hand-kept
-    lists would drift again.
-    """
+    """The rules the server actually enforces, for the UI to render."""
     min_length: int
     rules: list[str]
 
@@ -114,9 +94,7 @@ class OtpRequest(BaseModel):
 
 class OtpVerifyRequest(BaseModel):
     email: EmailField
-    # Length is deliberately a range rather than pinned to OTP_LENGTH: the
-    # setting is configurable, and a schema that hard-codes 6 would start
-    # rejecting valid codes the moment someone raises it.
+    # Length is deliberately a range rather than pinned to OTP_LENGTH.
     code: str = Field(min_length=4, max_length=12)
 
 
@@ -128,20 +106,13 @@ class OtpRequestAccepted(BaseModel):
     # Surfaced so the UI can render "expires in N minutes" without hard-coding
     # a value the server is free to change.
     expires_in_minutes: int
-    # Same reasoning, for the two values the signup screen used to hard-code:
-    # a six-digit placeholder and a 60-second resend cooldown, neither of which
-    # tracked the server settings they were describing.
+    # Same reasoning, for the two values the signup screen used to hard-code.
     code_length: int
     resend_after_seconds: int
 
 
 class RegisterStudentWithOtpRequest(RegisterStudentRequest):
-    """Student self-registration, gated on a code already mailed to `email`.
-
-    Subclasses the existing request rather than replacing it so the two share
-    one definition of what a student registration is; the plain endpoint stays
-    available for deployments running with EMAIL_ENABLED=false.
-    """
+    """Student self-registration, gated on a code already mailed to `email`."""
     code: str = Field(min_length=4, max_length=12)
 
 
@@ -156,30 +127,12 @@ class AccountExistsCheck(BaseModel):
 
 
 class AccountExistsOut(BaseModel):
-    """Whether an active account exists for the address, by product decision.
-
-    Every other email-address endpoint in this app (OTP request, password
-    reset, activation) deliberately answers identically whether or not the
-    address is registered, to avoid becoming an account-enumeration oracle.
-    This endpoint is the one deliberate exception: the forgot-password screen
-    is required to tell a candidate with no account "Account not found, create
-    one" rather than send them through a reset flow for an account that will
-    never receive the code. That is a real product trade-off -- it tells an
-    anonymous caller which email addresses have accounts on this server -- and
-    is accepted here because the alternative is a password-reset screen that
-    silently does nothing for a plausible fraction of the people who use it.
-    """
+    """Whether an active account exists for the address, by product decision."""
     exists: bool
 
 
 class ActivationCheck(BaseModel):
-    """Ask whether an activation link is still good, before showing the form.
-
-    Separate from the activation itself so the screen can say "this link has
-    expired, ask for a new one" instead of letting somebody choose a password,
-    submit it, and only then be told the link was dead. The check does not
-    consume the token.
-    """
+    """Ask whether an activation link is still good, before showing the form."""
     email: EmailField
     token: str = Field(min_length=16, max_length=200)
 

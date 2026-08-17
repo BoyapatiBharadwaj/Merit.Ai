@@ -15,11 +15,6 @@ const PAGE_SIZE = 10;
 
 /**
  * Download the current view as CSV.
- *
- * The filters are passed through deliberately: an export that silently ignored
- * what is on screen would hand someone a different dataset from the one they
- * were looking at, which is the kind of discrepancy that surfaces in a meeting.
- * The download is recorded server-side in the activity trail.
  */
 function ExportButton({ kind, params = {} }) {
   const [busy, setBusy] = useState(false);
@@ -56,11 +51,8 @@ function ExportButton({ kind, params = {} }) {
 export default function AdminCandidates() {
   const navigate = useNavigate();
   const [organizations, setOrganizations] = useState([]);
-  // Whether the organization list could be loaded at all. Empty and
-  // unavailable are different facts: one means there are no organizations,
-  // the other means we could not ask -- and the filter silently degrades to
-  // "no filtering" in the second case, which looks identical to a filter that
-  // matched everything.
+  // Whether the organization list could be loaded at
+  // all. Empty and unavailable are different facts.
   const [organizationsFailed, setOrganizationsFailed] = useState(false);
   const [rows, setRows] = useState(null);
   const [loadError, setLoadError] = useState("");
@@ -86,12 +78,6 @@ export default function AdminCandidates() {
 
   useEffect(() => {
     // A request ticket, so a slow OLD search cannot overwrite a newer one.
-    //
-    // The search box debounced but never cancelled: typing "ann" then "annie"
-    // fired two requests, and if the first was slower its results replaced the
-    // second's. The admin saw candidates matching a query they had already
-    // moved past, with the newer term still in the box -- and no way to tell
-    // the list was stale.
     let cancelled = false;
     setRows(null);
     setLoadError("");

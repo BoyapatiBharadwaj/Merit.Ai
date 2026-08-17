@@ -2,13 +2,7 @@ import "../lib/vendorCodeMirror.js";
 import { useEffect, useRef } from "react";
 
 /**
- * Thin React wrapper around CodeMirror 5 (loaded globally via CDN script
- * tags in index.html -- window.CodeMirror -- same build the legacy
- * frontend/exam.html used). Mounted fresh (via a `key` on the parent) each
- * time the current coding question changes, so `value` only needs to be
- * the correct *initial* source for that question -- no imperative
- * setValue()/suppress-flag dance needed, since there's no "reuse across
- * questions" requirement once React owns the mount/unmount lifecycle.
+ * Thin React wrapper around CodeMirror 5 (loaded globally via CDN script tags in index.html.
  */
 export default function CodeEditor({ value, language, onChange }) {
   const containerRef = useRef(null);

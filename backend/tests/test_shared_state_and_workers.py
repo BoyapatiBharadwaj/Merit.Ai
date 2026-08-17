@@ -1,17 +1,4 @@
-"""
-Tests for the pieces that make running more than one core-api or worker
-process safe -- all backed by Redis now (app/core/redis_client.py):
-cross-worker rate limiting (app/core/rate_limit.py), distributed locks
-(app/core/locks.py), and the RQ background job/email queue
-(app/core/queues.py, app/worker/).
-
-PostgreSQL remains the permanent source of truth throughout -- these tests
-pin that Redis failure is a controlled 503 (never a silent bypass of a rate
-limit, an OTP check, a lock, or a queued operation), that locks actually
-exclude a second concurrent acquisition, and that the docker-compose stack
-keeps both Postgres (permanent data) and Redis (shared ephemeral state) with
-Redis never reachable from outside the internal network.
-"""
+"""Tests for the pieces that make running more than one core-api or worker process safe."""
 import redis
 import pytest
 from fastapi import HTTPException
@@ -22,12 +9,7 @@ from app.core.locks import distributed_lock
 from app.core.redis_client import RedisUnavailableError, get_client
 
 
-# Module-level, not nested inside a test function: RQ resolves a queued job by
-# its dotted module path (`module.qualname`) even when running eagerly in
-# tests (see app/core/queues.py's module docstring) -- a closure defined
-# inside a test function has no importable path, so it fails with an
-# "Invalid attribute name" error the moment RQ tries to look it up, even
-# though nothing about the job itself is broken.
+# Module-level, not nested inside a test function.
 def _double_for_test(x):
     return x * 2
 
@@ -100,11 +82,7 @@ def _explode(*_a, **_kw):
 
 
 def test_a_redis_failure_refuses_the_rate_limit_check_rather_than_letting_it_through(monkeypatch):
-    """Deliberately the opposite of the old Postgres-backed limiter's fallback:
-    this rewrite's brief requires a controlled service-unavailable response for
-    rate-limited operations when Redis is down, not a looser, silently-degraded
-    limit. A credential-stuffing run timed to a Redis blip must not sail
-    through unthrottled."""
+    """Deliberately the opposite of the old Postgres-backed limiter's fallback."""
     monkeypatch.setattr(get_client(), "incr", _explode)
     with pytest.raises(RedisUnavailableError):
         rate_limit.consume("degraded", "user-1", limit=5, window=60)
@@ -172,9 +150,8 @@ def test_a_lock_expires_on_its_own_ttl():
         assert first is True
         import time
         time.sleep(0.1)
-        # The TTL has elapsed; a fresh acquisition attempt (standing in for a
-        # different process) succeeds even though the first "holder" never
-        # released.
+        # The TTL has elapsed; a fresh acquisition attempt (standing in for a different process)
+        # succeeds even though the first "holder" never released.
         with distributed_lock("expiring-thing", blocking_timeout=0) as second:
             assert second is True
 
@@ -232,10 +209,9 @@ def test_a_failing_job_is_recorded_as_failed_without_crashing_the_caller():
 
 
 def test_duplicate_job_prevention_via_a_lock_around_enqueueing():
-    """Mirrors how access_request_service._notify_admins guards against
-    enqueueing two overlapping notification jobs for the same request: a
-    non-blocking lock around the enqueue call means a second, concurrent
-    caller for the same key skips enqueueing rather than double-queuing."""
+    """Mirrors how access_request_service._notify_admins guards against enqueueing two
+    overlapping notification jobs for the same request.
+    """
     enqueued = []
 
     def _maybe_enqueue(key: str):
@@ -282,12 +258,7 @@ def test_report_generation_is_locked_per_attempt():
 # --- docker-compose: both data stores present, Redis never publicly exposed ---
 
 def test_the_api_no_longer_runs_the_scheduler_itself():
-    """The reminder loop moved to its own single-replica service.
-
-    If it came back into the API's lifespan, N workers would each run a copy and
-    race to send the same reminders -- which is exactly what splitting it out
-    was meant to prevent, and would be invisible until someone got four emails.
-    """
+    """The reminder loop moved to its own single-replica service."""
     from pathlib import Path
 
     main_source = (Path(__file__).resolve().parent.parent / "app" / "main.py").read_text(encoding="utf-8")
@@ -307,10 +278,7 @@ def test_docker_compose_has_both_postgres_and_redis():
 
 
 def test_redis_publishes_no_host_port_in_docker_compose():
-    """Uncommented `ports:` under the redis service would expose it to the
-    host network -- the internal `cache-net` network is meant to be the only
-    way anything reaches it. Checks the redis service block specifically
-    (not the whole file, which legitimately publishes a port for `proxy`)."""
+    """Uncommented `ports:` under the redis service would expose it to the host network."""
     import yaml
 
     doc = yaml.safe_load(_compose_text())

@@ -4,17 +4,6 @@ import { btnGhost } from "../lib/ui.js";
 
 /**
  * One-time display of a newly created account's sign-in details.
- *
- * Passwords are stored bcrypt-hashed, so this is the ONLY moment they can be
- * shown -- once this panel is dismissed nobody, including an administrator
- * and including the database, can read the password back. That is a feature,
- * not a limitation to work around: making passwords retrievable would mean a
- * single database leak exposes every account. If the examiner loses it, an
- * admin resets it to a new one rather than looking the old one up.
- *
- * Hence the deliberate friction: the panel does not auto-dismiss, and the
- * copy button is the primary action, because an admin who closes this without
- * copying has to go and reset the password.
  */
 export default function CredentialsHandoff({ email, password, onDismiss }) {
   const [copied, setCopied] = useState(false);
@@ -92,12 +81,9 @@ export default function CredentialsHandoff({ email, password, onDismiss }) {
   );
 }
 
-/** Generate a readable but strong temporary password.
- *
- * Avoids the characters people misread when a password is dictated over the
- * phone or copied off a screen (O/0, l/1/I), because this one is going to be
- * transcribed by hand more often than not. ~62 bits of entropy at length 14,
- * which is ample for a credential the holder is expected to change. */
+/**
+ * Generate a readable but strong temporary password.
+ */
 export function generatePassword(length = 14) {
   const alphabet = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
   const symbols = "!@#$%^&*?";

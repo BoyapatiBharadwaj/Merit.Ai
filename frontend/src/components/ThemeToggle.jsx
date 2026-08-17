@@ -32,11 +32,10 @@ export default function ThemeToggle({ className = "" }) {
       aria-checked={isDark}
       aria-label="Toggle dark mode"
       onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
-      // h-9 (36px) rather than the old h-8 (32px) -- still short of a literal
-      // 40px square (this is a pill switch, not an icon button, so matching
-      // that exactly would distort its shape), but a meaningfully larger
-      // touch target than before, and the hit area extends the full
-      // w-16 x h-9 track rather than just the visible thumb.
+      // h-9 (36px) rather than the old h-8 (32px) -- still short of a literal 40px square (this
+      // is a pill switch, not an icon button, so matching that exactly would distort its
+      // shape), but a meaningfully larger touch target than before, and the hit area extends
+      // the full w-16 x h-9 track rather than just the visible thumb.
       className={`relative inline-flex h-9 w-16 shrink-0 items-center rounded-full border border-border bg-page transition-colors duration-200 ${className}`}
     >
       <span className="pointer-events-none absolute inset-0 flex items-center justify-between px-2.5">

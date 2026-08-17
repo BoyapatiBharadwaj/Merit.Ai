@@ -1,25 +1,4 @@
-"""
-Per-account activity trail: who did what to which account, and when.
-
-Deliberately separate from proctor_events. That table records what happened
-*inside an exam* and is owned by the proctoring pipeline; this one records what
-happened *to an account* — signing up, signing in, verifying identity, having a
-password reset, being disabled or deleted. Merging them would put two very
-different retention profiles, access rules and growth rates in one table.
-
-Two rules this table exists under:
-
-**It never stores a secret.** No passwords, no OTP codes, no tokens, no
-embeddings. A password-change entry records that one happened and who did it,
-never the value. An audit log is read by more people than the data it describes,
-so it is the last place a secret should end up.
-
-**Rows are append-only.** Nothing in the application updates or deletes an entry.
-`actor_user_id` and `subject_user_id` both use ON DELETE SET NULL rather than
-CASCADE for exactly this reason: deleting an account must not erase the record
-that the account existed and was deleted — which is usually the single most
-important line in the whole trail.
-"""
+"""Per-account activity trail: who did what to which account, and when."""
 import enum
 
 from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Text, func
@@ -30,12 +9,7 @@ from app.models.enums import db_enum
 
 
 class ActivityType(str, enum.Enum):
-    """What happened.
-
-    Scoped to security and identity events. Exam conduct is already covered in
-    far more detail by proctor_events, and duplicating it here would bury the
-    handful of lines an administrator actually needs under thousands of frames.
-    """
+    """What happened."""
     SIGNED_UP = "signed_up"
     LOGGED_IN = "logged_in"
     LOGIN_FAILED = "login_failed"
@@ -45,11 +19,7 @@ class ActivityType(str, enum.Enum):
     ID_VERIFICATION_FAILED = "id_verification_failed"
     IDENTITY_LOCKED = "identity_locked"
     IDENTITY_UNLOCKED = "identity_unlocked"
-    # An administrator asked a candidate to re-prove their identity. Kept
-    # distinct from BIOMETRICS_ERASED because the two mean opposite things
-    # about the stored evidence -- one preserves it, the other destroys it --
-    # and an auditor reading "biometrics erased" would draw the wrong
-    # conclusion about what is still available to review.
+    # An administrator asked a candidate to re-prove their identity.
     REVERIFICATION_REQUIRED = "reverification_required"
     REVERIFICATION_COMPLETED = "reverification_completed"
     BIOMETRICS_ERASED = "biometrics_erased"
@@ -81,10 +51,8 @@ class ActivityLog(Base):
     # Whose account this entry is ABOUT. This is the column the admin's
     # per-account timeline filters on.
     subject_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
-    # Who DID it. Usually the same as the subject (a student logging in), but
-    # differs for anything administrative -- an admin resetting a password,
-    # disabling an account, unlocking an identity. Keeping them apart is what
-    # makes "who reset this student's password?" answerable at all.
+    # Who DID it. Usually the same as the subject (a student
+    # logging in), but differs for anything administrative.
     actor_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
 
     activity_type = Column(db_enum(ActivityType), nullable=False, index=True)
@@ -93,12 +61,8 @@ class ActivityLog(Base):
     # Never templated from user input without the caller sanitising it first.
     description = Column(String(255), nullable=True)
 
-    # Denormalised copies, kept ON PURPOSE.
-    #
-    # The FKs above go NULL when an account is deleted, which is what preserves
-    # the row -- but a timeline of nulls is useless. Recording the email and role
-    # as they were at the time means an admin can still read "who was this?"
-    # after the account is gone, which is precisely when they most need to.
+    # Denormalised copies, kept ON PURPOSE. The FKs above go NULL when an account is deleted,
+    # which is what preserves the row.
     subject_email = Column(String(150), nullable=True)
     actor_email = Column(String(150), nullable=True)
 
@@ -117,8 +81,6 @@ class ActivityLog(Base):
     actor = relationship("User", foreign_keys=[actor_user_id])
 
     __table_args__ = (
-        # The only query shape the admin UI issues: one account's timeline,
-        # newest first. A plain index on subject_user_id would still leave the
-        # sort to be done in memory.
+        # The only query shape the admin UI issues: one account's timeline, newest first.
         Index("ix_activity_logs_subject_created", "subject_user_id", "created_at"),
     )

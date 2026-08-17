@@ -1,36 +1,12 @@
 /**
  * Centralized batching event logger for proctoring/lockdown violations.
- *
- * lib/lockdown.js and lib/proctoring.js each used to POST /proctoring/events
- * individually, once per violation. Fine at the rate lockdown breaches
- * happen at, but proctoring.js's face/pose/object/audio checks can flag
- * several violations within the same few seconds -- a spoof check plus a
- * phone detection plus a loud-noise reading, say -- turning one bad moment
- * into a burst of separate round trips. This factory queues events instead
- * and flushes them together against POST /proctoring/events/batch, on
- * whichever comes first: a size threshold, a timer, or the page unloading.
- *
- * Exported as a factory (createEventLogger()), matching createLockdown() and
- * createProctoring(), rather than a shared singleton: each mounted Exam page
- * gets its own queue instead of leaking state across mounts.
  */
 import { getToken } from "./auth.js";
 
 const FLUSH_INTERVAL_MS = 4000;
 const MAX_BATCH_SIZE = 8;
-// Hard cap on the in-memory queue. A prolonged outage (or a client that never
-// flushes) must not let this grow without bound -- old, less-actionable
-// events are dropped in favor of keeping recent ones, since violations
-// matter far more for "what's happening now" than for a complete audit trail
-// the client can be trusted to deliver.
-// Raised, and no longer the only line of defence.
-//
-// At 40, a disconnection of a couple of minutes silently discarded the OLDEST
-// violations -- which on a proctoring platform is the wrong end to drop. The
-// events at the start of an incident are the ones that establish what happened;
-// keeping only the most recent is keeping the aftermath and throwing away the
-// cause. Events are now mirrored to localStorage as well, so the cap bounds
-// memory rather than bounding the audit trail.
+// Hard cap on the in-memory queue. A prolonged outage (or a client
+// that never flushes) must not let this grow without bound.
 const MAX_QUEUE_SIZE = 500;
 // Where the queue is mirrored, keyed per attempt so two tabs or a stale entry
 // from a previous exam cannot bleed into this one.
@@ -48,16 +24,6 @@ export function createEventLogger() {
 
   /**
    * Mirror the queue to localStorage.
-   *
-   * The queue lived only in memory, so a tab crash, an accidental reload or a
-   * closed laptop lost every violation not yet flushed -- exactly the moments
-   * during which violations are most likely to be piling up. localStorage
-   * survives all three, and `restore` below picks them up on the next load.
-   *
-   * Screenshots are dropped from the mirrored copy: they are base64 JPEGs and
-   * would blow the ~5MB origin quota within a handful of events, taking the
-   * rest of the queue with them. The event, its type and its timestamp survive;
-   * the image is the part that can be lost without losing the record.
    */
   function persistQueue() {
     if (!attemptId) return;
@@ -155,14 +121,10 @@ export function createEventLogger() {
     }
   }
 
-  /** Best-effort synchronous-ish flush for page unload. Plain fetch() is not
-   * guaranteed to complete once the page starts tearing down, but a
-   * keepalive fetch is -- the browser keeps the request alive independent of
-   * the page's lifetime, for small bodies (well within that limit here).
-   * navigator.sendBeacon() would be the more common choice, but it cannot
-   * set an Authorization header, and this backend authenticates with a
-   * bearer token rather than a cookie -- a beacon POST would arrive as an
-   * anonymous request and be rejected. */
+  /**
+   * Best-effort synchronous-ish flush for page unload. Plain fetch() is not guaranteed to
+   * complete once the page starts tearing down, but a keepalive fetch is.
+   */
   function flushOnUnload() {
     if (queue.length === 0) return;
     const batch = queue;

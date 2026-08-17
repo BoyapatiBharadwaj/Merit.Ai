@@ -9,21 +9,6 @@ import { setSession } from "../lib/auth.js";
 
 /**
  * Choose the first password on an account somebody else created.
- *
- * This screen exists because the alternative it replaces was worse than it
- * looked. An approved examiner used to be emailed a password an administrator
- * had typed. That password then lived in a mailbox in plain text indefinitely,
- * was known to at least two people, and made "only this examiner could have
- * done that" untrue of everything the account subsequently did -- none of which
- * a "please change it immediately" line in the email actually fixes.
- *
- * The link that lands here carries a single-use token, stored server-side only
- * as a hash, that expires. The password ends up on the account without ever
- * having been transmitted or known to anybody but its owner.
- *
- * The link is checked BEFORE the form is shown. Letting somebody read the page,
- * think of a password, type it twice and only then be told the link expired
- * three days ago is a small cruelty that costs one extra request to avoid.
  */
 export default function Activate() {
   const navigate = useNavigate();
@@ -32,11 +17,7 @@ export default function Activate() {
   const email = (params.get("email") || "").trim().toLowerCase();
 
   // "checking" -> "ready" | "invalid" | "unreachable"
-  //
-  // "invalid" and "unreachable" are kept apart deliberately. A dead link and a
-  // server that cannot be reached call for opposite actions -- ask for a new
-  // invitation, versus try again in a minute -- and collapsing them into one
-  // "something went wrong" sends half the people down the wrong path.
+  // "invalid" and "unreachable" are kept apart deliberately.
   const [state, setState] = useState("checking");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -84,14 +65,7 @@ export default function Activate() {
     setSubmitting(true);
     try {
       const data = await Api.post("/auth/activate", { email, token, password });
-      // Signed in immediately rather than bounced to the login form. They have
-      // proved control of the mailbox and just chosen the password; asking them
-      // to type it again establishes nothing.
-      //
-      // remember=false: this is very often a shared or institutional machine,
-      // and the person has not been offered the choice on this screen. Opting
-      // somebody into a persistent session they were never asked about is the
-      // same mistake the login page's "Keep me signed in" default used to make.
+      // Signed in immediately rather than bounced to the login form.
       setSession(data, false);
       navigate(data.role === "admin" ? "/dashboard" : "/examiner", { replace: true });
     } catch (err) {

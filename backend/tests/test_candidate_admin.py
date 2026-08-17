@@ -1,11 +1,5 @@
-"""
-Administrator control over a candidate account: editing it, and asking the
-candidate to prove their identity again.
-
-Deleting, deactivating and resetting a password are covered in
-test_activity_and_account_admin.py -- those verbs belong to every role and live
-in users.py. What is tested here is what is specific to a CANDIDATE: the
-details their identity was verified against, and the evidence behind it.
+"""Administrator control over a candidate account: editing it,
+and asking the candidate to prove their identity again.
 """
 from datetime import datetime, timezone
 
@@ -23,12 +17,7 @@ def _student(db_session, email="student@example.com"):
 
 
 def _verify_fully(db_session, student, *, face=True):
-    """Put a candidate in the state a real one reaches after both checks.
-
-    The face half is faked with a FaceProfile row rather than by driving the
-    real recogniser: this module is about the administrative rules on top of
-    verification, not about whether ArcFace works.
-    """
+    """Put a candidate in the state a real one reaches after both checks."""
     from app.models.face_profile import FaceProfile
 
     student.id_verified = True
@@ -44,9 +33,8 @@ def _verify_fully(db_session, student, *, face=True):
     return student
 
 
-# ------------------------------------------------------------------------------
-# Editing
-# ------------------------------------------------------------------------------
+# --- - ---
+# Editing ----------------------------------------------------------------------------
 
 def test_admin_can_correct_an_unverified_candidates_details(client, seed_roles, admin_token, db_session):
     _register_student_and_login(client)
@@ -67,14 +55,7 @@ def test_admin_can_correct_an_unverified_candidates_details(client, seed_roles, 
 
 def test_editing_a_verified_name_unlocks_and_requires_reverification(client, seed_roles,
                                                                      admin_token, db_session):
-    """The point of the whole feature.
-
-    The stored name was matched against the name printed on an ID card, and
-    identity_locked records that this happened. Renaming it silently would
-    leave a "verified" badge attached to a name nobody has ever checked --
-    worse than no badge, because the badge is what an examiner relies on when
-    deciding whether the person on the webcam is the person enrolled.
-    """
+    """The point of the whole feature."""
     _register_student_and_login(client)
     student = _verify_fully(db_session, _student(db_session))
     assert student.identity_locked is True
@@ -93,12 +74,7 @@ def test_editing_a_verified_name_unlocks_and_requires_reverification(client, see
 
 
 def test_changing_only_the_roll_number_costs_nothing(client, seed_roles, admin_token, db_session):
-    """A roll number was never matched against the ID card.
-
-    Charging a candidate a full re-verification for a change that has nothing
-    to do with their identity evidence would make administrators avoid fixing
-    typos, which is how bad data becomes permanent.
-    """
+    """A roll number was never matched against the ID card."""
     _register_student_and_login(client)
     student = _verify_fully(db_session, _student(db_session))
 
@@ -132,9 +108,8 @@ def test_only_an_admin_can_edit_a_candidate(client, seed_roles, db_session):
     assert res.status_code == 403
 
 
-# ------------------------------------------------------------------------------
-# Re-verification
-# ------------------------------------------------------------------------------
+# --- - ---
+# Re-verification ----------------------------------------------------------------------------
 
 def test_requiring_reverification_blocks_the_exam_gate(client, seed_roles, admin_token, db_session):
     from app.services import identity_service
@@ -157,13 +132,7 @@ def test_requiring_reverification_blocks_the_exam_gate(client, seed_roles, admin
 
 
 def test_the_evidence_is_kept_not_erased(client, seed_roles, admin_token, db_session):
-    """Erasing biometrics and requiring re-verification are opposite actions.
-
-    The moment somebody doubts the enrolled face is exactly the moment it must
-    be preserved -- it is what a review will look at. If this ever starts
-    deleting, the feature has become a worse version of the erase endpoint that
-    already exists.
-    """
+    """Erasing biometrics and requiring re-verification are opposite actions."""
     from app.models.face_profile import FaceProfile
 
     _register_student_and_login(client)
@@ -303,15 +272,9 @@ def test_the_request_is_written_to_the_audit_trail(client, seed_roles, admin_tok
     assert "Spot check" in (entry.description or "")
 
 
-# ------------------------------------------------------------------------------
-# Deletion, and what it would take with it
-#
-# The guard against deleting an account with real exam history existed only on
-# DELETE /admin/examiners/{id}. The admin UI deletes through DELETE
-# /users/{id} -- the route that serves both roles -- which had no check at all.
-# So the protection depended on which button you happened to press, and
-# candidates had none.
-# ------------------------------------------------------------------------------
+# --- - ---
+# Deletion, and what it would take with it The guard against deleting an account with real exam
+# history existed only on DELETE /admin/examiners/{id}.
 
 def _attempt_for(db_session, student):
     from app.models.attempt import StudentExamAttempt
@@ -331,12 +294,7 @@ def _attempt_for(db_session, student):
 
 
 def test_a_candidate_who_has_sat_an_exam_cannot_be_deleted(client, seed_roles, admin_token, db_session):
-    """Deleting them would destroy the assessment record, not just the account.
-
-    Answers, marks and the proctoring evidence behind them all cascade from the
-    user row. That is correct for a genuine erasure request and completely
-    wrong as the default for "this person has left".
-    """
+    """Deleting them would destroy the assessment record, not just the account."""
     _register_student_and_login(client)
     student = _student(db_session)
     _attempt_for(db_session, student)
@@ -382,11 +340,7 @@ def test_deactivating_that_candidate_still_works(client, seed_roles, admin_token
 
 
 def test_the_examiner_guard_is_not_route_dependent(client, seed_roles, admin_token, db_session):
-    """The Examiners page refused this; /users/{id} did not.
-
-    Two routes to the same destruction with one guard between them is the same
-    as no guard, for anyone who uses the other door.
-    """
+    """The Examiners page refused this; /users/{id} did not."""
     from app.models.examiner import Examiner
     from tests.test_exam_workflow import _create_examiner_and_login
 

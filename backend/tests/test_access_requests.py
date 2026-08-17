@@ -1,7 +1,4 @@
-"""
-Examiner access request workflow: public submit, admin review, approval
-minting a real examiner account.
-"""
+"""Examiner access request workflow: public submit, admin review, approval minting a real examiner account."""
 import re
 from urllib.parse import unquote
 
@@ -20,12 +17,7 @@ VALID = {
 
 
 def _token_from(outbox, email):
-    """The raw token, recovered the way its recipient recovers it.
-
-    Only the digest is stored, so the test cannot read the token out of the
-    database -- which is the property under test. It comes out of the message
-    body instead, exactly as it would for a person clicking the link.
-    """
+    """The raw token, recovered the way its recipient recovers it."""
     message = next(m for m in reversed(outbox) if m["to"] == email)
     match = re.search(r"[?&]token=([A-Za-z0-9_\-%]+)", message["text"])
     assert match, message["text"]
@@ -36,9 +28,8 @@ def submit(client, **overrides):
     return client.post("/api/v1/access-requests", json={**VALID, **overrides})
 
 
-# --------------------------------------------------------------------------
-# Public submission
-# --------------------------------------------------------------------------
+# --- - ---
+# Public submission ------------------------------------------------------------------------
 
 def test_anyone_can_submit_a_request(client, seed_roles):
     response = submit(client)
@@ -75,9 +66,8 @@ def test_submitting_for_an_existing_account_still_looks_normal(client, seed_role
     assert known.json() == unknown.json()
 
 
-# --------------------------------------------------------------------------
-# Access control
-# --------------------------------------------------------------------------
+# --- - ---
+# Access control ------------------------------------------------------------------------
 
 def test_listing_requests_requires_admin(client, seed_roles):
     assert client.get("/api/v1/access-requests").status_code == 401
@@ -93,23 +83,15 @@ def test_examiner_cannot_list_requests(client, seed_roles, admin_token):
     assert client.get("/api/v1/access-requests", headers=auth_headers(token)).status_code == 403
 
 
-# --------------------------------------------------------------------------
-# Review
-# --------------------------------------------------------------------------
+# --- - ---
+# Review ------------------------------------------------------------------------
 
 def _first_request_id(client, admin_token):
     return client.get("/api/v1/access-requests", headers=auth_headers(admin_token)).json()[0]["id"]
 
 
 def test_approving_creates_an_account_that_only_its_owner_can_open(client, seed_roles, admin_token, db_session):
-    """Approval mints the account and mails a link -- it does not mint a password.
-
-    This test used to assert the opposite: that the admin chose a password in
-    the approve payload and the new examiner could immediately log in with it.
-    That behaviour was the bug. It meant the password existed in the admin's
-    head and in an inbox in plain text, so "only this examiner could have done
-    that" was never true of anything the account did.
-    """
+    """Approval mints the account and mails a link -- it does not mint a password."""
     submit(client)
     request_id = _first_request_id(client, admin_token)
 
@@ -128,9 +110,8 @@ def test_approving_creates_an_account_that_only_its_owner_can_open(client, seed_
     match = next(e for e in examiners if e["email"] == VALID["email"])
     assert match["organization_name"] == VALID["organization_name"]
 
-    # ...but nobody can sign in yet. The stored secret is 256 random bits that
-    # no human has ever seen, so there is no password to guess or to have been
-    # mailed. Two plausible guesses, to make the point concretely.
+    # ...but nobody can sign in yet. The stored secret is 256 random bits that no human has ever
+    # seen, so there is no password to guess or to have been mailed.
     for guess in ("Sup3rSecret!", VALID["organization_name"]):
         denied = client.post("/api/v1/auth/login",
                              json={"email": VALID["email"], "password": guess})
@@ -308,14 +289,9 @@ def test_pending_count_reflects_the_queue(client, seed_roles, admin_token):
     assert client.get("/api/v1/access-requests/pending-count", headers=auth_headers(admin_token)).json()["pending"] == 1
 
 
-# ------------------------------------------------------------------------------
-# Invitation-only registration
-#
-# REGISTRATION_MODE defaults to "open", which is right for evaluating the
-# software and wrong for an institution running degree examinations: signup was
-# available to anyone on the internet who found the URL, so the candidate list
-# was whoever happened to sign up.
-# ------------------------------------------------------------------------------
+# --- - ---
+# Invitation-only registration REGISTRATION_MODE defaults to "open", which is right for
+# evaluating the software and wrong for an institution running degree examinations.
 
 def _signup(client, email="outsider@example.com"):
     return client.post("/api/v1/auth/register/student", json={
@@ -343,14 +319,7 @@ def test_invite_mode_refuses_an_address_nobody_enrolled(client, seed_roles, monk
 
 
 def test_invite_mode_accepts_someone_on_an_exam_roster(client, seed_roles, admin_token, db_session, monkeypatch):
-    """The invite is the one the institution already had to create.
-
-    Deliberately not a second allow-list. Exam participants and organization
-    members are both keyed on email precisely because they are written before
-    the account exists -- so the roster an examiner builds to run the exam is
-    the same roster that authorises signing up for it, and there is no separate
-    list to drift out of date.
-    """
+    """The invite is the one the institution already had to create."""
     from app.core.config import settings
     from app.models.organization import ExamParticipant
     from app.services import organization_service
@@ -389,23 +358,13 @@ def test_invite_mode_accepts_an_organization_member(client, seed_roles, db_sessi
 
 def test_staff_logins_are_emailed_and_candidate_logins_are_not(client, seed_roles, admin_token,
                                                                outbox, monkeypatch):
-    """Staff only, and that restriction is the design.
-
-    An examiner account can read candidate identity photographs and alter
-    results, so an unexpected sign-in is worth an inbox interruption. Doing the
-    same for candidates would be one email per student per exam, which is how a
-    security notice becomes something people filter away unread.
-    """
+    """Staff only, and that restriction is the design."""
     from app.services import email_service
 
     monkeypatch.setattr(email_service, "is_enabled", lambda: True)
 
-    # _create_examiner_and_login signs the examiner in via the ONE-TIME
-    # activation link, not /auth/login -- activating an account and logging
-    # into it are different events, and only the latter is what this notice is
-    # about. So the helper's own setup produces no notice (correctly -- there
-    # is nothing here to email a warning about yet); the notice is asserted
-    # against an EXPLICIT /auth/login call, same as the candidate half below.
+    # _create_examiner_and_login signs the examiner in via
+    # the ONE-TIME activation link, not /auth/login.
     examiner_token = _create_examiner_and_login(client, admin_token)
     assert examiner_token
     outbox.clear()
@@ -418,11 +377,8 @@ def test_staff_logins_are_emailed_and_candidate_logins_are_not(client, seed_role
     assert "reset your password" in staff_mail[0]["text"].lower()
 
     outbox.clear()
-    # An EXPLICIT login. _register_student_and_login returns the token that
-    # registration itself hands back and never touches /auth/login -- so using
-    # it here made this half of the test vacuous: no login happened, so of
-    # course no notice was sent, and the assertion held just as well with the
-    # staff filter deleted. Removing the filter is now what makes this fail.
+    # An EXPLICIT login. _register_student_and_login returns the token that registration itself
+    # hands back and never touches /auth/login.
     _register_student_and_login(client, "candidate@example.com")
     signed_in = client.post("/api/v1/auth/login",
                             json={"email": "candidate@example.com", "password": "Sup3rSecret!"})
@@ -443,17 +399,7 @@ def test_the_sign_in_notice_can_be_switched_off(client, seed_roles, admin_token,
 
 def test_reissuing_an_activation_link_kills_the_previous_one(client, seed_roles, admin_token,
                                                              db_session, outbox, email_on):
-    """"We resent it" must not quietly mean "there are now two".
-
-    An address gets mistyped, or a message lands in spam, and somebody asks for
-    the link again. If the first one stays live, an invitation that went to the
-    wrong inbox is still usable by whoever received it -- and revoking access
-    would mean tracking down every link ever issued.
-
-    This test exists because removing the invalidation broke nothing: the suite
-    passed with two live tokens, which is precisely the failure it should have
-    caught.
-    """
+    """"We resent it" must not quietly mean "there are now two"."""
     from app.models.otp import OtpCode, OtpPurpose
     from app.services import otp_service
 
@@ -489,14 +435,8 @@ def test_reissuing_an_activation_link_kills_the_previous_one(client, seed_roles,
     assert live == 1
 
 
-# ------------------------------------------------------------------------------
-# Re-notification
-#
-# The de-dupe that protects the admin queue used to be permanent: once a pending
-# row existed, no further email was ever sent for that address. A request made
-# while email was misconfigured therefore stayed unannounced forever, and
-# resubmitting -- the obvious remedy -- silently did nothing.
-# ------------------------------------------------------------------------------
+# --- - ---
+# Re-notification The de-dupe that protects the admin queue used to be permanent.
 
 def _requests_mailed(outbox):
     return [m for m in outbox if m["subject"].startswith("New examiner access request")]
@@ -504,11 +444,7 @@ def _requests_mailed(outbox):
 
 @pytest.fixture
 def admin_inbox(monkeypatch):
-    """Configure the shared operational mailbox these notifications go to.
-
-    Without it the tests below exercise the no-recipient path instead of the
-    one under test -- which is itself worth knowing, and is covered separately.
-    """
+    """Configure the shared operational mailbox these notifications go to."""
     from app.core.config import settings
 
     monkeypatch.setattr(settings, "ADMIN_NOTIFICATION_EMAIL", "ops@institute.edu")
@@ -529,12 +465,7 @@ def test_a_double_click_does_not_send_two_emails(client, seed_roles, email_on, o
 
 def test_resubmitting_after_the_cooldown_notifies_again(client, seed_roles, db_session,
                                                         email_on, outbox, admin_inbox):
-    """The bug: this used to stay at one email forever.
-
-    Someone whose first request was submitted while SMTP was misconfigured had
-    no way to make the notification happen -- the queue showed the request, the
-    inbox never did, and submitting again did nothing at all.
-    """
+    """The bug: this used to stay at one email forever."""
     from datetime import timedelta
 
     from app.models.access_request import AccessRequest
@@ -556,12 +487,7 @@ def test_resubmitting_after_the_cooldown_notifies_again(client, seed_roles, db_s
 
 def test_a_request_that_was_never_notified_gets_notified(client, seed_roles, db_session,
                                                          email_on, outbox, admin_inbox):
-    """NULL means 'never told', not 'told at the beginning of time'.
-
-    This is the row migration 0027 is written for: a request already sitting in
-    the queue from before the column existed, or one whose notification failed.
-    It must break out of the permanent silence, not stay in it.
-    """
+    """NULL means 'never told', not 'told at the beginning of time'."""
     from app.models.access_request import AccessRequest
 
     submit(client)
@@ -576,11 +502,7 @@ def test_a_request_that_was_never_notified_gets_notified(client, seed_roles, db_
 
 def test_no_admin_recipient_is_logged_rather_than_silently_dropped(client, seed_roles, db_session,
                                                                    email_on, outbox, monkeypatch, caplog):
-    """Silence here looks exactly like the platform working.
-
-    With no ADMIN_NOTIFICATION_EMAIL and no admin account, the request is still
-    recorded -- but somebody has to be able to find out that nobody was told.
-    """
+    """Silence here looks exactly like the platform working."""
     import logging
 
     from app.core.config import settings

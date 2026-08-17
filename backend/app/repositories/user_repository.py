@@ -21,14 +21,7 @@ def get_user_by_id(db: Session, user_id: int) -> User | None:
 
 
 def list_admin_emails(db: Session) -> list[str]:
-    """Email addresses of every active admin.
-
-    The fallback recipient list for administrative notifications when
-    ADMIN_NOTIFICATION_EMAIL isn't configured. Deactivated admins are excluded:
-    a disabled account should stop receiving operational mail, and someone who
-    has left the institution keeping a feed of access requests is exactly the
-    kind of quiet leak nobody notices.
-    """
+    """Email addresses of every active admin."""
     rows = (
         db.query(User.email)
         .join(Role, User.role_id == Role.id)
@@ -43,15 +36,10 @@ def create_user(db: Session, first_name: str, last_name: str, email: str, hashed
     now = datetime.now(timezone.utc)
     user = User(email=(email or "").strip().lower(), hashed_password=hashed_password, role_id=role_id)
     user.set_name(first_name, last_name)
-    # Stamped at creation, not left NULL. A NULL epoch is treated as "no epoch"
-    # by the token check, so an account whose password had never been changed
-    # would have unrevocable tokens until the first change -- which is precisely
-    # the window a freshly compromised new account is in.
+    # Stamped at creation, not left NULL.
     user.password_changed_at = now
     # Only ever set by a caller that actually checked a code (see
-    # auth_service.register_student). Defaulting to False means a new
-    # registration path added later is unverified until someone says otherwise,
-    # which is the safe direction for this flag to fail in.
+    # auth_service.register_student).
     user.email_verified_at = now if email_verified else None
     db.add(user)
     db.flush()

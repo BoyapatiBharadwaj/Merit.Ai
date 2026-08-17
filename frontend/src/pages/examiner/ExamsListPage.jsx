@@ -27,9 +27,6 @@ function CreateExamForm({ open, onClose, onCreated }) {
         description: form.description.trim() || null,
         duration_minutes: parseInt(form.duration, 10),
         // parseInt(..) || 40 turned a valid 0 into 40, because 0 is falsy.
-        // The server has always accepted a 0% pass mark; the form silently
-        // changed the examiner's answer on the way out, and nothing anywhere
-        // would ever have shown them it had.
         pass_percentage: Number.isFinite(parseInt(form.passPercentage, 10))
           ? parseInt(form.passPercentage, 10)
           : 40,
@@ -138,9 +135,7 @@ function ExamsListView({ onManage }) {
     loadExams();
   }, []);
 
-  // Draft-only, mirroring the backend's own gate (exam_service._get_editable_exam)
-  // -- once an exam is published it may already have real attempts riding on
-  // it, so deletion is never offered for anything but a draft.
+  // Draft-only, mirroring the backend's own gate (exam_service._get_editable_exam).
   async function handleDeleteExam(examId) {
     setDeletingExamId(examId);
     setDeleteExamError(null);
@@ -251,11 +246,7 @@ function ExamsListView({ onManage }) {
 
 /* ===================== Exam builder: sections & questions ===================== */
 
-// Every question needs at least two options to mean anything (a
-// single-option "choice" isn't one) -- the same floor the backend enforces
-// in schemas/question.py. Four is just a friendly starting point; the
-// examiner can add or remove rows freely down to this floor or up to
-// however many the question needs (True/False needs 2, a longer list can
-// have 5+).
+// Every question needs at least two options to mean
+// anything (a single-option "choice" isn't one).
 
 export { CreateExamForm, ExamsListView };

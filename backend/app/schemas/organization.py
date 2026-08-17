@@ -28,13 +28,7 @@ class RosterMemberOut(BaseModel):
 
 
 class RosterEnrolRequest(BaseModel):
-    """Accepts a pasted list as readily as a single address.
-
-    Examiners enrol cohorts, not individuals, so the realistic input is a
-    column copied out of a spreadsheet. Splitting on commas, semicolons,
-    whitespace and newlines here means the UI never has to make the user
-    reformat what they already have.
-    """
+    """Accepts a pasted list as readily as a single address."""
     emails: list[str] = Field(min_length=1, max_length=2000)
 
     @field_validator("emails", mode="before")
@@ -51,13 +45,10 @@ class RosterEnrolResult(BaseModel):
     # Subset of `added` that matched an existing account and now has access
     # immediately, as opposed to holding an outstanding invitation.
     linked: list[str]
-    # Entries that were not addresses at all -- a pasted header row, a stray
-    # name column. Reported rather than dropped in silence, because a typo'd
-    # address otherwise only surfaces when the student cannot sit the exam.
+    # Entries that were not addresses at all -- a pasted header row, a stray name column.
     invalid: list[str] = []
-    # Enrolled here, but their account already belongs to another
-    # organization, so this grants them nothing. Surfaced explicitly because
-    # the roster row makes it *look* successful.
+    # Enrolled here, but their account already belongs to
+    # another organization, so this grants them nothing.
     in_another_organization: list[str] = []
 
 

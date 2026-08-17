@@ -12,15 +12,7 @@ from app.services import code_runner_service, email_service
 
 
 def format_exam_time(value: datetime | None) -> str | None:
-    """Render a scheduled time for an email body.
-
-    UTC and explicitly labelled as such. The alternative -- rendering in the
-    server's local timezone -- produces a string that is wrong for most
-    recipients and, worse, gives no hint that it might be: "starts at 09:00"
-    with no zone is the kind of detail someone misses an exam over. The app
-    itself localises times in the browser, where the reader's zone is actually
-    known; an email has no such luxury.
-    """
+    """Render a scheduled time for an email body."""
     if value is None:
         return None
     aware = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
@@ -35,18 +27,7 @@ SCHEDULE_GRACE = timedelta(seconds=30)
 
 def notify_exam_address(db: Session, exam, *, background: BackgroundTasks | None = None,
                          reason: str = "added") -> bool:
-    """Email the exam's nominated address with its current details.
-
-    Called whenever that address is SET or CHANGED -- not only at publish. An
-    examiner who types an address into the exam has just told the platform "tell
-    this person about this exam", and waiting until publish to act on it means
-    the confirmation arrives long after the moment they expected it, or never,
-    if the exam stays a draft.
-
-    Sends the exam's details as they stand right now, draft or published, so the
-    recipient gets something meaningful rather than a bare "you've been added".
-    Returns whether a message was queued, so callers can log or test it.
-    """
+    """Email the exam's nominated address with its current details."""
     if not exam.notify_email:
         return False
 
@@ -78,15 +59,7 @@ def _normalize_results_release_mode(payload: dict) -> dict:
 
 
 def create_exam(db: Session, examiner_id: int, payload: dict, background: BackgroundTasks | None = None):
-    """Stamp the owning examiner's organization onto the exam.
-
-    This is the only writer of Exam.organization_id, and it is what makes the
-    exam visible to that organization's students and nobody else. An examiner
-    with no organization cannot create exams at all: the alternative is a NULL
-    organization_id, which can_student_access_exam treats as inaccessible, so
-    the exam would be invisible to everyone and the examiner would have no way
-    to find out why.
-    """
+    """Stamp the owning examiner's organization onto the exam."""
     examiner = db.query(Examiner).filter(Examiner.id == examiner_id).first()
     if examiner is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Examiner profile not found.")
@@ -106,12 +79,6 @@ def create_exam(db: Session, examiner_id: int, payload: dict, background: Backgr
 def add_section(db: Session, examiner_id: int, exam_id: int, payload: dict):
     exam = _get_editable_exam(db, examiner_id, exam_id)
     # Append to the end rather than trusting whatever the client sent.
-    #
-    # Every section arrived with order_index 0, because the create form had no
-    # field for it and the schema defaulted it. Section.questions is ordered by
-    # order_index, so with every section at 0 the tie was broken by whatever the
-    # database returned -- the display order of an exam's sections was
-    # effectively arbitrary, and could differ between two page loads.
     payload = {**payload, "order_index": exam_repository.next_section_order(db, exam.id)}
     return exam_repository.add_section(db, exam.id, payload)
 
@@ -128,14 +95,7 @@ def reorder_sections(db: Session, examiner_id: int, exam_id: int, section_ids: l
 
 
 def update_section(db: Session, examiner_id: int, section_id: int, title: str):
-    """Rename a section, draft-only.
-
-    Reuses _get_editable_exam's owner + DRAFT gate rather than adding a
-    second rule: a section title is part of the paper a candidate sees, so it
-    freezes at publish for exactly the same reason questions and options do.
-    Anything looser would let an examiner relabel a section under students
-    who are mid-attempt.
-    """
+    """Rename a section, draft-only."""
     section = exam_repository.get_section(db, section_id)
     if not section:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Section not found.")
@@ -157,10 +117,7 @@ def add_question(db: Session, examiner_id: int, section_id: int, text: str, mark
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Section not found.")
     _get_editable_exam(db, examiner_id, section.exam_id)
 
-    # Server-assigned when the caller does not supply one, which was every
-    # caller: the builder and the bulk importer both sent 0 for every question,
-    # so questions inside a section had no meaningful order at all until
-    # somebody happened to drag one.
+    # Server-assigned when the caller does not supply one, which was every caller.
     if order_index is None:
         order_index = exam_repository.next_question_order(db, section_id)
 
@@ -173,9 +130,7 @@ def add_question(db: Session, examiner_id: int, section_id: int, text: str, mark
         else:
             if correct_count < 1:
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, "Mark at least one option as correct.")
-        # Question and options in one transaction -- see add_question. The loop
-        # that used to live here committed each option separately, so a failure
-        # part-way through left an MCQ whose correct answer might not exist.
+        # Question and options in one transaction -- see add_question.
         question = exam_repository.add_question(
             db, section_id, text, marks, order_index, question_type=question_type,
             explanation=explanation, options=options,
@@ -233,28 +188,13 @@ def update_question(db: Session, examiner_id: int, question_id: int, text: str, 
             language=language, starter_code=starter_code, test_cases_json=json.dumps(test_cases),
             time_limit_seconds=time_limit_seconds, explanation=explanation,
         )
-        # Switching an existing MCQ question to coding must not leave its old
-        # options behind -- they'd otherwise be orphaned rows with no UI ever
-        # showing them again, but still sitting in the table.
+        # Switching an existing MCQ question to coding must not leave its old options behind.
         exam_repository.replace_options(db, question.id, [])
     return exam_repository.get_question(db, question.id)
 
 
 def add_questions_bulk(db: Session, examiner_id: int, section_id: int, questions: list[dict]) -> dict:
-    """Import a batch of questions, all or nothing.
-
-    The importer used to POST one request per question from the browser. Any
-    failure part-way through -- one malformed row, a dropped connection at
-    question 40 of 60 -- left the exam holding whatever had already succeeded,
-    with no record of where it stopped. The examiner's options were to hunt for
-    the boundary by eye or delete everything and start again, and a paper that
-    is silently missing its last twenty questions is the kind of thing nobody
-    notices until candidates are sitting it.
-
-    One request, one transaction. Every question is validated first, so a bad
-    row is reported with its position and nothing is written; then all of them
-    are inserted together.
-    """
+    """Import a batch of questions, all or nothing."""
     section = exam_repository.get_section(db, section_id)
     if not section:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Section not found.")
@@ -263,9 +203,8 @@ def add_questions_bulk(db: Session, examiner_id: int, section_id: int, questions
     if not questions:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "No questions to import.")
 
-    # Validate everything before writing anything, and report EVERY problem
-    # rather than only the first -- an examiner fixing a sixty-question import
-    # one error per attempt is a worse experience than the partial writes.
+    # Validate everything before writing anything, and
+    # report EVERY problem rather than only the first.
     problems = []
     for position, item in enumerate(questions, start=1):
         reason = _describe_question_problem(item)
@@ -331,22 +270,7 @@ def delete_question(db: Session, examiner_id: int, question_id: int):
 
 
 def delete_section(db: Session, examiner_id: int, section_id: int) -> dict:
-    """Delete a section and everything in it. Draft-only.
-
-    Same owner + DRAFT gate as every other structural edit (_get_editable_exam):
-    once an exam is published a candidate may be mid-attempt against that exact
-    paper, and removing a section under them would invalidate their attempt's
-    question_order and their answers along with it.
-
-    Refuses to delete the LAST section. An exam with no sections cannot be
-    published (publish_exam requires at least one question) and shows as an
-    empty shell in the builder -- so this would leave the examiner in a state
-    whose only exit is deleting the exam. Deleting the exam is a separate,
-    clearly-labelled action; a section delete should not become one by accident.
-
-    Returns what was removed so the UI can confirm it concretely rather than
-    just closing a dialog.
-    """
+    """Delete a section and everything in it. Draft-only."""
     section = exam_repository.get_section(db, section_id)
     if not section:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Section not found.")
@@ -375,26 +299,13 @@ def reorder_questions(db: Session, examiner_id: int, section_id: int, question_i
 
 
 def delete_exam(db: Session, examiner_id: int, exam_id: int):
-    """Permanently removes a drafted exam and everything under it (sections,
-    questions, options). Reuses _get_editable_exam's owner + DRAFT-only gate
-    deliberately: a published exam may already have student attempts and
-    results riding on it, so deleting it is not offered at all -- an
-    examiner who no longer wants a published exam available should close it
-    instead (see the exam status lifecycle), not delete it out from under
-    students who already sat it."""
+    """Permanently removes a drafted exam and everything under it (sections, questions, options)."""
     exam = _get_editable_exam(db, examiner_id, exam_id)
     exam_repository.delete_exam(db, exam)
 
 
 def publish_exam(db: Session, examiner_id: int, exam_id: int, background: BackgroundTasks | None = None):
-    """Publish, then notify the nominated address.
-
-    The notification hangs off publish rather than create on purpose. A draft
-    is a work in progress that an examiner may build over days and never
-    finish; publishing is the single moment the exam becomes real to
-    candidates, so it is the only point at which "an exam has been scheduled"
-    is true enough to email about.
-    """
+    """Publish, then notify the nominated address."""
     exam = _get_editable_exam(db, examiner_id, exam_id)
     if not exam.sections or not any(section.questions for section in exam.sections):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Cannot publish an exam with no questions.")
@@ -414,20 +325,7 @@ def _get_owned_exam(db: Session, examiner_id: int, exam_id: int):
 
 
 def close_exam(db: Session, examiner_id: int, exam_id: int, *, force: bool = False):
-    """Stop accepting new attempts, keeping everything already sat.
-
-    ExamStatus.CLOSED existed in the database from the beginning with no
-    endpoint and no button, so a published exam stayed visible to candidates
-    forever -- the only way to take one down was to leave it and hope the
-    end_time was set. An examiner who forgot one had no way to correct it.
-
-    Refuses by default while anyone is still writing. Closing an exam out from
-    under a live candidate is the participant-list bug in a different costume,
-    and it should take a deliberate second action rather than happening because
-    the examiner did not know somebody was still in the room. `force=True`
-    closes anyway; attempts already underway are finalised by their own
-    deadline as usual, so nobody's work is discarded either way.
-    """
+    """Stop accepting new attempts, keeping everything already sat."""
     exam = _get_owned_exam(db, examiner_id, exam_id)
     if exam.status == ExamStatus.DRAFT:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
@@ -448,13 +346,7 @@ def close_exam(db: Session, examiner_id: int, exam_id: int, *, force: bool = Fal
 
 
 def reopen_exam(db: Session, examiner_id: int, exam_id: int):
-    """Put a closed exam back on the candidate list.
-
-    Only from CLOSED, and only back to PUBLISHED -- never to DRAFT. Returning a
-    sat exam to draft would unlock its questions for editing while results
-    referencing those exact questions already exist, which would silently change
-    what a graded candidate was asked.
-    """
+    """Put a closed exam back on the candidate list."""
     exam = _get_owned_exam(db, examiner_id, exam_id)
     if exam.status != ExamStatus.CLOSED:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Only a closed exam can be reopened.")
@@ -463,28 +355,20 @@ def reopen_exam(db: Session, examiner_id: int, exam_id: int):
 
 def update_exam_details(db: Session, examiner_id: int, exam_id: int, payload: dict,
                          background: BackgroundTasks | None = None):
-    """Full edit of every exam field (title, duration, pass mark, schedule,
-    etc.) -- draft only, reusing _get_editable_exam's owner+draft gate. Once
-    published, structural fields are frozen and only the schedule can still
-    move, through the narrower, state-aware update_exam_schedule below."""
+    """Full edit of every exam field (title, duration, pass mark, schedule, etc.) -- draft only,
+    reusing _get_editable_exam's owner+draft gate.
+    """
     exam = _get_editable_exam(db, examiner_id, exam_id)
     previous_email = exam.notify_email
     updated = exam_repository.update_exam(db, exam, _normalize_results_release_mode(payload))
-    # Only on a genuine change. Re-saving the exam with the same address must
-    # not re-notify -- an examiner tweaking the pass mark three times should not
-    # send three emails to the same person.
+    # Only on a genuine change. Re-saving the exam with the same address must not re-notify.
     if updated.notify_email and updated.notify_email != previous_email:
         notify_exam_address(db, updated, background=background, reason="added")
     return updated
 
 
 def has_exam_started(exam, now: datetime | None = None) -> bool:
-    """Whether the exam's start gate has already opened -- the line the
-    schedule-edit rule hinges on. A draft has never started (nobody can be
-    mid-attempt). A published exam with no start_time is open the instant it
-    is published (see compute_candidate_status's "no window -> ongoing"
-    branch), so it counts as started immediately. Otherwise it's started
-    once `now` reaches the configured start_time."""
+    """Whether the exam's start gate has already opened -- the line the schedule-edit rule hinges on."""
     if exam.status != ExamStatus.PUBLISHED:
         return False
     if exam.start_time is None:
@@ -494,10 +378,7 @@ def has_exam_started(exam, now: datetime | None = None) -> bool:
 
 
 def _same_instant(a: datetime | None, b: datetime | None) -> bool:
-    """True if two possibly-None, possibly-naive/aware datetimes represent
-    the same instant -- used to tell "the frontend resent the start time
-    unchanged" (fine, even once locked) apart from "the frontend tried to
-    move it" (blocked once the exam has started)."""
+    """True if two possibly-None, possibly-naive/aware datetimes represent the same instant."""
     if a is None or b is None:
         return a is None and b is None
     return _as_utc(a) == _as_utc(b)
@@ -516,19 +397,7 @@ def _validate_schedule_change(start_time: datetime | None, end_time: datetime | 
 
 
 def update_exam_schedule(db: Session, examiner_id: int, exam_id: int, start_time: datetime | None, end_time: datetime | None):
-    """Schedule-only edit, available in every exam state except closed --
-    unlike update_exam_details this deliberately does NOT require the exam
-    to still be a draft, since the whole point is letting an examiner adjust
-    dates after publishing. What it allows depends on whether the exam has
-    already started (see has_exam_started):
-
-      * not started (still a draft, or published with a start time still in
-        the future): both start and end may be changed freely.
-      * started (published, and either past its start time or never had
-        one): the start time is frozen -- candidates may already be
-        mid-attempt -- but the end time can still be extended or otherwise
-        adjusted, e.g. to grant extra time after a technical issue.
-    """
+    """Schedule-only edit, available in every exam state except closed."""
     exam = exam_repository.get_exam(db, exam_id)
     if not exam:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Exam not found.")
@@ -555,25 +424,15 @@ def _as_utc(value: datetime) -> datetime:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 
-# Attempt states that mean "this candidate is done with this exam" -- lumped
-# together as "completed" on the dashboard. TERMINATED (lockdown strike limit
-# reached) is included here too: it is not a clean pass, but it is finished
-# and scored, so it belongs with the other finished states rather than
-# lingering as "ongoing" or "missed" forever.
+# Attempt states that mean "this candidate is done with this
+# exam" -- lumped together as "completed" on the dashboard.
 _FINISHED_ATTEMPT_STATUSES = (AttemptStatus.SUBMITTED, AttemptStatus.AUTO_SUBMITTED, AttemptStatus.TERMINATED)
 
 
 def compute_candidate_status(exam, attempt, now: datetime | None = None) -> str:
     """The single source of truth for which of the four dashboard buckets
     (upcoming / ongoing / completed / missed) an exam falls into for one
-    candidate, derived purely from timestamps and attempt state -- no manual
-    status field to fall out of sync.
-
-    Order matters: attempt state is checked before the time window, so a
-    student who is mid-attempt when the window closes still sees "Ongoing"
-    (their own attempt deadline, not the exam's publish window, governs
-    submission -- see attempt_service.remaining_seconds) rather than being
-    told they missed the exam they are actively taking.
+    candidate, derived purely from timestamps and attempt state.
     """
     now = now or datetime.now(timezone.utc)
     if attempt is not None:
@@ -614,9 +473,7 @@ def serialize_exam_for_candidate(exam, attempt, result, now: datetime | None = N
         "status": exam.status.value,
         "randomize_questions": exam.randomize_questions,
         "proctoring_enabled": exam.proctoring_enabled,
-        # What this exam actually asks for, resolved server-side. The page used
-        # to demand camera, microphone, screen share and fullscreen from every
-        # candidate regardless, then say the exam was not proctored.
+        # What this exam actually asks for, resolved server-side.
         "requires": {
             "camera": exam.requires("camera"),
             "microphone": exam.requires("microphone"),

@@ -7,10 +7,7 @@ from pydantic_settings import BaseSettings
 
 logger = logging.getLogger("app")
 
-# The value shipped in .env.example. Public by definition -- anyone who has
-# seen this repository can forge a valid token (including an admin one)
-# against any deployment still signing with it, so `_validate_secrets` below
-# refuses to boot with it once ENVIRONMENT is "production".
+# The value shipped in .env.example.
 PLACEHOLDER_SECRET_KEY = "change_this_to_a_long_random_secret_key"
 # HS256 keys shorter than this are brute-forceable offline from a single
 # captured token. 32 bytes matches the digest size of the underlying SHA-256.
@@ -18,112 +15,49 @@ MIN_SECRET_KEY_LENGTH = 32
 
 
 class Settings(BaseSettings):
-    # "development" | "production". Drives fail-fast validation of anything
-    # that is merely a warning locally but must never reach a real
-    # deployment (see _validate_secrets). Kept as a plain string rather than
-    # an Enum so an unrecognised value is treated as non-production and
-    # simply warns, instead of crashing the app on a config typo.
+    # "development" | "production". Drives fail-fast validation of anything that is merely a
+    # warning locally but must never reach a real deployment (see _validate_secrets).
     ENVIRONMENT: str = "development"
-    # Only ever used when DATABASE_URL is unset -- running the app or the tests
-    # straight from backend/ with no environment. Every containerised service is
-    # given an explicit DATABASE_URL by docker-compose.yml, built from
-    # POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB in the root .env, so this
-    # string is never what the stack connects with.
-    #
-    # It used to read `exam_user:exam_pass@localhost:5432/exam_proctor`, left
-    # over from the project's first name. Nothing had used those credentials in
-    # a long time, but they were the most authoritative-looking connection
-    # details in the repository -- so anyone reaching for a database client read
-    # them, tried them, and got "password authentication failed for user
-    # exam_user" against whichever Postgres happened to answer on localhost.
-    # A default that is wrong is worse than no default, because it is believed.
+    # Only ever used when DATABASE_URL is unset -- running the app
+    # or the tests straight from backend/ with no environment.
     DATABASE_URL: str = "postgresql://merit_ai:change_this_password@localhost:5432/merit_ai"
     SECRET_KEY: str = PLACEHOLDER_SECRET_KEY
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 120
-    # Extra life on the attempt-scoped token beyond the attempt's own deadline
-    # (see security.create_attempt_token). The candidate is submitting at the
-    # moment their deadline passes, and the submission -- possibly retried over
-    # a bad connection -- must not fail because the token it needs expired in
-    # the same second. Also covers the server-side expiry sweep finalising an
-    # attempt the candidate abandoned.
+    # Extra life on the attempt-scoped token beyond the attempt's own deadline (see
+    # security.create_attempt_token).
     ATTEMPT_TOKEN_GRACE_MINUTES: int = 30
 
-    # --- account policy -------------------------------------------------------
-    # Refuse student self-registration that has not proved control of the email
-    # address. Both registration endpoints were public, so the OTP flow the
-    # frontend walks a candidate through was decoration: POST
-    # /auth/register/student created an account with no code at all. With this
-    # on, the unverified endpoint is closed and the verified one is the only way
-    # in. _validate_secrets refuses to boot if this is on while email is off,
-    # because that combination lets nobody register.
+    # --- account policy ---
+    # Refuse student self-registration that has not proved control of the email address.
     REQUIRE_EMAIL_VERIFICATION: bool = True
 
     # Refuse a registration that does not carry the consent the form asks for.
-    # The checkboxes were enforced only in React, so a direct API call skipped
-    # them entirely -- on a platform collecting face and ID images, that is the
-    # consent that matters most going unrecorded.
     REQUIRE_CONSENT_ON_SIGNUP: bool = True
 
-    # Length floor for new passwords. The rest of the policy -- a blocklist, no
-    # character-class rules, no name or email inside the password -- lives in
-    # app/core/passwords.py, which explains why it is shaped that way.
+    # Length floor for new passwords.
     PASSWORD_MIN_LENGTH: int = 10
 
-    # Networks whose X-Forwarded-For header may be believed, comma separated,
-    # as IPs or CIDRs. Empty means trust nobody and use the TCP peer.
-    #
-    # Behind the bundled nginx the TCP peer is the proxy container, so without
-    # this every candidate in the building shares ONE login rate-limit budget
-    # and ten wrong passwords lock out the entire hall. Naming the proxy network
-    # explicitly is what makes the header safe to read: a client that could set
-    # its own X-Forwarded-For would otherwise get an unlimited budget by
-    # changing one header, which is worse than the problem being fixed.
+    # Networks whose X-Forwarded-For header may be believed, comma separated, as IPs or CIDRs.
     TRUSTED_PROXY_IPS: str = "172.16.0.0/12,10.0.0.0/8,192.168.0.0/16,127.0.0.1/32"
 
     UPLOAD_DIR: str = "uploads"
     CORS_ORIGINS: str = "http://127.0.0.1:5173,http://localhost:5173"
     AI_SERVICE_URL: str = ""
     AI_SERVICE_TIMEOUT_SECONDS: float = 8.0
-    # Cosine distance (1 - dot) between two L2-normalised ArcFace embeddings.
-    # Lower is stricter; 0 means identical. Both the in-process model and the
-    # ai_worker use ArcFace, so this one number means the same thing on both
-    # paths -- which was not the case when the local fallback was dlib, whose
-    # Euclidean distances live on a completely different scale.
-    #
-    # Was 0.5 (cosine similarity 0.5), which is loose enough to false-accept a
-    # different person often enough to matter on a proctoring platform -- a
-    # false accept here means someone else can sit the exam undetected, which
-    # is a far worse failure than a false reject (which just means "try the
-    # capture again"). 0.38 is a meaningfully stricter operating point for
-    # ArcFace-family embeddings while still tolerating normal lighting/angle/
-    # expression variation between registration and exam day.
+    # Cosine distance (1 - dot) between two L2-normalised
+    # ArcFace embeddings. Lower is stricter; 0 means identical.
     FACE_MATCH_TOLERANCE: float = 0.38
-    # InsightFace model pack for the local (in-process) ArcFace path.
-    #   buffalo_l -- ~280MB, best accuracy (same pack the ai_worker uses)
-    #   buffalo_s -- ~16MB, noticeably faster to download and load
-    # Weights are fetched on first use and cached under FACE_MODEL_ROOT.
+    # InsightFace model pack for the local (in-process) ArcFace path. buffalo_l.
     FACE_MODEL_NAME: str = "buffalo_l"
     FACE_MODEL_ROOT: str = "models/insightface"
 
     # Local (in-process) object detection -- phone / book / extra person.
-    # Previously this only existed inside the optional ai_worker container, so
-    # with AI_SERVICE_URL blank it was switched off entirely; app/ai/object_service.py
-    # now runs it locally. YOLO11s is the "small" tier: ~19MB, clearly stronger
-    # than the yolov8n the worker used, still comfortably fast on CPU for a
-    # signal polled every few seconds.
-    #
-    # The .onnx export is the preferred runtime (onnxruntime is already a hard
-    # dependency for ArcFace, and is several times faster than the torch graph);
-    # the .pt is what `python -m app.utils.fetch_models` downloads and exports
-    # from, and what the ultralytics fallback loads if no export exists.
     OBJECT_MODEL_ROOT: str = "models/yolo"
     OBJECT_MODEL_ONNX: str = "yolo11s.onnx"
     OBJECT_MODEL_WEIGHTS: str = "yolo11s.pt"
 
-    # Trained anti-spoofing model (see app/ai/anti_spoof.py). Optional: when no
-    # ONNX file is present at this path the built-in classical detector runs
-    # instead, so liveness checking never simply stops working.
+    # Trained anti-spoofing model (see app/ai/anti_spoof.py).
     ANTISPOOF_MODEL_ROOT: str = "models/antispoof"
     ANTISPOOF_MODEL_ONNX: str = "antispoof.onnx"
     # Probability floor (0-1) from the trained model for a frame to count as
@@ -132,12 +66,6 @@ class Settings(BaseSettings):
 
     NOISE_DB_THRESHOLD: float = 65.0
     # Coding-question sandboxed execution (app/services/code_runner_service.py).
-    # Runs student code in an ephemeral, network-disabled Docker container via
-    # the `docker` CLI already on the host -- no separate microservice needed.
-    # Exam lockdown. A "strike" is a fullscreen exit / tab switch / window
-    # blur during a proctored attempt. Strikes are counted server-side from
-    # persisted ProctorEvent rows, so refreshing the page cannot reset them.
-    # On reaching the limit the attempt is auto-submitted and closed.
     LOCKDOWN_STRIKE_LIMIT: int = 3
     # Grace window that collapses a burst of related events (e.g. a single
     # Alt-Tab firing blur + visibilitychange + fullscreenchange together) into
@@ -148,64 +76,33 @@ class Settings(BaseSettings):
     CODE_EXECUTION_DEFAULT_TIMEOUT_SECONDS: int = 6
     CODE_EXECUTION_MEMORY_LIMIT: str = "128m"
     CODE_EXECUTION_CPUS: str = "0.5"
-    # Ceiling on simultaneously-running sandbox containers. Each run is a
-    # full `docker run`, so without a cap a hall of students all pressing
-    # "Run" at once can exhaust host CPU/memory. Size this to the host, not
-    # to the class: roughly (cores / CODE_EXECUTION_CPUS) is a sane start.
+    # Ceiling on simultaneously-running sandbox containers. Each run is a full `docker run`, so
+    # without a cap a hall of students all pressing "Run" at once can exhaust host CPU/memory.
     CODE_EXECUTION_MAX_CONCURRENT: int = 4
 
-    # Per-IP rate limiting on the unauthenticated auth endpoints (login,
-    # student self-registration) -- see app/core/rate_limit.py. Login has no
-    # account-lockout mechanism otherwise, so without this a brute-force
-    # credential-stuffing run has no friction at all beyond bcrypt's own cost.
+    # Per-IP rate limiting on the unauthenticated auth endpoints (login, student
+    # self-registration) -- see app/core/rate_limit.py.
     AUTH_RATE_LIMIT_MAX_REQUESTS: int = 10
     AUTH_RATE_LIMIT_WINDOW_SECONDS: int = 60
 
-    # Per-USER ceiling on the CPU-expensive proctoring endpoints (face/verify,
-    # id-card/verify, objects/detect, pose/check). Each runs a real model --
-    # ArcFace, EasyOCR, YOLO11s, MediaPipe -- on an image of up to ~7MB, and
-    # before this existed a single valid student token could loop any of them
-    # and starve every other exam in progress of CPU.
-    #
-    # Applied per endpoint, not shared across them, and sized against what the
-    # client actually does (frontend/src/lib/proctoring.js): pose every 5s
-    # (12/min), objects every 10s (6/min), face identity every 12s (5/min). 30
-    # per minute leaves the busiest of those 2.5x headroom, so a slow tick,
-    # a retry, or a reconnect never trips it -- while still cutting a tight
-    # loop off almost immediately.
-    #
-    # Keyed by user id rather than IP on purpose: an exam hall behind one NAT
-    # shares a source address, so an IP-keyed limit would throttle the whole
-    # room as though it were one abuser.
+    # Per-USER ceiling on the CPU-expensive proctoring endpoints
+    # (face/verify, id-card/verify, objects/detect, pose/check).
     AI_RATE_LIMIT_MAX_REQUESTS: int = 30
     AI_RATE_LIMIT_WINDOW_SECONDS: int = 60
 
-    # --- Outbound email (app/services/email_service.py) ----------------------
-    # Everything email-driven in this app is OFF by default and degrades to a
-    # logged no-op rather than an error, which is deliberate: a fresh clone, the
-    # test suite, and a local dev stack must all run with no mail server and no
-    # credentials, exactly as they did before email existed here at all.
-    #
-    # Set EMAIL_ENABLED=true plus the SMTP_* values to switch it on. With Gmail
-    # that means an App Password (16 characters, no spaces), NOT the account
-    # password -- Google blocks plain-password SMTP, and an App Password
-    # requires 2-Step Verification to be enabled on the account first.
+    # --- Outbound email (app/services/email_service.py) ---
+    # Everything email-driven in this app is OFF by default and degrades to a logged no-op
+    # rather than an error, which is deliberate.
     EMAIL_ENABLED: bool = False
     SMTP_HOST: str = "smtp.gmail.com"
     # 587 = STARTTLS (upgrade a plaintext connection), 465 = implicit TLS.
-    # SMTP_USE_TLS below selects which handshake is used; the two must agree or
-    # the connection hangs until timeout rather than failing cleanly.
     SMTP_PORT: int = 587
     SMTP_USERNAME: str = ""
     SMTP_PASSWORD: str = ""
     SMTP_USE_TLS: bool = True
-    # Bounded so a wedged or blackholed SMTP host cannot pin a worker thread
-    # indefinitely. Sending already happens off the request path, but an
-    # unbounded socket read would still leak a thread per stuck send.
+    # Bounded so a wedged or blackholed SMTP host cannot pin a worker thread indefinitely.
     SMTP_TIMEOUT_SECONDS: float = 20.0
-    # Defaults to SMTP_USERNAME when blank (see email_service.from_address) --
-    # for Gmail these are the same address anyway, and a From: that doesn't
-    # match the authenticated account is silently rewritten by Google.
+    # Defaults to SMTP_USERNAME when blank (see email_service.from_address).
     EMAIL_FROM: str = ""
     EMAIL_FROM_NAME: str = "Merit.Ai"
     # Where "an examiner requested access" notifications go. Falls back to
@@ -213,12 +110,8 @@ class Settings(BaseSettings):
     ADMIN_NOTIFICATION_EMAIL: str = ""
 
     # --- Email outbox (app/services/email_service.py, app/models/email_outbox.py) ---
-    # Bounded retry budget for a message queued through enqueue_tracked() --
-    # an admin notification, an activation link, an OTP code. A mailbox that
-    # is simply broken (typo, full, hard-bounces everything) must eventually
-    # stop retrying and become something a human looks at, rather than retry
-    # forever and hide a configuration problem. Also drives RQ's retry
-    # backoff curve for the "emails" queue -- see app/core/queues.py.
+    # Bounded retry budget for a message queued through enqueue_tracked() -- an admin
+    # notification, an activation link, an OTP code.
     EMAIL_OUTBOX_MAX_ATTEMPTS: int = 5
     # Exponential backoff base for retries: attempt N waits roughly
     # base * 2^(N-1) seconds, capped at EMAIL_OUTBOX_RETRY_MAX_SECONDS.
@@ -231,140 +124,65 @@ class Settings(BaseSettings):
     # --- One-time passcodes (app/services/otp_service.py) --------------------
     OTP_LENGTH: int = 6
     OTP_TTL_MINUTES: int = 10
-    # Wrong-guess budget per issued code. At 6 digits there are a million
-    # possibilities, so this is not really about brute force -- it is about
-    # making an intercepted-but-unknown code useless after a handful of tries
-    # and bounding how long one issued code stays alive under attack.
+    # Wrong-guess budget per issued code. At 6 digits there are a million possibilities, so this
+    # is not really about brute force.
     OTP_MAX_ATTEMPTS: int = 5
     # Minimum gap between issuing two codes to the same address. Stops the
     # "resend" button from being used to mailbomb someone else's inbox.
     OTP_RESEND_COOLDOWN_SECONDS: int = 60
     # Activation links (app/services/otp_service.py:issue_activation_token).
-    # Days, not minutes: an examiner whose account was approved on a Friday
-    # should still be able to open the link on Monday. The token is 256 bits of
-    # entropy, so a long window costs nothing in guessability -- the risk it
-    # carries is mailbox compromise, which a shorter TTL barely mitigates.
     ACTIVATION_TTL_HOURS: int = 72
-    # Registration mode. "open" lets anyone create a student account; "invite"
-    # accepts only addresses an examiner has already put on an exam roster.
-    # Invite is the right default for a real institution but the wrong one for
-    # somebody trying the software out, so the default stays open and the
-    # deployment decides.
+    # Registration mode. "open" lets anyone create a student account; "invite" accepts only
+    # addresses an examiner has already put on an exam roster.
     REGISTRATION_MODE: str = "open"
-    # Email staff (examiner/admin) accounts when a new sign-in happens. Staff
-    # accounts can read candidate identity photos and alter results, so an
-    # unexpected "you signed in from..." is worth an inbox interruption; doing
-    # the same for every candidate login would be noise.
+    # Email staff (examiner/admin) accounts when a new sign-in happens.
     NOTIFY_STAFF_ON_LOGIN: bool = True
-    # Minimum gap between two admin notifications about the SAME pending access
-    # request. Protects the admin inbox from a double-click without making the
-    # de-dupe permanent -- a request submitted while mail was misconfigured used
-    # to stay unannounced forever, and resubmitting silently did nothing.
+    # Minimum gap between two admin notifications about the SAME pending access request.
     ACCESS_REQUEST_RENOTIFY_SECONDS: int = 900
 
-    # --- Database pool (app/database/session.py) -----------------------------
-    # PER PROCESS. Total connections to Postgres are
-    # (DB_POOL_SIZE + DB_MAX_OVERFLOW) x WEB_CONCURRENCY x replicas, plus the
-    # worker and scheduler services. Postgres defaults to max_connections=100,
-    # so this is the number to revisit before raising WEB_CONCURRENCY much.
+    # --- Database pool (app/database/session.py) ---
+    # PER PROCESS. Total connections to Postgres are (DB_POOL_SIZE + DB_MAX_OVERFLOW) x
+    # WEB_CONCURRENCY x replicas, plus the worker and scheduler services.
     DB_POOL_SIZE: int = 5
     DB_MAX_OVERFLOW: int = 10
     DB_POOL_TIMEOUT_SECONDS: int = 30
     DB_POOL_RECYCLE_SECONDS: int = 1800
 
-    # --- Redis (app/core/redis_client.py) -------------------------------------
-    # The shared, ephemeral-state backend for ONLY four things: cross-worker
-    # rate limiting (app/core/rate_limit.py), one-time-passcode state for
-    # signup/password-reset (app/services/otp_redis_store.py), distributed
-    # locks (app/core/locks.py), and the background job/email queue
-    # (app/core/queues.py, app/worker/). PostgreSQL stays the permanent source
-    # of truth for everything else -- users, exams, attempts, results,
-    # violations, credentials, audit logs and email delivery history are never
-    # stored only in Redis. If Redis is unreachable, those four things return a
-    # controlled 503 (see app/core/redis_client.py's RedisUnavailableError and
-    # its handler in app/main.py) rather than silently bypassing what it
-    # protects -- an OTP check that quietly passed with Redis down, or a rate
-    # limit that quietly stopped counting, would be worse than the endpoint
-    # being briefly unavailable.
+    # --- Redis (app/core/redis_client.py) ---
+    # The shared, ephemeral-state backend for ONLY four things.
     REDIS_URL: str = "redis://localhost:6379/0"
-    # Kept separate from REDIS_URL (rather than embedded as redis://:pass@host)
-    # so docker-compose.yml can pass the same POSTGRES-style secret pattern --
-    # one required env var, never a default, never interpolated into a URL a
-    # stray log line might print.
+    # Kept separate from REDIS_URL (rather than embedded as redis://:pass@host) so
+    # docker-compose.yml can pass the same POSTGRES-style secret pattern.
     REDIS_PASSWORD: str = ""
     # Bounded so a Redis instance that is down (not just slow) fails a rate
     # limit check, an OTP verification or a lock acquisition in around two
     # seconds, not however long TCP takes to notice a dead peer.
     REDIS_SOCKET_TIMEOUT_SECONDS: float = 2.0
 
-    # --- Distributed locks (app/core/locks.py) --------------------------------
-    # Default hold time for a lock whose caller doesn't specify one. Long
-    # enough for the operations that use the default (an examiner-creation
-    # transaction, an access-request approval) to finish under ordinary load;
-    # short enough that a crashed holder blocks the next attempt for seconds,
-    # not minutes.
+    # --- Distributed locks (app/core/locks.py) ---
+    # Default hold time for a lock whose caller doesn't specify one.
     LOCK_DEFAULT_TTL_SECONDS: float = 30.0
 
-    # --- Background job queue (app/core/queues.py, app/worker/) ---------------
-    # RQ over Redis. Three queues (emails, reports, default -- see
-    # app/core/queues.py) rather than one, so a burst of OTP/notification
-    # emails never queues behind a slow PDF report job.
-    #
-    # Bounded retry budget per job, same reasoning EMAIL_OUTBOX_MAX_ATTEMPTS
-    # always had: a job that can never succeed (bad input, a permanently
-    # missing record) must eventually stop retrying rather than loop forever.
-    # Drives both generic jobs and the email queue's retry curve (see
-    # app/core/queues.py::backoff_intervals, which reuses
-    # EMAIL_OUTBOX_RETRY_BASE_SECONDS / _MAX_SECONDS below for the actual
-    # wait between attempts).
+    # --- Background job queue (app/core/queues.py, app/worker/) ---
+    # RQ over Redis. Three queues: emails, reports, default.
     JOB_MAX_RETRIES: int = 3
-    # Ceiling on how long the Worker lets one job run before treating it as
-    # stuck and killing it -- a wedged SMTP handshake or a report generation
-    # that hangs must not pin a worker slot forever.
+    # Ceiling on how long the Worker lets one job run
+    # before treating it as stuck and killing it.
     JOB_TIMEOUT_SECONDS: int = 300
 
-    # --- Proctoring signal kill switches -------------------------------------
-    # Each AI signal can be switched off independently, without a redeploy and
-    # without stopping exams in progress.
-    #
-    # This exists because the failure mode it addresses has already happened
-    # here: the classical anti-spoof heuristic false-positived on legitimate
-    # candidates every few seconds for the length of an exam (see the long note
-    # in face_service.verify_live_frame). The fix then was a code change. During
-    # a live exam sitting, a code change is not an option -- so a misbehaving
-    # model needs to be silenceable from the environment.
-    #
-    # Turning one off degrades that signal to "not collected"; it never fails an
-    # attempt, and every other signal keeps working. The exam is always more
-    # important than any individual proctoring input.
-    # Deliberately only the three MONITORING signals. ID-card OCR is not here
-    # on purpose: it gates exam entry rather than raising violations, so a
-    # switch that turned it off would lock every unverified candidate out of
-    # their exam instead of degrading gracefully. Making that safe needs a
-    # manual-verification path first, which is a feature, not a flag.
+    # --- Proctoring signal kill switches ---
+    # Each AI signal can be switched off independently, without
+    # a redeploy and without stopping exams in progress.
     FACE_MATCHING_ENABLED: bool = True
     OBJECT_DETECTION_ENABLED: bool = True
     POSE_DETECTION_ENABLED: bool = True
 
-    # --- Biometric data lifecycle (app/services/biometric_service.py) --------
-    # This platform stores face photos, 512-d ArcFace embeddings, ID-card images
-    # and violation screenshots. Until now none of it had a lifecycle at all:
-    # no recorded consent, no expiry, and no way to delete it short of SQL.
-    #
-    # The consent text shown to a candidate at capture time. Bumping this string
-    # is what marks every previously-recorded consent as stale -- consent is
-    # only meaningful against the wording that was actually agreed to, so the
-    # version is stored per capture rather than assumed global.
+    # --- Biometric data lifecycle (app/services/biometric_service.py) ---
+    # This platform stores face photos, 512-d ArcFace
+    # embeddings, ID-card images and violation screenshots.
     BIOMETRIC_CONSENT_VERSION: str = "2026-08-04.v1"
-    # Days after a student's last activity before their biometric data becomes
-    # eligible for automatic deletion.
-    #
-    # 0 means NEVER auto-delete, and that is the default deliberately: the right
-    # retention period is a policy and legal decision for the institution
-    # deploying this, not something a library author should pick on their
-    # behalf, and a default that silently destroys evidence during an open
-    # appeal would be far worse than one that keeps too much. Set it explicitly.
-    # The manual deletion endpoints work regardless of this setting.
+    # Days after a student's last activity before their
+    # biometric data becomes eligible for automatic deletion.
     BIOMETRIC_RETENTION_DAYS: int = 0
     # How often the purge sweep runs, when retention is enabled at all.
     BIOMETRIC_PURGE_INTERVAL_HOURS: int = 24
@@ -372,10 +190,7 @@ class Settings(BaseSettings):
     # --- Exam reminders (app/services/reminder_service.py) -------------------
     EXAM_REMINDER_ENABLED: bool = True
     EXAM_REMINDER_MINUTES_BEFORE: int = 5
-    # How often the background loop looks for exams due a reminder. Must be
-    # comfortably smaller than EXAM_REMINDER_MINUTES_BEFORE or a reminder can
-    # be skipped entirely: the window it looks for is bounded on both sides,
-    # and a poll interval wider than that window steps straight over it.
+    # How often the background loop looks for exams due a reminder.
     EXAM_REMINDER_POLL_SECONDS: int = 60
 
     class Config:
@@ -387,21 +202,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_secrets(self):
-        """Refuse to boot a production deployment with a guessable signing key.
-
-        This is the single highest-severity misconfiguration the project can
-        ship with: SECRET_KEY signs every JWT, and the default value lives in
-        .env.example, so a deployment that never overrode it accepts tokens
-        forged by anyone who has read the repo -- including `{"role":
-        "admin"}`. It was previously guarded only by a comment in
-        .env.example, which the code did nothing to enforce.
-
-        Deliberately a hard failure rather than a warning in production: a
-        warning in a startup log is exactly the kind of thing that scrolls
-        past unnoticed, and the failure mode it precedes is silent, total
-        authentication bypass. Locally it stays a warning so a fresh clone
-        still runs with zero setup.
-        """
+        """Refuse to boot a production deployment with a guessable signing key."""
         problems = []
         if self.SECRET_KEY == PLACEHOLDER_SECRET_KEY:
             problems.append(
@@ -415,12 +216,7 @@ class Settings(BaseSettings):
         if self.is_production and not self.cors_origins:
             problems.append("CORS_ORIGINS is empty; no frontend will be able to reach this API.")
 
-        # Requiring verified email while being unable to send any is a closed
-        # door with no key: /auth/register/student refuses because verification
-        # is mandatory, and /auth/otp/signup/request refuses because there is no
-        # mail transport. Nobody can create an account, and the only symptom is
-        # two unrelated-looking 503s. Better to refuse the boot and say which
-        # two settings contradict each other.
+        # Requiring verified email while being unable to send any is a closed door with no key.
         if self.REQUIRE_EMAIL_VERIFICATION and not self.EMAIL_ENABLED:
             problems.append(
                 "REQUIRE_EMAIL_VERIFICATION is on but EMAIL_ENABLED is off, so no candidate could "
@@ -437,12 +233,7 @@ class Settings(BaseSettings):
 
     @property
     def trusted_proxies(self) -> list:
-        """TRUSTED_PROXY_IPS parsed into networks. Malformed entries are dropped.
-
-        Dropped rather than fatal on purpose: a typo here should narrow what is
-        trusted, never widen it, and a hard failure would take the whole API down
-        over a stray comma in an environment variable.
-        """
+        """TRUSTED_PROXY_IPS parsed into networks. Malformed entries are dropped."""
         import ipaddress
 
         networks = []
@@ -459,9 +250,6 @@ class Settings(BaseSettings):
     @property
     def cors_origins(self) -> list[str]:
         # Only ever return an explicit allow-list of trusted frontend origins.
-        # A bare "*" is rejected even if misconfigured in the environment, since
-        # combining a wildcard origin with credentialed requests is unsafe and
-        # this API is meant to be reachable only from known frontends.
         origins = [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
         return [origin for origin in origins if origin != "*"]
 

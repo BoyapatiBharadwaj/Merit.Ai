@@ -1,15 +1,6 @@
 /**
- * The brand mark, on its own -- a checkmark (Evaluate) with a small dot
- * floating above it (Monitor). The single source of truth for the icon:
- * Logo.jsx (nav/footer wordmark) and AuthLayout.jsx (the auth split-panel,
- * which needs a larger badge on a translucent tile rather than the solid
- * gradient tile) both render this instead of each keeping their own copy of
- * the SVG, so the mark can never quietly drift between the two places it
- * appears.
- *
- * `rounded-[28%]` rather than a fixed pixel radius so the corner stays
- * visually identical at every size this renders at (nav: 32px, auth panel:
- * 36px, footer/mobile: 28px) instead of three separately-tuned px values.
+ * The brand mark, on its own -- a checkmark (Evaluate)
+ * with a small dot floating above it (Monitor).
  */
 export default function LogoMark({ box = 32, icon = 15, tone = "brand", className = "" }) {
   const toneClass =

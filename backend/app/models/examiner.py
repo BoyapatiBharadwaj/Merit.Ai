@@ -12,11 +12,9 @@ class Examiner(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
-    # Kept as the human-facing label the examiner typed at sign-up, and as the
-    # source the 0008 migration derived organizations from. organization_id
-    # below is the authoritative tenancy link -- this string is display only
-    # and must never be used in an access decision (two examiners typing
-    # "Acme" and "acme " are not thereby in the same tenant).
+    # Kept as the human-facing label the examiner typed at sign-up,
+    # and as the source the 0008 migration derived organizations
+    # from. organization_id below is the authoritative tenancy link.
     organization_name = Column(String(150), nullable=True)
     organization_id = Column(Integer, ForeignKey("organizations.id", ondelete="RESTRICT"),
                              nullable=True, index=True)

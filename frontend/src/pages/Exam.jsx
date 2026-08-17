@@ -27,12 +27,6 @@ const RETRY_DELAYS_MS = [2000, 4000, 8000, 12000, 20000];
 
 /**
  * A downscaled JPEG data URL of the current video frame.
- *
- * Mirrors lib/proctoring.js's captureFrame. Kept as a small local helper rather
- * than imported from there because that one closes over the proctoring session's
- * own reusable canvas -- this path fires a handful of times during the pre-exam
- * check, not every few seconds for an hour, so a plain function is the right
- * shape for it.
  */
 function captureVideoFrame(video, maxEdge = 640, quality = 0.8) {
   const sourceW = video.videoWidth || 320;
@@ -52,11 +46,6 @@ const CODE_SAVE_DEBOUNCE_MS = 1200;
 
 /**
  * Keyed on the ATTEMPT, not the exam.
- *
- * Keyed on the exam id, a candidate granted a retake after a disruption opened
- * their fresh attempt already carrying the flags from the abandoned one --
- * questions they had marked to revisit in a paper they were no longer sitting.
- * The attempt id is the thing these marks actually belong to.
  */
 function markStorageKey(attemptId) {
   return `aep_marked_attempt_${attemptId}`;
@@ -90,17 +79,7 @@ export default function Exam() {
   const { examId } = useParams();
   const navigate = useNavigate();
 
-  // The auth guard used to live here, before any hooks -- but every API call
-  // in this component clears the session on a 401 (see api.js), which is a
-  // realistic mid-exam event (the access token has a finite lifetime and an
-  // exam can run for hours). That flips isLoggedIn() to false, and this
-  // component re-renders every second via the timer. An early return here
-  // would then change how many hooks get called between one render and the
-  // next -- React's Rules of Hooks violation, which crashes the whole page
-  // with "Rendered fewer hooks than expected" at the worst possible moment.
-  // The guard is now evaluated once, after every hook below has run
-  // unconditionally, immediately before the render branches (search
-  // "auth guard, evaluated after all hooks").
+  // The auth guard used to live here, before any hooks.
 
   const [phase, setPhase] = useState("precheck"); // precheck | active
   const [beginning, setBeginning] = useState(false);
@@ -110,9 +89,6 @@ export default function Exam() {
   // Mirrors attemptId, but read by callbacks that run inside long-lived
   // setInterval/setTimeout closures (the exam timer's auto-submit, retry
   // loops) which captured `attemptId` from the render they were created in.
-  // A ref's `.current` is always up to date regardless of which render's
-  // closure is reading it, so every attempt-scoped API call below reads
-  // attemptIdRef.current instead of the `attemptId` state variable directly.
   const attemptIdRef = useRef(null);
   const [examTitle, setExamTitle] = useState("");
   const [questionIds, setQuestionIds] = useState([]);
@@ -123,11 +99,7 @@ export default function Exam() {
 
   const [currentIndex, setCurrentIndex] = useState(0);
   const [currentQuestion, setCurrentQuestion] = useState(null);
-  // Mirrors currentQuestion for the same reason attemptIdRef mirrors
-  // attemptId: long-lived setInterval closures (the exam timer's auto-submit)
-  // captured this value from the render that created them, where it was still
-  // null. Synced via an effect rather than at each setCurrentQuestion call
-  // site so it cannot drift when a new one is added.
+  // Mirrors currentQuestion for the same reason attemptIdRef mirrors attemptId.
   const currentQuestionRef = useRef(null);
   const [questionLoading, setQuestionLoading] = useState(false);
   const [questionError, setQuestionError] = useState("");
@@ -141,25 +113,13 @@ export default function Exam() {
 
   const [fullscreenActive, setFullscreenActive] = useState(!!document.fullscreenElement);
   const [connectionBanner, setConnectionBanner] = useState(null);
-  // Both stay `null` -- and therefore hidden in the header -- on any browser
-  // that doesn't expose the underlying API (Firefox, Safari). Neither API
-  // exists to gate exam behaviour, just to let a student see a dying battery
-  // or a shaky connection before it costs them a lockdown strike.
+  // Both stay `null` -- and therefore hidden in the header -- on any browser that doesn't
+  // expose the underlying API (Firefox, Safari).
   const [batteryStatus, setBatteryStatus] = useState(null); // { level: 0-1, charging: bool } | null
   const [networkQuality, setNetworkQuality] = useState(null); // { label: "Good"|"Fair"|"Poor" } | null
 
   // ---------- autosave ----------
-  //
-  // All persistence goes through lib/autosave.js. See that file for what the
-  // three hand-rolled retry loops that used to live here were getting wrong --
-  // in short: they ignored the server's `applied: false`, restarted the version
-  // counter on reload, minted a new idempotency key per retry, retried only
-  // network errors, and could not be awaited, so submission raced them.
-  //
-  // `expiredRef` is checked before every write. Once the deadline passes the
-  // attempt is finished whether or not the submission has landed yet, and
-  // accepting further changes would let a candidate keep working during the
-  // retry window.
+  // All persistence goes through lib/autosave.js.
   const [saveSummary, setSaveSummary] = useState({
     pending: 0, failed: 0, lastSavedAt: null, state: SaveState.SAVED,
   });
@@ -194,88 +154,50 @@ export default function Exam() {
   const videoRef = useRef(null);
   const proctoringRef = useRef(null);
 
-  // Lockdown state. `lockdownBreach` holding a string is what renders the
-  // blocking overlay -- the exam content stays mounted underneath (so no
-  // answer state is lost) but is inert and blurred behind it.
+  // Lockdown state. `lockdownBreach` holding a string is what renders the blocking overlay.
   const lockdownRef = useRef(null);
   const [lockdownBreach, setLockdownBreach] = useState(null);
   const [lockdownTerminated, setLockdownTerminated] = useState(false);
   const [strikeState, setStrikeState] = useState({ strikes: 0, limit: 3 });
 
-  // Screen-share state. The stream itself is requested from the "Begin Exam"
-  // click (getDisplayMedia needs the same fresh user-gesture as
-  // requestFullscreen), before the lockdown controller for the not-yet-
-  // started attempt exists -- so it's held in a ref here and handed to the
-  // controller once the lockdown effect below creates one. `unmountedRef`
-  // guards the case where the student takes their time on the browser's
-  // share picker and the page is gone (submitted/navigated away) by the time
-  // it resolves.
+  // Screen-share state.
   const screenStreamRef = useRef(null);
   const unmountedRef = useRef(false);
   const [screenShareActive, setScreenShareActive] = useState(false);
-  // Set by breachCallback right before the overlay appears, read by
-  // restoredCallback once the lockdown controller's own resume() has
-  // finished re-sharing -- lets the badge flip back to "active" without
-  // Exam.jsx needing to inspect the (by-then-replaced) stream object itself.
+  // Set by breachCallback right before the overlay appears, read by restoredCallback once the
+  // lockdown controller's own resume() has finished re-sharing.
   const lastBreachWasScreenShareRef = useRef(false);
 
   // ---------- system check (precheck screen) ----------
-  // A separate, throwaway camera/mic stream for the live preview shown while
-  // reviewing the checklist -- NOT the stream the AI proctoring controller
-  // uses once the exam is actually running (that one is requested fresh by
-  // proctoring.js in the active phase). Kept and torn down independently so
-  // this preview never has to coordinate lifecycle with that controller.
+  // A separate, throwaway camera/mic stream for the live preview shown while reviewing the
+  // checklist.
   const previewVideoRef = useRef(null);
   const previewStreamRef = useRef(null);
   const micAudioCtxRef = useRef(null);
   const micMeterIntervalRef = useRef(null);
-  // Incremented on every testCameraMic() call and captured per-call as
-  // `myToken`. If a stale call's getUserMedia() (or its timeout) finally
-  // settles after a newer call has already started -- or after the
-  // component unmounted -- comparing against the current value tells it its
-  // result no longer matters, so it can't stomp on a fresher attempt's state.
+  // Incremented on every testCameraMic() call and captured per-call as `myToken`.
   const cameraMicTestTokenRef = useRef(0);
   const cameraMicTimeoutRef = useRef(null);
   const [cameraMicStatus, setCameraMicStatus] = useState("idle"); // idle | testing | ok | error
   const [cameraMicError, setCameraMicError] = useState("");
   const [micLevel, setMicLevel] = useState(0); // 0-100, drives the live level bar
-  // Window Management API check for a second display -- same signal
-  // proctoring.js's watchExternalMonitor polls for during the exam itself,
-  // run once here up front so it's surfaced before the student ever starts,
-  // not the first time they get flagged for it mid-exam.
+  // Window Management API check for a second display.
   const [externalMonitorStatus, setExternalMonitorStatus] = useState("checking"); // checking | ok | warning | unavailable
-  // Persistent, inline failure reasons for the two gesture-driven checks --
-  // a toast is transient and easy to miss, and a student staring at a
-  // checklist row that silently never turns green has no way to tell
-  // whether it's still working or has already failed.
+  // Persistent, inline failure reasons for the two gesture-driven checks.
   const [screenShareError, setScreenShareError] = useState("");
   const [fullscreenError, setFullscreenError] = useState("");
   const [externalMonitorCount, setExternalMonitorCount] = useState(1);
 
   // Exam metadata + identity-verification status for the pre-exam overview.
-  // GET /exams/{id} is examiner/admin-only, so the student-safe source for
-  // this is the same /exams/available list the dashboard uses -- it already
-  // carries title/description/duration/question count/marks/window/pass
-  // criteria per exam_service.serialize_exam_for_candidate.
   const [examMeta, setExamMeta] = useState(null);
   // What THIS exam actually asks for, resolved by the server.
-  //
-  // The page demanded camera, microphone, screen sharing and fullscreen from
-  // every candidate regardless of the exam's settings, and then told them "this
-  // exam is not proctored" -- so an ordinary quiz still required handing over a
-  // webcam and sharing a screen for no purpose anyone could name. The defaults
-  // below mirror the old behaviour so a server that has not been upgraded, or
-  // an exam metadata fetch that failed, still errs on the side of asking.
   const requires = examMeta?.requires ?? {
     camera: true, microphone: true, screen_share: true, fullscreen: true,
   };
   const [identityStatus, setIdentityStatus] = useState(null);
-  // Live face-match check run once the camera preview is working, comparing
-  // the live frame against the registered face profile via the same
-  // /proctoring/face/verify endpoint the in-exam monitor polls. This is what
-  // actually enforces "the face verified before the exam matches the face
-  // taking it" -- identityStatus.exam_ready above only means a profile
-  // *exists*, not that whoever is sitting at the camera right now is it.
+  // Live face-match check run once the camera preview is working,
+  // comparing the live frame against the registered face profile via the
+  // same /proctoring/face/verify endpoint the in-exam monitor polls.
   const [faceMatchStatus, setFaceMatchStatus] = useState("idle"); // idle | checking | ok | mismatch | error
   const [faceMatchError, setFaceMatchError] = useState("");
   const faceMatchTokenRef = useRef(0);
@@ -293,12 +215,7 @@ export default function Exam() {
 
   // ---------- expired-attempt auto-submit redirect ----------
   // The server is the source of truth for the deadline (see
-  // attempt_service._expired_auto_submit_error / finalize_if_expired): if
-  // the client-side timer below is late (a backgrounded/throttled tab) or
-  // never got the chance to fire (the student closed the laptop and only
-  // came back after the deadline), any API call the active exam makes will
-  // eventually hit this instead of a normal response. Treat it exactly like
-  // a successful auto-submit -- because, server-side, it already was one.
+  // attempt_service._expired_auto_submit_error / finalize_if_expired).
   function isExpiredAutoSubmitError(err) {
     return err instanceof ApiError && err.status === 400 && err.detail && typeof err.detail === "object" && err.detail.code === "attempt_expired_auto_submitted";
   }
@@ -318,22 +235,14 @@ export default function Exam() {
   }, []);
 
   // ---------- flush the debounced code save ----------
-  //
-  // The code editor debounces by ~1.2s, so at any moment the candidate's most
-  // recent keystrokes may exist only in the browser. Called before navigating
-  // away from a coding question and before submitting.
+  // The code editor debounces by ~1.2s, so at any moment the candidate's most recent keystrokes
+  // may exist only in the browser.
   function flushCodeSave() {
     if (!codeSaveTimeoutRef.current) return;
     clearTimeout(codeSaveTimeoutRef.current);
     codeSaveTimeoutRef.current = null;
-    // Reads the ref, not the `currentQuestion` state, for the same reason
-    // attemptIdRef exists (see the comment at the top of this component). The
-    // exam timer's auto-submit runs inside an interval created in beginExam(),
-    // whose closure captured `currentQuestion` while it was still null -- so on
-    // a time-expiry submit the condition below was always false and this
-    // cleared the pending save *without sending it*, silently discarding
-    // everything typed since the last pause. Manual submit was fine; running
-    // out of time was not.
+    // Reads the ref, not the `currentQuestion` state, for the same reason attemptIdRef exists
+    // (see the comment at the top of this component).
     const question = currentQuestionRef.current;
     if (question?.question_type === "coding") {
       autosave.save("code", question.question_id, codeValueRef.current);
@@ -341,14 +250,7 @@ export default function Exam() {
   }
 
   // ---------- load a question by index ----------
-  //
-  // Every load takes a ticket. Question fetches are independent requests with
-  // no ordering guarantee, so clicking 1 → 2 → 3 quickly could resolve 3 before
-  // 2, and the late response for 2 then overwrote the screen: the navigator
-  // highlighted 3, the question text was 2's, and the answer handlers wrote 2's
-  // answer against the question the candidate thought they were looking at.
-  // Comparing the ticket on the way out means a superseded response is
-  // discarded rather than rendered.
+  // Every load takes a ticket.
   const questionRequestRef = useRef(0);
   const loadQuestion = useCallback(
     async (index, ids = questionIds, attemptIdVal = attemptIdRef.current) => {
@@ -361,9 +263,7 @@ export default function Exam() {
       try {
         const q = await Api.exam.get(`/attempts/${attemptIdVal}/question/${questionId}`);
         if (ticket !== questionRequestRef.current) return; // a newer load won
-        // Continue the server's version sequence for this question instead of
-        // restarting at 1 -- the reason every save after a page reload used to
-        // be refused as stale. See lib/autosave.js.
+        // Continue the server's version sequence for this question instead of restarting at 1.
         const kind = q.question_type === "coding" ? "code"
           : q.question_type === "multi_select" ? "multi" : "mcq";
         autosave.seed(kind, q.question_id, q.answer_version);
@@ -406,11 +306,8 @@ export default function Exam() {
       updateTimerDisplay();
       if (secondsRemainingRef.current <= 0) {
         stopTimer();
-        // One-way door. Everything below checks expiredRef before accepting a
-        // change, and nothing ever sets it back to false -- previously, when
-        // the submission's bounded retries ran out, `submitting` went back to
-        // false, the overlay disappeared, and the candidate could carry on
-        // answering an exam whose time had expired.
+        // One-way door. Everything below checks expiredRef before accepting a change, and
+        // nothing ever sets it back to false.
         expiredRef.current = true;
         setExpiredPendingSubmission(true);
         doSubmit(true);
@@ -428,9 +325,8 @@ export default function Exam() {
     setPrecheckError("");
     try {
       const res = await Api.post(`/attempts/start/${examId}`);
-      // Valid until this attempt's deadline plus a grace period, so a three-hour
-      // exam is no longer ended by a two-hour session token expiring. Held in
-      // memory by lib/api.js and used for every in-exam request from here on.
+      // Valid until this attempt's deadline plus a grace period, so a three-hour exam is no
+      // longer ended by a two-hour session token expiring.
       setAttemptToken(res.attempt_token);
       setAttemptId(res.attempt_id);
       attemptIdRef.current = res.attempt_id;
@@ -453,17 +349,11 @@ export default function Exam() {
       startTimer();
       resyncIntervalRef.current = setInterval(() => resyncRemainingTime(), RESYNC_INTERVAL_MS);
 
-      // AI proctoring itself is started from a useEffect keyed on `phase`
-      // (below), not here -- videoRef.current would still be null at this
-      // point because React hasn't committed the "active" phase's <video>
-      // element to the DOM yet (setPhase above only *schedules* that render).
+      // AI proctoring itself is started from a useEffect keyed on `phase` (below), not here.
 
       await loadQuestion(0, res.question_ids_in_order, res.attempt_id);
     } catch (err) {
-      // Resuming an attempt whose deadline already passed while the student
-      // was away -- the server just finalized it, so send them straight to
-      // the report instead of stranding them on this screen with an error
-      // for an exam that is, in fact, already finished.
+      // Resuming an attempt whose deadline already passed while the student was away.
       if (isExpiredAutoSubmitError(err)) {
         redirectAfterAutoSubmit(err.detail.attempt_id);
         return;
@@ -475,10 +365,7 @@ export default function Exam() {
   }
 
   async function resyncRemainingTime() {
-    // A read-only status call, not another POST /attempts/start. Re-calling the
-    // endpoint that can also CREATE an attempt every 30 seconds worked, but
-    // this asks the narrower question and is the one the attempt token is
-    // scoped to.
+    // A read-only status call, not another POST /attempts/start.
     try {
       const res = await Api.exam.get(`/attempts/${attemptIdRef.current}/status`);
       // The server may have finalised this attempt while the tab was asleep or
@@ -499,11 +386,8 @@ export default function Exam() {
   }
 
   // ---------- submit ----------
-  //
-  // The snapshot is built ONCE, before the first attempt, and every retry
-  // re-sends the identical payload. Rebuilding it per retry would give each
-  // attempt fresh idempotency keys, so a retry of a submission that actually
-  // landed would look like a new one.
+  // The snapshot is built ONCE, before the first attempt, and every retry re-sends the
+  // identical payload.
   const finalizePayloadRef = useRef(null);
   const [expiredPendingSubmission, setExpiredPendingSubmission] = useState(false);
 
@@ -512,11 +396,7 @@ export default function Exam() {
       if (!finalizePayloadRef.current) {
         finalizePayloadRef.current = { final_answers: autosave.snapshot() };
       }
-      // Answers travel WITH the submission. Previously the last code save was
-      // fired and the submit sent immediately after without awaiting it -- on
-      // any connection where the submit won that race the server graded the
-      // previous version of the code and then rejected the save carrying the
-      // real answer, because the attempt was no longer active.
+      // Answers travel WITH the submission.
       const res = await Api.exam.post(
         `/attempts/${attemptIdRef.current}/finalize`, finalizePayloadRef.current,
       );
@@ -527,9 +407,8 @@ export default function Exam() {
       setAttemptToken(null);
       navigate(`/results/${res.attempt_id}`, { replace: true, state: { autoSubmitted: auto } });
     } catch (err) {
-      // The server already finalised this attempt -- a retry whose predecessor
-      // actually landed, or the expiry sweep beating us to it. Either way the
-      // exam is submitted; go to the result rather than reporting a failure.
+      // The server already finalised this attempt -- a retry whose predecessor actually landed,
+      // or the expiry sweep beating us to it.
       if (isExpiredAutoSubmitError(err)) {
         redirectAfterAutoSubmit(err.detail.attempt_id);
         return;
@@ -538,10 +417,7 @@ export default function Exam() {
       const status = err instanceof ApiError ? err.status : null;
       const retryable = status === 0 || status === 408 || status === 429 || status >= 500;
 
-      // Past the deadline, retrying is the ONLY acceptable behaviour: the
-      // attempt is over, the candidate cannot be allowed to keep working, and
-      // there is nobody to press a button. Keep going on a capped backoff
-      // rather than giving up after five tries.
+      // Past the deadline, retrying is the ONLY acceptable behaviour.
       if (expiredRef.current) {
         const delay = RETRY_DELAYS_MS[Math.min(retryAttempt, RETRY_DELAYS_MS.length - 1)];
         setConnectionBanner("Your time is up. Still trying to submit your exam — keep this page open.");
@@ -573,10 +449,6 @@ export default function Exam() {
     setSubmitError("");
 
     // Push out the debounced code save, then wait for everything outstanding.
-    // This await is the fix: submission used to start while saves were still in
-    // flight. waitForIdle resolves rather than hangs when a save cannot succeed
-    // -- the snapshot carries those answers to the server anyway, which is the
-    // last chance they have to be recorded.
     flushCodeSave();
     await autosave.waitForIdle({ timeoutMs: 8000 });
     attemptSubmit(auto);
@@ -596,10 +468,6 @@ export default function Exam() {
 
   /**
    * Arrow keys inside a radio group, which is what a radio group is for.
-   *
-   * Home/End jump to the ends; Left/Up and Right/Down wrap. Selecting on arrow
-   * (rather than requiring a second Space) is the standard behaviour and is
-   * safe here because every change is autosaved and reversible.
    */
   function handleOptionKeys(event, index, options, choose) {
     const keys = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 };
@@ -617,11 +485,7 @@ export default function Exam() {
   }
 
   // ---------- answering ----------
-  //
   // Every one of these refuses to record a change once the deadline has passed.
-  // The overlay used to be the only thing stopping a candidate answering after
-  // time expired, and the overlay came down when the submission's retries ran
-  // out. The guard belongs on the write, not on the paint.
   function canAnswer() {
     return Boolean(currentQuestion) && !expiredRef.current && !submittingRef.current;
   }
@@ -706,8 +570,8 @@ export default function Exam() {
   }, [currentQuestion]);
 
   // ---------- fullscreen badge ----------
-  // Display only. The *enforcement* half (breach detection, strikes,
-  // auto-submit) lives in the lockdown controller below.
+  // Display only. The *enforcement* half (breach detection, strikes, auto-submit) lives in the
+  // lockdown controller below.
   useEffect(() => {
     function onFsChange() {
       const active = !!document.fullscreenElement;
@@ -719,10 +583,7 @@ export default function Exam() {
   }, []);
 
   // ---------- battery indicator ----------
-  // Battery Status API: Chrome/Edge only (Firefox and Safari never shipped
-  // it, and removed it from the spec path entirely) -- navigator.getBattery
-  // is simply undefined there, so this quietly leaves batteryStatus at null
-  // and the header renders without it rather than showing an error.
+  // Battery Status API.
   useEffect(() => {
     if (typeof navigator.getBattery !== "function") return;
     let battery = null;
@@ -747,12 +608,7 @@ export default function Exam() {
   }, []);
 
   // ---------- connection-quality indicator ----------
-  // "WiFi strength" (signal bars) is not something any website can read --
-  // there is no browser API for radio signal strength. The Network
-  // Information API is the closest real signal: effectiveType is Chrome's
-  // own bucketed estimate of the connection (from measured latency +
-  // throughput), which is what actually matters to a student mid-exam --
-  // Firefox/Safari don't implement it, so this stays null there too.
+  // "WiFi strength" (signal bars) is not something any website can read.
   useEffect(() => {
     const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
     if (!connection) return;
@@ -764,13 +620,10 @@ export default function Exam() {
   }, []);
 
   // ---------- centralized event-batching logger ----------
-  // Shared by both the lockdown controller (copy/paste, right-click,
-  // screenshot attempts) and the AI proctoring controller (face/pose/object/
-  // audio violations) below, so several violations flagged within the same
-  // few seconds become one batched request instead of one round trip each.
-  // The callbacks handed to those two controllers close over this ref rather
-  // than its current `.log`, so it doesn't matter which of these same-deps
-  // effects happens to run first in a given commit.
+  // Shared by both the lockdown controller (copy/paste, right-click, screenshot attempts) and
+  // the AI proctoring controller (face/pose/object/ audio violations) below, so several
+  // violations flagged within the same few seconds become one batched request instead of one
+  // round trip each.
   const eventLoggerRef = useRef(null);
   useEffect(() => {
     if (phase !== "active" || !attemptId) return;
@@ -784,10 +637,7 @@ export default function Exam() {
   }, [phase, attemptId]);
 
   // ---------- exam lockdown ----------
-  // Runs for every attempt, proctored or not: even an unproctored exam should
-  // not be sat with the question paper next to a search engine. The strike
-  // budget is enforced server-side (see lockdown_service.py) -- this effect
-  // only renders whatever the server reports back.
+  // Runs for every attempt, proctored or not.
   useEffect(() => {
     if (phase !== "active" || !attemptId) return;
     const controller = createLockdown();
@@ -828,12 +678,8 @@ export default function Exam() {
       },
       toastCallback: pushToast,
     });
-    // The initial getDisplayMedia() request (fired from the Begin Exam
-    // click) usually resolves after this effect has already mounted the
-    // controller -- the native share picker takes longer than the
-    // start-attempt round trip. If it got there first, hand off the stream
-    // now; if not, beginScreenShare()'s own .then() finds lockdownRef.current
-    // already set and does the same handoff from the other direction.
+    // The initial getDisplayMedia() request (fired from the Begin Exam click) usually resolves
+    // after this effect has already mounted the controller.
     if (screenStreamRef.current) controller.watchScreenShare(screenStreamRef.current);
     return () => {
       controller.stop();
@@ -842,15 +688,10 @@ export default function Exam() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, attemptId]);
 
-  // ---------- AI proctoring: start only after the active-phase DOM (and
-  // its <video> element) has actually painted ----------
-  // Starting this inside beginExam() (as it used to be) captured
-  // videoRef.current synchronously right after calling setPhase("active"),
-  // but React hadn't re-rendered yet at that point -- the ref was still
-  // null from the precheck screen, so the camera stream had nowhere to
-  // attach and every downstream face/pose/object check silently no-op'd.
-  // A useEffect keyed on `phase` only runs after commit, once the <video>
-  // element used by the AI Proctoring panel genuinely exists.
+  // ---------- AI proctoring ----------
+  // Started only once the active-phase DOM (and its <video> element) has actually painted:
+  // videoRef.current is still null immediately after setPhase("active"), so a stream attached
+  // there would have nowhere to go and every face/pose/object check would silently no-op.
   useEffect(() => {
     if (phase !== "active" || !proctoringEnabled || !attemptId) return;
     const controller = createProctoring();
@@ -883,15 +724,8 @@ export default function Exam() {
   }, [phase, proctoringEnabled, attemptId]);
 
   // ---------- fullscreen entry ----------
-  // requestFullscreen() only succeeds when called synchronously inside a
-  // user-gesture event handler (a click). It used to be called from deep
-  // inside the proctoring controller's async init(), by which point the
-  // "start attempt" API round-trip had already consumed the click's user
-  // activation, so the browser silently rejected it every time -- the
-  // header was stuck on "Fullscreen pending" forever. requestFullscreenNow
-  // is called directly from the Begin Exam button's onClick (before any
-  // await) and is also exposed as a manual retry via the header badge,
-  // since a fresh click is always a valid gesture regardless of timing.
+  // requestFullscreen() only succeeds when called synchronously inside a user-gesture event
+  // handler (a click).
   function requestFullscreenNow() {
     setFullscreenError("");
     try {
@@ -904,31 +738,24 @@ export default function Exam() {
         setFullscreenError(err?.message || "Your browser blocked fullscreen. Please try again.");
       });
     } catch (err) {
-      // A synchronous throw here (e.g. called outside a real user gesture,
-      // or from within a restrictive iframe) must never propagate -- this is
-      // called back-to-back with beginScreenShare() and beginExam() from the
-      // same onClick, and an uncaught throw from this line would silently
-      // stop those from ever running.
+      // A synchronous throw here (e.g. called outside a real user gesture, or from within a
+      // restrictive iframe) must never propagate.
       setFullscreenError(err?.message || "Your browser blocked fullscreen. Please try again.");
     }
   }
 
   // ---------- screen sharing ----------
-  // Same user-activation constraint as requestFullscreenNow, so this is
-  // called directly from the Begin Exam button's onClick, not awaited on.
-  // Success/failure both resolve locally (a denial doesn't block the exam
-  // from starting, matching how a denied camera degrades to a warning rather
-  // than a hard stop) -- the header badge below is the retry affordance.
+  // Same user-activation constraint as requestFullscreenNow, so this is called directly from
+  // the Begin Exam button's onClick, not awaited on.
   function beginScreenShare() {
     setScreenShareError("");
     let sharePromise;
     try {
       sharePromise = requestScreenShare();
     } catch (err) {
-      // Belt-and-suspenders: requestScreenShare() itself is written to never
-      // throw synchronously (see lockdown.js), but this call sits in the
-      // same synchronous chain as beginExam() below, so nothing here is
-      // allowed to risk stopping that from running.
+      // Belt-and-suspenders: requestScreenShare() itself is written to never throw
+      // synchronously (see lockdown.js), but this call sits in the same synchronous chain as
+      // beginExam() below, so nothing here is allowed to risk stopping that from running.
       setScreenShareActive(false);
       setScreenShareError(err?.message || "Screen sharing is required for this exam. Please allow it and try again.");
       pushToast(err?.message || "Screen sharing is required for this exam. Please allow it and try again.");
@@ -953,10 +780,10 @@ export default function Exam() {
   }
 
   // ---------- system check: camera & microphone preview ----------
-  // Unlike fullscreen/getDisplayMedia, getUserMedia() does not require a
-  // fresh synchronous gesture in practice on the browsers this app targets,
-  // so this is safe to call (and re-call, for a "Test Again" retry) from a
-  // plain button click without the same activation constraints.
+  // Unlike fullscreen/getDisplayMedia, getUserMedia() does not require a fresh synchronous
+  // gesture in practice on the browsers this app targets, so this is safe to call (and re-call,
+  // for a "Test Again" retry) from a plain button click without the same activation
+  // constraints.
   function stopCameraMicPreview() {
     if (cameraMicTimeoutRef.current) {
       clearTimeout(cameraMicTimeoutRef.current);
@@ -978,14 +805,8 @@ export default function Exam() {
     setMicLevel(0);
   }
 
-  // How long to wait for getUserMedia() before giving up and surfacing an
-  // error instead of leaving the row stuck on "Requesting access..."
-  // forever. A real prompt is answered by the student in a few seconds; if
-  // this fires, the realistic causes are the permission prompt rendering
-  // somewhere the student can't see it (a background tab, a second monitor),
-  // the page not being served over HTTPS (getUserMedia silently refuses to
-  // even prompt outside a secure context), or no camera/mic device existing
-  // at all -- all of which deserve a message, not an infinite spinner.
+  // How long to wait for getUserMedia() before giving up and surfacing an error instead of
+  // leaving the row stuck on "Requesting access..." forever.
   const CAMERA_MIC_TIMEOUT_MS = 15000;
 
   async function testCameraMic() {
@@ -1006,11 +827,8 @@ export default function Exam() {
       return;
     }
 
-    // Cheap upfront check that doesn't itself require permission (device
-    // *labels* stay blank without it, but the list of kinds is still
-    // reported) -- catches "there's genuinely no camera or mic on this
-    // machine" immediately instead of making the student sit through the
-    // full timeout below for a device that was never going to appear.
+    // Cheap upfront check that doesn't itself require permission (device *labels* stay blank
+    // without it, but the list of kinds is still reported).
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
       if (cameraMicTestTokenRef.current !== myToken) return;
@@ -1030,12 +848,8 @@ export default function Exam() {
       if (cameraMicTestTokenRef.current !== myToken) return;
       cameraMicTimeoutRef.current = null;
       setCameraMicStatus("error");
-      // Covers both realistic causes of a genuine hang (as opposed to a
-      // quick reject, which lands in the catch block below instead): a
-      // permission prompt the student hasn't noticed, or -- if the
-      // browser's own site permission is already granted -- the operating
-      // system itself blocking browser access underneath it, which Chrome
-      // on Windows in particular can hang on rather than reject cleanly.
+      // Covers both realistic causes of a genuine hang (as opposed to a quick reject, which
+      // lands in the catch block below instead).
       setCameraMicError(
         "This is taking too long. If your browser is showing a permission prompt, look for it (it can appear " +
           "outside this window) and allow access. If camera/microphone access for this site is already allowed " +
@@ -1050,9 +864,7 @@ export default function Exam() {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       // A stale result: either a newer testCameraMic() call has since
       // started (myToken no longer current), the watchdog above already
-      // gave up and moved the row to "error", or the page is gone. In every
-      // case the stream must still be released -- it's real hardware access
-      // -- but none of this call's state updates should happen.
+      // gave up and moved the row to "error", or the page is gone.
       if (cameraMicTestTokenRef.current !== myToken || unmountedRef.current) {
         stream.getTracks().forEach((t) => t.stop());
         return;
@@ -1060,25 +872,13 @@ export default function Exam() {
       clearTimeout(cameraMicTimeoutRef.current);
       cameraMicTimeoutRef.current = null;
       previewStreamRef.current = stream;
-      // NOT attached to the <video> here -- that element is rendered
-      // conditionally on cameraMicStatus === "ok", so at this exact moment
-      // (status is still "testing") it doesn't exist and previewVideoRef is
-      // null. Attaching it is done by the effect below, which runs after
-      // React has actually committed the element to the DOM. Assigning here
-      // would silently no-op and leave the student staring at a black box.
+      // NOT attached to the <video> here -- that element is rendered conditionally on
+      // cameraMicStatus === "ok", so at this exact moment (status is still "testing") it
+      // doesn't exist and previewVideoRef is null.
       setCameraMicStatus("ok");
 
-      // Live level bar so the student can see the mic is actually picking up
-      // sound, not just that permission was granted -- a muted/wrong input
-      // device still "succeeds" at getUserMedia().
-      //
-      // This used to run off requestAnimationFrame, calling setMicLevel()
-      // (a state update on the whole Exam component -- 1400+ lines, dozens
-      // of hooks) up to 60 times a second for as long as the preview was
-      // open. A level bar doesn't need 60fps precision, and re-rendering
-      // this entire page that often is exactly what made the system-check
-      // screen feel sluggish. A plain interval at ~8 updates/second reads
-      // just as smoothly to the eye and cuts the re-render rate by ~87%.
+      // Live level bar so the student can see the mic is actually
+      // picking up sound, not just that permission was granted.
       const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       micAudioCtxRef.current = audioCtx;
       const source = audioCtx.createMediaStreamSource(stream);
@@ -1103,11 +903,8 @@ export default function Exam() {
   }
 
   // ---------- live face verification (pre-exam) ----------
-  // Captures one frame from the working camera preview and checks it against
-  // the student's registered face profile -- the same real ArcFace
-  // comparison the in-exam monitor repeats every few seconds, run once here
-  // so a mismatch is caught *before* the exam starts rather than only
-  // logged as a violation after the fact.
+  // Captures one frame from the working camera preview and checks it against the student's
+  // registered face profile.
   async function verifyFaceNow() {
     const video = previewVideoRef.current;
     if (!video || !video.videoWidth) {
@@ -1119,17 +916,11 @@ export default function Exam() {
     setFaceMatchStatus("checking");
     setFaceMatchError("");
     try {
-      // Downscaled for the same reason lib/proctoring.js does it: the identity
-      // model prepares at 640x640, so anything larger is encoded and uploaded
-      // only to be thrown away server-side. On the pre-exam gate this is the
-      // difference between a check that feels instant and one the candidate
-      // watches spin.
+      // Downscaled for the same reason lib/proctoring.js does it.
       const frame = captureVideoFrame(video, 640, 0.8);
       const result = await Api.post("/proctoring/face/verify", { image_base64: frame });
       if (faceMatchTokenRef.current !== myToken) return; // superseded by a newer attempt
-      // Signal switched off or unavailable -- see FACE_MATCHING_ENABLED. The
-      // pre-exam gate must pass rather than trap the candidate behind a check
-      // the server has been told not to perform.
+      // Signal switched off or unavailable -- see FACE_MATCHING_ENABLED.
       if (result.available === false) {
         setFaceMatchStatus("ok");
         setFaceMatchError("");
@@ -1162,11 +953,8 @@ export default function Exam() {
     }
   }
 
-  // Attach the preview stream once the <video> element it belongs to has
-  // actually been committed to the DOM. Same ordering trap the AI proctoring
-  // effect further up documents: the element is rendered conditionally, so a
-  // ref assignment made in the same tick as the setState that reveals it
-  // always lands on a null ref.
+  // Attach the preview stream once the <video> element it
+  // belongs to has actually been committed to the DOM.
   useEffect(() => {
     if (cameraMicStatus !== "ok") return;
     if (previewVideoRef.current && previewStreamRef.current) {
@@ -1174,11 +962,8 @@ export default function Exam() {
     }
   }, [cameraMicStatus]);
 
-  // Auto-run the live face-match check the moment the camera is confirmed
-  // working and we know this exam actually requires it. Skipped entirely for
-  // unproctored exams (nothing to compare against a policy that doesn't
-  // apply) and re-armed only by an explicit retry (see verifyFaceNow's
-  // "Verify Again" action) once it has settled to a real answer.
+  // Auto-run the live face-match check the moment the camera is confirmed working and we know
+  // this exam actually requires it.
   useEffect(() => {
     if (cameraMicStatus !== "ok") return;
     if (examMeta?.proctoring_enabled === false) return;
@@ -1190,13 +975,9 @@ export default function Exam() {
   }, [cameraMicStatus, examMeta, identityStatus, faceMatchStatus]);
 
   // ---------- system check: external monitor ----------
-  // Same Window Management API check proctoring.js polls every 30s during
-  // the exam itself (see watchExternalMonitor there) -- run once here so a
-  // second display is flagged before the student even starts, not the first
-  // time it costs them a violation mid-exam. Best-effort and non-blocking:
-  // this API needs a permission this function doesn't have a user gesture to
-  // request, so on most first visits it will simply report "unavailable"
-  // rather than granted -- that's an honest "couldn't check," not a pass.
+  // Same Window Management API check proctoring.js polls every 30s during the exam itself (see
+  // watchExternalMonitor there) -- run once here so a second display is flagged before the
+  // student even starts, not the first time it costs them a violation mid-exam.
   async function checkExternalMonitor() {
     if (typeof window.getScreenDetails !== "function") {
       setExternalMonitorStatus("unavailable");
@@ -1219,21 +1000,15 @@ export default function Exam() {
     }
   }
 
-  // Runs once on arrival at the system-check screen -- not gated behind a
-  // button, since it's read-only and (when the browser supports and permits
-  // it at all) is either silent or a single native permission prompt, not a
-  // fullscreen-interrupting share picker.
+  // Runs once on arrival at the system-check screen.
   useEffect(() => {
     if (phase !== "precheck") return;
     checkExternalMonitor();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
-  // Exam overview (title, subject/description, duration, question count,
-  // marks, schedule, pass criteria) and identity-verification status for the
-  // redesigned pre-exam page. Best-effort: if either fails to load the page
-  // still works, it just shows fewer details -- neither blocks starting the
-  // exam, which is still gated purely on the system-check items below.
+  // Exam overview (title, subject/description, duration, question count, marks, schedule, pass
+  // criteria) and identity-verification status for the redesigned pre-exam page.
   useEffect(() => {
     if (phase !== "precheck") return;
     let cancelled = false;
@@ -1257,10 +1032,8 @@ export default function Exam() {
     };
   }, [phase, examId]);
 
-  // The AI proctoring controller requests its own camera/mic stream once the
-  // exam is actually active (see the effect above that creates it) -- this
-  // preview stream has done its job by then and must not be left running
-  // alongside it (two live camera indicators, doubled resource use).
+  // The AI proctoring controller requests its own camera/mic stream once the exam is actually
+  // active (see the effect above that creates it).
   useEffect(() => {
     if (phase === "active") stopCameraMicPreview();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1281,28 +1054,13 @@ export default function Exam() {
 
   // ---------- cleanup on unmount ----------
   useEffect(() => {
-    // Load-bearing, and the cause of a genuinely nasty bug when it was
-    // missing. React 18's StrictMode (see main.jsx) deliberately runs every
-    // effect twice in development: mount -> cleanup -> mount. That cleanup
-    // set unmountedRef.current = true, and nothing ever set it back, so from
-    // the very first render onwards this component believed it had already
-    // unmounted -- while still being perfectly alive and on screen.
-    //
-    // Everything downstream that guards on it then silently self-destructed:
-    // getUserMedia() would succeed (camera light on) and the guard would
-    // immediately stop the tracks again (light off) without ever reporting
-    // success, so the camera row hung on "Requesting access..." until its
-    // watchdog fired; getDisplayMedia() was killed the same way, so screen
-    // sharing never registered as active; and because the fullscreen button
-    // is gated on screen sharing having succeeded, it stayed disabled and
-    // looked broken too. Three unrelated-looking failures, one stale ref.
+    // Load-bearing, and the cause of a genuinely nasty bug when it was missing.
     unmountedRef.current = false;
     return () => {
-      // Set before anything else: beginScreenShare()'s getDisplayMedia
-      // promise can still be pending (waiting on the native share picker)
-      // when the student navigates away or the exam auto-submits, and its
-      // .then() checks this to stop a stream that arrived too late instead
-      // of leaking it.
+      // Set before anything else: beginScreenShare()'s getDisplayMedia promise
+      // can still be pending (waiting on the native share picker) when the
+      // student navigates away or the exam auto-submits, and its .then() checks
+      // this to stop a stream that arrived too late instead of leaking it.
       unmountedRef.current = true;
       stopTimer();
       if (resyncIntervalRef.current) clearInterval(resyncIntervalRef.current);
@@ -1321,11 +1079,8 @@ export default function Exam() {
       // The system-check screen's own camera/mic preview, if the student
       // left before ever reaching the active phase.
       stopCameraMicPreview();
-      // A screen-share stream granted during the system check is normally
-      // handed off to (and stopped by) the lockdown controller once the exam
-      // goes active -- but if the student tests screen sharing and then
-      // navigates away (Back to Dashboard) without ever starting, that
-      // controller never existed to take ownership of it.
+      // A screen-share stream granted during the system check is normally handed off to (and
+      // stopped by) the lockdown controller once the exam goes active.
       if (screenStreamRef.current) {
         screenStreamRef.current.getTracks().forEach((t) => t.stop());
         screenStreamRef.current = null;
@@ -1342,34 +1097,14 @@ export default function Exam() {
   if (getRole() !== "student") return <Navigate to="/dashboard" replace />;
 
   if (phase === "precheck") {
-    // Screen sharing must be granted (or declined) BEFORE fullscreen is ever
-    // requested, not the other way around and not both at once: on
-    // Chromium-family browsers, showing the native "share your screen"
-    // picker forces the page OUT of fullscreen the instant it appears, which
-    // is exactly what used to happen when both fired together from one
-    // "Begin Exam" click -- the exam would open, immediately get bounced by
-    // its own screen-share prompt, and land on a "fullscreen required"
-    // overlay before the student had done anything wrong. Splitting these
-    // into their own ordered steps (and disabling "Enter Fullscreen" until
-    // screen sharing is confirmed) means fullscreen is the last gesture-
-    // requiring thing that happens, with nothing left afterward to interrupt
-    // it, and "Begin Exam" itself only ever has to make a plain network call.
-    // Identity verification only gates Begin when this exam actually
-    // requires proctoring, and only once the check has actually loaded
-    // (fails open on a slow/failed status fetch rather than blocking a
-    // student who is, in fact, already verified -- start_attempt enforces
-    // this server-side regardless, so this is a UX head start, not the
-    // real gate).
+    // Screen sharing must be granted (or declined) BEFORE fullscreen is ever requested, not the
+    // other way around and not both at once.
     const identityOk = examMeta?.proctoring_enabled === false || !identityStatus || identityStatus.exam_ready;
-    // Once a profile exists, actually starting still requires the live face
-    // check above to have come back a confirmed match -- "a profile exists"
-    // and "the person at the camera right now is that profile" are different
-    // claims, and only the second one is what proctoring is meant to enforce.
+    // Once a profile exists, actually starting still requires the
+    // live face check above to have come back a confirmed match.
     const faceVerifiedOk = examMeta?.proctoring_enabled === false || !identityStatus || !identityStatus.exam_ready || faceMatchStatus === "ok";
-    // Only what this exam asks for. Requiring all four unconditionally meant a
-    // candidate could not start an unproctored quiz without sharing their
-    // screen -- and the page told them the exam was not proctored while doing
-    // it. A requirement the exam has switched off is treated as already met.
+    // Only what this exam asks for. Requiring all four unconditionally meant a candidate could
+    // not start an unproctored quiz without sharing their screen.
     const cameraOk = !(requires.camera || requires.microphone) || cameraMicStatus === "ok";
     const screenOk = !requires.screen_share || screenShareActive;
     const fullscreenOk = !requires.fullscreen || fullscreenActive;
@@ -1676,12 +1411,8 @@ export default function Exam() {
   }
 
   const overlayActive = Boolean(lockdownBreach || lockdownTerminated);
-  // Once a submit (manual or auto-expiry) is in flight, the exam is over in
-  // every way that matters -- lock the whole screen so nothing the student
-  // does in the second or two before the redirect lands can be mistaken for
-  // a further answer. Kept mounted (not unmounted) rather than navigating
-  // away immediately so there's no blank/flashing gap while the request is
-  // still in the air.
+  // Once a submit (manual or auto-expiry) is in flight,
+  // the exam is over in every way that matters.
   const contentInert = overlayActive || submitting;
 
   return (
@@ -1751,11 +1482,9 @@ export default function Exam() {
                   Fullscreen
                 </span>
               ) : (
-                // The browser can reject the automatic fullscreen request
-                // for reasons outside our control (a slow start-attempt
-                // call, a permissions policy, etc.), so this stays a real
-                // button the student can click themselves -- a click is
-                // always a valid user gesture for requestFullscreen().
+                // The browser can reject the automatic fullscreen request for reasons outside
+                // our control (a slow start-attempt call, a permissions policy, etc.), so this
+                // stays a real button the student can click themselves.
                 <button
                   type="button"
                   onClick={requestFullscreenNow}
@@ -1923,12 +1652,7 @@ export default function Exam() {
               </div>
 
               {currentQuestion.question_type === "mcq" ? (
-                /* role="radiogroup" + role="radio", not plain buttons.
-                   As buttons a screen reader announced four unrelated controls
-                   with no indication that they were alternatives, that one was
-                   chosen, or how many there were -- and arrow keys did nothing.
-                   The visual design is unchanged; only the semantics were
-                   missing. */
+                /* role="radiogroup" + role="radio", not plain buttons. */
                 <div className="space-y-2.5 flex-1" role="radiogroup"
                      aria-label={`Answer choices for question ${currentIndex + 1}`}>
                   {currentQuestion.options.map((opt, i) => {
@@ -1938,9 +1662,8 @@ export default function Exam() {
                         key={opt.id}
                         role="radio"
                         aria-checked={selected}
-                        // Only the selected option (or the first, when nothing
-                        // is chosen) is in the tab order -- the arrow keys move
-                        // within the group, which is how a radio group behaves.
+                        // Only the selected option (or the first, when
+                        // nothing is chosen) is in the tab order.
                         tabIndex={selected || (currentQuestion.selected_option_id == null && i === 0) ? 0 : -1}
                         onKeyDown={(e) => handleOptionKeys(e, i, currentQuestion.options, selectOption)}
                         onClick={() => selectOption(opt.id)}
@@ -2091,16 +1814,6 @@ export default function Exam() {
 
 /**
  * "Is my work saved?" — answered continuously, next to the clock.
- *
- * The single most important thing a candidate cannot otherwise know. Before
- * this, a save that failed produced no visible difference from one that
- * succeeded: the option stayed selected either way, because the selection is
- * local state. Someone could sit an entire exam watching their answers appear
- * to register while none of them reached the server.
- *
- * Announced politely (aria-live="polite") rather than assertively -- this
- * updates on every keystroke-debounced save, and an assertive region would
- * interrupt a screen-reader user mid-question every few seconds.
  */
 function SaveStatus({ summary, onRetry }) {
   const { pending = 0, failed = 0, lastSavedAt } = summary || {};
@@ -2136,27 +1849,6 @@ function SaveStatus({ summary, onRetry }) {
 
 /**
  * The question grid, with a filter and a mobile layout.
- *
- * Two problems, both about a paper with sixty questions rather than the six a
- * demo has.
- *
- * FILTERING. The grid coloured answered, marked and unanswered differently and
- * offered no way to see only one of them. With ten minutes left, "which ones
- * did I skip?" is the single most useful question a candidate can ask, and the
- * only way to answer it was to scan every tile by eye -- under time pressure,
- * which is exactly when people miscount. The counts are on the buttons because
- * "8 unanswered" is itself the answer much of the time.
- *
- * MOBILE. On a narrow screen the navigator sat above the question as a
- * six-across grid, so a long paper pushed the question itself entirely below
- * the fold: every question change meant scrolling past the whole navigator to
- * reach what you were meant to be reading. It now collapses, defaulting to
- * closed on small screens and always open from `lg` up, where there is a column
- * for it.
- *
- * The filter deliberately never hides the CURRENT question. Filtering to
- * "unanswered", answering it, and watching the tile you are standing on vanish
- * from the grid is disorienting in a way that a live exam should not be.
  */
 function QuestionNavigator({ questionIds, currentIndex, answeredMap, markedSet, onGo }) {
   const [filter, setFilter] = useState("all");
@@ -2280,11 +1972,9 @@ function dotClasses(index, questionId, currentIndex, answeredMap, markedSet) {
   return `${base} ${tone} ${ring}`;
 }
 
-// Shaped like the real question layout below (label + title + marks badge,
-// then a handful of option-sized rows) rather than one flat rectangle, so a
-// slow fetch reads unmistakably as "loading" instead of "blank/broken" --
-// the exact ambiguity that made the concurrency hang bug hard to distinguish
-// from a normal fetch during testing.
+// Shaped like the real question layout below (label + title + marks badge, then a handful of
+// option-sized rows) rather than one flat rectangle, so a slow fetch reads unmistakably as
+// "loading" instead of "blank/broken".
 function QuestionSkeleton() {
   return (
     <div className="flex-1 flex flex-col" aria-live="polite" aria-busy="true">
@@ -2315,10 +2005,8 @@ function LegendRow({ swatchClass, label, outline }) {
 }
 
 function SignalRow({ label, state }) {
-  // Status was previously color-only (a dot with no text), which is
-  // unreadable for colorblind users and invisible to screen readers. Each
-  // state now also gets a short text label and the dot gets aria-hidden so
-  // it doesn't duplicate the text for assistive tech.
+  // Status was previously color-only (a dot with no text), which is unreadable for colorblind
+  // users and invisible to screen readers.
   const meta = {
     ok: { dot: "bg-emerald-500", text: "OK", textClass: "text-emerald-600 dark:text-emerald-400" },
     warn: { dot: "bg-amber-500", text: "Warning", textClass: "text-amber-600 dark:text-amber-400" },
@@ -2355,12 +2043,9 @@ function OverviewFact({ icon, label, value, small }) {
   );
 }
 
-/** One row on the precheck "System check" screen -- an icon, a label, an
- * optional description, a status badge, and optionally an action button
- * and/or extra content (the camera preview, the mic level bar). Status
- * badge styling is intentionally a superset of SignalRow's palette above
- * (same color language: emerald/amber/red/slate) rather than a fresh one,
- * so "OK" during the exam and "OK" before it look like the same claim. */
+/**
+ * One row on the precheck "System check" screen.
+ */
 function SystemCheckRow({ icon, label, description, status, statusText, action, children }) {
   const meta = {
     ok: { badge: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400", dotIcon: "check" },
@@ -2398,11 +2083,8 @@ function SystemCheckRow({ icon, label, description, status, statusText, action, 
 
 function ToastStack({ toasts, bannerActive }) {
   if (!toasts.length) return null;
-  // `top-4` used to sit right on top of the sticky exam header (timer /
-  // submit button), and even further under the connection-lost banner when
-  // both are showing -- proctoring warnings would render directly over the
-  // controls a student most needs mid-exam instead of below them. These two
-  // offsets clear the header alone, and the header-plus-banner case.
+  // `top-4` used to sit right on top of the sticky exam header (timer / submit button), and
+  // even further under the connection-lost banner when both are showing.
   return (
     <div className={`fixed ${bannerActive ? "top-32" : "top-20"} right-4 z-50 space-y-2 w-[min(320px,90vw)] transition-[top] duration-200`}>
       {toasts.map((t) => (
@@ -2476,17 +2158,6 @@ function CodingPanel({ question, editorKey, initialValue, onChange, onRun, onRes
 
 /**
  * Final submit confirmation.
- *
- * Redesigned from a small centred alert into a proper decision surface. The old
- * one was an amber warning triangle over one line of text, which read as an
- * error rather than the most consequential and irreversible action in the whole
- * product -- and it did not actually show the candidate what they were about to
- * submit. This does: answered, unanswered and flagged counts, so the decision is
- * made against the state of the paper rather than a sentence about it.
- *
- * Unanswered is the only thing coloured. When everything is answered the panel
- * is calm and green; leaving questions blank is the one fact worth pulling the
- * eye, and colouring every number would flatten that back out.
  */
 function SubmitConfirmModal({ answeredCount, totalCount, flaggedCount = 0, saveSummary,
                              submitting, error, onCancel, onConfirm }) {
@@ -2495,10 +2166,7 @@ function SubmitConfirmModal({ answeredCount, totalCount, flaggedCount = 0, saveS
   const unsynced = (saveSummary?.pending || 0) + (saveSummary?.failed || 0);
 
   useEffect(() => {
-    // Escape cancels, and focus is trapped to the dialog's own buttons by
-    // autoFocus below. Deliberately NOT closable by clicking the backdrop: a
-    // stray click next to the most irreversible action in the app should not
-    // dismiss the one screen asking the candidate to think about it.
+    // Escape cancels, and focus is trapped to the dialog's own buttons by autoFocus below.
     function onKey(e) {
       if (e.key === "Escape" && !submitting) onCancel();
     }
@@ -2606,27 +2274,13 @@ function SubmitConfirmModal({ answeredCount, totalCount, flaggedCount = 0, saveS
 }
 
 /**
- * Full-screen blocking layer shown the moment the student leaves fullscreen,
- * switches tabs, or minimises the window.
- *
- * Two states:
- *   breach     -- recoverable. Shows how many strikes are left and offers a
- *                 single button that re-enters fullscreen. The exam is still
- *                 running underneath (the clock does not stop -- pausing it
- *                 would make leaving the window a free way to buy time).
- *   terminated -- the strike limit was hit and the server already submitted
- *                 the attempt. No way back; the only action is to view the
- *                 result.
- *
- * The backdrop is intentionally near-opaque rather than a light scrim: a
- * translucent overlay would still let a student read the question paper while
- * the exam was locked (the timer keeps running -- see the heading below).
+ * Full-screen blocking layer shown the moment the student
+ * leaves fullscreen, switches tabs, or minimises the window.
  */
-/** Full-screen, non-interactive lock shown the instant a submit (manual or
- * timer-expiry) is in flight. Nothing behind it (see `contentInert` in the
- * main render) can be clicked or typed into while this is up -- the exam is
- * over the moment this appears, whether or not the network round-trip to
- * prove it has finished yet. */
+/**
+ * Full-screen, non-interactive lock shown the instant
+ * a submit (manual or timer-expiry) is in flight.
+ */
 function SubmittingOverlay({ auto, stillRetrying = false }) {
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-page/95 backdrop-blur-xl px-5" role="status" aria-live="polite">
@@ -2654,12 +2308,8 @@ function LockdownOverlay({ terminated, reason, strikes, limit, onResume, onViewR
   const dialogRef = useRef(null);
   const primaryActionRef = useRef(null);
 
-  // Move focus into the overlay the moment it appears (or its content
-  // changes, e.g. breach -> terminated), and keep it trapped there via
-  // handleKeyDown below. Without this, `inert` on the exam content behind it
-  // stops that content from being *reachable* by Tab, but does nothing about
-  // focus that was already sitting inside it when the overlay mounted --
-  // e.g. focus left on an MCQ option a student had just clicked.
+  // Move focus into the overlay the moment it appears (or its content changes, e.g. breach ->
+  // terminated), and keep it trapped there via handleKeyDown below.
   useEffect(() => {
     primaryActionRef.current?.focus();
   }, [terminated]);

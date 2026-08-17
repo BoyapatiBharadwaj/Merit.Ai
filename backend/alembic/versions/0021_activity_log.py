@@ -3,15 +3,6 @@
 Revision ID: 0021
 Revises: 0020
 Create Date: 2026-08-04
-
-Adds activity_logs: who did what to which account, and when. See
-app/models/activity_log.py for the two rules it lives under (never stores a
-secret; rows are append-only).
-
-Both user FKs are ON DELETE SET NULL rather than CASCADE, deliberately. Deleting
-an account must not erase the record that it existed and was deleted -- which is
-usually the single most important line in the trail. The denormalised
-subject_email/actor_email columns are what keep those orphaned rows readable.
 """
 import sqlalchemy as sa
 from alembic import op
@@ -36,10 +27,7 @@ def upgrade() -> None:
     bind = op.get_bind()
 
     if bind.dialect.name == "postgresql":
-        # create_type=False on the column, with the type created explicitly
-        # first -- otherwise op.create_table's DDL visitor emits a second
-        # CREATE TYPE without checkfirst and fails with DuplicateObject. Same
-        # trap 0016 hit; see the note there.
+        # create_type=False on the column, with the type created explicitly first.
         sa.Enum(*ACTIVITY_TYPES, name="activitytype").create(bind, checkfirst=True)
         activity_enum = postgresql.ENUM(*ACTIVITY_TYPES, name="activitytype", create_type=False)
     else:

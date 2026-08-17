@@ -1,23 +1,12 @@
-"""Two independent policy changes, tested together since both are small
-authorization checks layered on existing endpoints:
-
-  1. Examiners cannot change their own password (POST /users/me/password) --
-     their credentials are admin-issued and admin-reset only.
-  2. An examiner can delete their own DRAFT exams (DELETE /exams/{id}), but
-     never a published one, and never another examiner's exam.
+"""Two independent policy changes, tested together since both are
+small authorization checks layered on existing endpoints:
 """
 from tests.conftest import auth_headers
 from tests.test_exam_workflow import _build_published_exam, _create_examiner_and_login
 
 
 def test_examiner_can_change_own_password(client, seed_roles, admin_token):
-    """Policy change: examiners manage their own credential again.
-
-    They are staff running the platform, not candidates sitting an exam --
-    students remain the one administrator-managed role. Previously asserted the
-    opposite; rewritten rather than deleted so the endpoint's role rule stays
-    under test either way.
-    """
+    """Policy change: examiners manage their own credential again."""
     examiner_headers = auth_headers(_create_examiner_and_login(client, admin_token))
 
     response = client.post("/api/v1/users/me/password", json={
@@ -34,13 +23,8 @@ def test_examiner_can_change_own_password(client, seed_roles, admin_token):
 
 
 def test_student_cannot_change_own_password(client, seed_roles, admin_token):
-    """Policy change: passwords are administrator-managed for BOTH students and
-    examiners now, not just examiners.
-
-    This test previously asserted the opposite. It is rewritten rather than
-    deleted because the behaviour it guards is still worth pinning -- only the
-    expected answer changed, and a silently-dropped test would leave nothing
-    watching this endpoint's role rule.
+    """Policy change: passwords are administrator-managed for
+    BOTH students and examiners now, not just examiners.
     """
     from tests.test_exam_workflow import _register_student_and_login
 
