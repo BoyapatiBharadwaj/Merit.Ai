@@ -76,13 +76,13 @@ npm run build        # production build; fails on a broken import
 
 ## Continuous integration
 
-`.github/workflows/backend-tests.yml` runs on every push to `main` and on every
-pull request:
+`.github/workflows/ci.yml` runs on every push to `main` and on every pull request:
 
 | Job | What it does |
 |---|---|
-| **Test suite (SQLite)** | Python 3.11, `pip install -r requirements-dev.txt`, `pytest -q -m "not postgres"` |
+| **Backend tests (SQLite)** | Python 3.11, `pip install -r requirements-dev.txt`, `pytest -q -m "not postgres"` |
 | **Alembic chain (PostgreSQL)** | Same install against a `postgres:16` service container, then `pytest -q -m postgres` |
+| **Frontend lint, test and build** | Node 20, `npm ci`, then `npm run lint`, `npm test`, `npm run check`, `npm run build` |
 
 Postgres is pinned to the major version the application is developed against,
 since enum behaviour differs across majors.
